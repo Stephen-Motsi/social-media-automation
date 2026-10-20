@@ -1,0 +1,26 @@
+{
+  "name": "Social Media Automation",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "forwardPorts": [3000, 5555],
+  "portsAttributes": {
+    "3000": { "label": "Web app", "onAutoForward": "openPreview" },
+    "5555": { "label": "Prisma Studio", "onAutoForward": "silent" }
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "Prisma.prisma",
+        "bradlc.vscode-tailwindcss",
+        "dbaeumer.vscode-eslint",
+        "anthropic.claude-code"
+      ]
+    }
+  },
+  "remoteEnv": {
+    "DATABASE_URL": "postgresql://postgres:postgres@postgres:5432/social_automation?schema=public",
+    "REDIS_URL": "redis://redis:6379"
+  }
+}

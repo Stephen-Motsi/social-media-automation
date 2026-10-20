@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum Platform {
+  FACEBOOK
+  INSTAGRAM
+  WHATSAPP
+}
+
+enum PostStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+}
+
+enum TargetStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+// Users are created by an admin (seed script or `npm run user:create`). No self sign-up.
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  role         Role     @default(MEMBER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  posts Post[]
+}
+
+// A connected Facebook Page, Instagram Business account, or WhatsApp phone number.
+model SocialAccount {
+  id                   String    @id @default(cuid())
+  platform             Platform
+  externalId           String // Page ID, IG user ID, or WhatsApp phone number ID
+  displayName          String
+  accessTokenEncrypted String // AES-256-GCM, see src/lib/crypto.ts
+  tokenExpiresAt       DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  targets PostTarget[]
+
+  @@unique([platform, externalId])
+}
+
+model Post {
+  id          String     @id @default(cuid())
+  content     String
+  mediaUrls   String[]
+  status      PostStatus @default(DRAFT)
+  scheduledAt DateTime?
+  publishedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id])
+
+  targets PostTarget[]
+}
+
+// One row per (post, account) so each platform succeeds or fails independently.
+model PostTarget {
+  id             String       @id @default(cuid())
+  status         TargetStatus @default(PENDING)
+  externalPostId String?
+  error          String?
+  // WhatsApp only: recipient phone number in international format
+  recipient      String?
+
+  postId    String
+  post      Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  accountId String
+  account   SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, accountId, recipient])
+}
+
+// Raw webhook payloads from Meta, stored for processing/debugging.
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  object      String // "page", "instagram", "whatsapp_business_account"
+  payload     Json
+  processedAt DateTime?
+  receivedAt  DateTime  @default(now())
+}
