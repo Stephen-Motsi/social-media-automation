@@ -5,6 +5,7 @@
   "description": "Schedule and publish content to Meta platforms (Facebook, Instagram, WhatsApp) from one dashboard.",
   "scripts": {
     "dev": "next dev",
+    "dev:tunnel": "next dev -p 3100",
     "build": "next build",
     "start": "next start",
     "worker": "tsx src/worker/index.ts",

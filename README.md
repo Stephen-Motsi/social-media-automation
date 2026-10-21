@@ -83,6 +83,16 @@ Other useful ports: `npm run db:studio` opens Prisma Studio (a database browser)
 
 > **Meta webhooks in Codespaces:** Meta must reach your webhook URL without a GitHub login. To test webhooks, set port 3000 to **Public** in the Ports tab, temporarily, and use `https://<codespace>-3000.app.github.dev/api/webhooks/meta` as the callback URL.
 
+## Shared preview (Cloudflare tunnel)
+
+The app is also served from the project owner's Mac at **https://social.yet-kenya.com**, so the developer and stakeholders can open it from anywhere. This is useful when working through Claude Code Remote Control on that machine.
+
+- Hostname `social.yet-kenya.com` is an ingress rule on the existing `alphabank` Cloudflare tunnel (`~/.cloudflared/config.yml` on the host Mac). It forwards to `http://localhost:3100`.
+- On the host, run the app on that port: `docker compose up -d` (Postgres and Redis restart automatically), then `npm run dev:tunnel`, plus `npm run worker` if needed.
+- `.env` on the host must have `AUTH_URL="https://social.yet-kenya.com"` and `ALLOWED_DEV_ORIGINS="social.yet-kenya.com"`. Without the second one, Next.js blocks hot reload from the tunnel domain.
+- Meta webhook callback URL for this environment: `https://social.yet-kenya.com/api/webhooks/meta`.
+- The URL is public. Keep a strong admin password, and put Cloudflare Access in front of it, with a bypass for `/api/webhooks/meta` so Meta can still reach the webhook.
+
 ## Local setup (alternative)
 
 Requires Node 22+ and Docker.
