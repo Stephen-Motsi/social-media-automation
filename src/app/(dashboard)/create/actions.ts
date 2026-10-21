@@ -13,6 +13,8 @@ export type ActionResult<T> = ({ ok: true } & T) | { ok: false; error: string; i
 
 const dailyLimit = () => Number(process.env.IMAGE_DAILY_LIMIT ?? 20);
 
+const NOT_CONFIGURED = "Image generation isn't set up yet. Add OPENAI_API_KEY to the .env file.";
+
 async function requireUser() {
   const session = await auth();
   if (!session?.user?.id) throw new Error("Not signed in");
@@ -29,6 +31,7 @@ export async function generateAction(input: {
   shape: ImageShape;
 }): Promise<ActionResult<{ media: GeneratedMedia; verdicts: PlatformVerdict[] }>> {
   const userId = await requireUser();
+  if (!process.env.OPENAI_API_KEY) return { ok: false, error: NOT_CONFIGURED };
   const parsed = generateSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const { prompt, shape } = parsed.data;
@@ -57,6 +60,12 @@ export async function generateAction(input: {
   try {
     bytes = await generateImage(prompt, shape);
   } catch (err) {
+    if (err instanceof OpenAIError && err.status === 401) {
+      return { ok: false, error: "OpenAI rejected the API key. Check OPENAI_API_KEY in the .env file." };
+    }
+    if (err instanceof OpenAIError && err.status === 403) {
+      return { ok: false, error: "This OpenAI account can't use image generation yet. Verify your organization in the OpenAI dashboard." };
+    }
     if (err instanceof OpenAIError && err.code === "moderation_blocked") {
       return { ok: false, error: "The image service declined this prompt under its safety rules. Try rewording it." };
     }

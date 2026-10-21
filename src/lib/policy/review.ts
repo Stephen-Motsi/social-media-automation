@@ -14,6 +14,8 @@ import {
 export type ReviewImage = { mimeType: string; width: number; height: number; sizeBytes: number; data: Uint8Array };
 export type ReviewInput = { caption: string; image?: ReviewImage | null };
 
+const KEY_MISSING = "key_missing";
+
 const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 const prettyFormat = (mime: string) => mime.replace("image/", "").toUpperCase();
 
@@ -190,7 +192,10 @@ export function review(
       issues.push({
         code: "moderation.unavailable",
         severity: "block",
-        message: `Content check couldn't run${moderationError ? ` (${moderationError})` : ""}. Try again shortly.`,
+        message:
+          moderationError === KEY_MISSING
+            ? "Content checks aren't set up yet. Add OPENAI_API_KEY to the .env file."
+            : `Content check couldn't run${moderationError ? ` (${moderationError})` : ""}. Try again shortly.`,
       });
     }
     return verdict(platform, issues);
@@ -210,7 +215,7 @@ export async function reviewContent(
       image: input.image ? { mimeType: input.image.mimeType, data: input.image.data } : undefined,
     });
   } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
+    error = !process.env.OPENAI_API_KEY ? KEY_MISSING : err instanceof Error ? err.message : String(err);
   }
   return { verdicts: review(input, moderation, platforms, error), moderation };
 }
