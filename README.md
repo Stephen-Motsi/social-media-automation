@@ -15,6 +15,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 | **WhatsApp is messaging, not a feed** | "Publishing" to WhatsApp means sending a message to recipients. Free-form text only works within 24h of the recipient's last message; otherwise a pre-approved **template** is required (`sendTemplate`). |
 | **Instagram needs media** | The Instagram API cannot post text-only. Images must be at a **public URL** that Meta can fetch. |
 | **Tokens encrypted at rest** | Meta access tokens are stored with AES-256-GCM (`src/lib/crypto.ts`). |
+| **AI images go through platform checks** | Images are generated with OpenAI's GPT image API. Every prompt, image and caption is checked against each platform's rules before it can be saved or published (see [Image generation & platform checks](#image-generation--platform-checks)). |
 
 ## Tech stack
 
@@ -23,6 +24,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 - **PostgreSQL** + **Prisma** ORM
 - **Redis** + **BullMQ** for scheduled publishing jobs
 - **Meta Graph API** (Facebook Pages API, Instagram Content Publishing API, WhatsApp Cloud API)
+- **OpenAI** GPT image generation + `omni-moderation-latest` content moderation
 
 ## Project structure
 
@@ -38,13 +40,20 @@ src/
   middleware.ts           Protects every page except /login, /api/auth, /api/webhooks
   app/
     login/                Sign-in page + server action
-    (dashboard)/          Signed-in area: Overview, Posts, Accounts
+    (dashboard)/          Signed-in area: Overview, Create, Posts, Accounts
+      create/             AI image + caption composer with per-platform checks
     api/auth/             Auth.js route handlers
     api/webhooks/meta/    Meta webhook (verification + signed event intake)
+    api/media/[id]/       Public image URLs Meta downloads from (blocked images return 404)
   lib/
     db.ts                 Prisma client
     crypto.ts             Token encryption
     queue.ts              BullMQ queue + schedulePost()
+    media.ts              Image format/size detection, public URLs, loading
+    ai/openai.ts          Image generation + moderation calls
+    policy/
+      rules.ts            Per-platform limits, content policy, restricted topics (edit here)
+      review.ts           Runs the checks and returns a verdict per platform
     meta/
       graph.ts            Shared Graph API fetch wrapper
       facebook.ts         Page posts (text, photo)
@@ -60,6 +69,7 @@ src/
 - **Post** holds the content, media URLs, status and schedule time.
 - **PostTarget** links one post to one account (and, for WhatsApp, a recipient). Each target succeeds or fails on its own, so a failure on one platform doesn't block the others.
 - **WebhookEvent** stores raw Meta webhook payloads for later processing.
+- **MediaAsset** stores an image (generated or uploaded), its moderation result, and a `blocked` flag.
 
 ---
 
@@ -82,6 +92,45 @@ This repo is set up to be developed **entirely in the cloud with GitHub Codespac
 Other useful ports: `npm run db:studio` opens Prisma Studio (a database browser) on port 5555.
 
 > **Meta webhooks in Codespaces:** Meta must reach your webhook URL without a GitHub login. To test webhooks, set port 3000 to **Public** in the Ports tab, temporarily, and use `https://<codespace>-3000.app.github.dev/api/webhooks/meta` as the callback URL.
+
+## Image generation & platform checks
+
+The **Create** page (`/create`) generates an image from a description with OpenAI, takes a caption, and shows for each platform whether the post can go out: **Ready to post**, **Check before posting** (warnings), or **Can't post** (blocked).
+
+### Pipeline
+
+1. **Daily limit.** Each user can generate `IMAGE_DAILY_LIMIT` images per 24 hours (default 20) to control cost.
+2. **Prompt screening.** The prompt goes through OpenAI moderation first. If any platform would block it, nothing is generated. This uses the strictest rule across platforms.
+3. **Generation.** Uses `OPENAI_IMAGE_MODEL` (default `gpt-image-1`) with `moderation: "auto"` (OpenAI's stricter filter; don't lower it) and JPEG output, because Instagram only accepts JPEG. Refusals from OpenAI are shown to the user.
+4. **Image + caption review**, per platform (`src/lib/policy/review.ts`):
+   - **Technical:** file format, file size, aspect ratio, minimum width, caption length, hashtag and @mention counts, and required image/text.
+   - **Content:** OpenAI moderation on the image and caption together. Each category is mapped to block or warn per platform in `moderationPolicy`. Scores near the limit become warnings.
+   - **Restricted topics:** keyword rules for regulated goods and claims (alcohol, tobacco/vaping, weapons, drugs, gambling/betting, prescription drugs, adult products, risky financial claims). Facebook and Instagram **warn**; WhatsApp **blocks**, per its Commerce Policy.
+5. **Saving** re-runs the review on the server and refuses a post blocked on every platform. Results are stored in `Post.checks`.
+6. **Publishing:** the worker re-runs the review per platform right before sending. Any blocker marks that platform's target as `FAILED` with the reason, while other platforms still publish.
+
+**Fail-closed rules.** If moderation can't run (no key, API down), content is blocked, not let through. Images blocked on every platform get `blocked = true`, and `/api/media/<id>` returns 404 for them, so they never get a public URL.
+
+### Current platform limits (`src/lib/policy/rules.ts`)
+
+| | Instagram | Facebook | WhatsApp |
+| --- | --- | --- | --- |
+| Image required | Yes | No | No (sent as text for now) |
+| Formats | JPEG | JPEG, PNG, GIF, WebP | JPEG, PNG |
+| Max size | 8 MB | 4 MB | 5 MB |
+| Aspect ratio | 4:5 to 1.91:1 | Any | Any |
+| Text | 2,200 chars, 30 hashtags, 20 mentions | 63,206 chars | 4,096 chars, required |
+| Sexual content, hate, threats, graphic violence | Block | Block | Block |
+| Harassment, violence, illegal activity | Warn | Warn | Warn; illegal activity blocks |
+| Restricted goods | Warn | Warn | Block |
+
+These values come from Meta's developer docs and policies (links at the top of `rules.ts`). **They are a product starting point, not legal advice.** Have them reviewed, and re-check them when Meta updates its docs.
+
+### Setup
+
+Set `OPENAI_API_KEY` in `.env`. GPT image models require a [verified OpenAI organization](https://platform.openai.com/settings/organization/general). Moderation calls are free; image generation is billed per image (quality is set by `OPENAI_IMAGE_QUALITY`). Without a key, the Create page shows a clear error and generates nothing.
+
+For local testing without a key, point `OPENAI_BASE_URL` at a mock server that implements `POST /images/generations` and `POST /moderations`.
 
 ## Shared preview (Cloudflare tunnel)
 
@@ -168,12 +217,12 @@ CI (`.github/workflows/ci.yml`) runs typecheck and build on every push and PR.
 Suggested order:
 
 1. **Connect accounts (OAuth).** Add a "Connect with Facebook" flow on `/accounts` using Facebook Login for Business. Exchange for a long-lived user token, list the user's Pages (`/me/accounts`) and their linked IG accounts (`?fields=instagram_business_account`), and save each as a `SocialAccount` with `encrypt(token)`. For WhatsApp, add a form or env-based setup for the phone number ID and system user token.
-2. **Post composer** on `/posts`: content, media upload, target accounts and schedule time. Create `Post` + `PostTarget` rows, then call `schedulePost(post.id, scheduledAt)` from `src/lib/queue.ts`.
-3. **Media storage.** Instagram and Facebook need public image URLs. Add an S3, R2 or Cloudinary upload and save the URLs in `Post.mediaUrls`.
+2. **Finish the composer** on `/create`: add target accounts and a schedule time to the draft (create `PostTarget` rows, then call `schedulePost(post.id, scheduledAt)` from `src/lib/queue.ts`), plus image upload (`MediaAsset` with `source: UPLOADED`, run through the same review).
+3. **Media storage.** Images are stored in Postgres and served from `/api/media/<id>`. Move them to S3, R2 or Cloudinary before real traffic.
 4. **WhatsApp audiences.** Add a contacts/recipients model, template management, and use `sendTemplate` for recipients outside the 24h window.
 5. **Webhook processing.** Handle stored `WebhookEvent`s, e.g. WhatsApp delivery statuses and inbound messages, and comments.
 6. **Token refresh.** Refresh or alert before `tokenExpiresAt`. Page tokens derived from long-lived user tokens don't expire, but user tokens do.
-7. **Admin UI for users**, to replace the CLI with an admin-only page.
+7. **Admin UI for users**, to replace the CLI with an admin-only page. Consider an admin override or approval step for posts with warnings.
 8. **Tests** (e.g. Vitest for `lib/`, Playwright for login and the posting flow).
 9. **Deployment.** The web app runs on Vercel or any Node host. The worker needs a long-running process (Railway, Render, Fly.io, a VM) plus managed Postgres and Redis. Vercel also gives preview deployments for every PR.
 

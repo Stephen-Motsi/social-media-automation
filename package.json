@@ -10,6 +10,7 @@
     "start": "next start",
     "worker": "tsx src/worker/index.ts",
     "typecheck": "tsc --noEmit",
+    "test": "tsx src/lib/policy/review.test.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",

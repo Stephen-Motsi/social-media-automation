@@ -145,7 +145,7 @@ export default async function OverviewPage() {
                 Nothing scheduled. Write a post, pick a time, and it publishes on its own.
               </p>
               <Link
-                href="/posts"
+                href="/create"
                 className="blend-meta mt-4 inline-block rounded-full px-5 py-2 text-sm font-medium text-white shadow-md shadow-fuchsia-500/25"
               >
                 Write a post

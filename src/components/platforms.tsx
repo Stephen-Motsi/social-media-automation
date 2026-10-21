@@ -56,7 +56,7 @@ export const platforms: Record<
   },
 };
 
-export const platformOrder: Platform[] = ["FACEBOOK", "INSTAGRAM", "WHATSAPP"];
+export { platformOrder } from "@/lib/policy/rules";
 
 export function PlatformBadge({ platform, size = "sm" }: { platform: Platform; size?: "sm" | "lg" }) {
   const p = platforms[platform];

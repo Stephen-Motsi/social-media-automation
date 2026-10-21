@@ -26,6 +26,11 @@ enum PostStatus {
   FAILED
 }
 
+enum MediaSource {
+  GENERATED
+  UPLOADED
+}
+
 enum TargetStatus {
   PENDING
   PUBLISHED
@@ -43,6 +48,7 @@ model User {
   updatedAt    DateTime @updatedAt
 
   posts Post[]
+  media MediaAsset[]
 }
 
 // A connected Facebook Page, Instagram Business account, or WhatsApp phone number.
@@ -68,6 +74,8 @@ model Post {
   status      PostStatus @default(DRAFT)
   scheduledAt DateTime?
   publishedAt DateTime?
+  // Last policy review per platform (see src/lib/policy/review.ts)
+  checks      Json?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -101,4 +109,27 @@ model WebhookEvent {
   payload     Json
   processedAt DateTime?
   receivedAt  DateTime  @default(now())
+}
+
+// Images used in posts. Served publicly at /api/media/<id> so Meta can fetch them.
+// Stored in Postgres for simplicity; move to object storage (S3/R2) before scaling.
+model MediaAsset {
+  id         String      @id @default(cuid())
+  source     MediaSource
+  mimeType   String
+  width      Int
+  height     Int
+  sizeBytes  Int
+  data       Bytes
+  prompt     String?
+  // Raw moderation result for the image
+  moderation Json?
+  // True when the image fails content rules on every platform; it is then never served
+  blocked    Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  @@index([createdById, createdAt])
 }

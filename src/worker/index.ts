@@ -7,6 +7,8 @@ import { PUBLISH_QUEUE, redisConnection, type PublishJob } from "@/lib/queue";
 import { publishPagePost } from "@/lib/meta/facebook";
 import { publishImage } from "@/lib/meta/instagram";
 import { sendText } from "@/lib/meta/whatsapp";
+import { loadImage, type LoadedImage } from "@/lib/media";
+import { reviewContent } from "@/lib/policy/review";
 
 async function publish(postId: string) {
   const post = await prisma.post.findUniqueOrThrow({
@@ -16,8 +18,36 @@ async function publish(postId: string) {
 
   await prisma.post.update({ where: { id: postId }, data: { status: "PUBLISHING" } });
 
+  // Last line of defence: re-run every platform's rules right before publishing,
+  // even if the post passed when it was drafted (rules or content may have changed).
+  let image: LoadedImage | null = null;
+  let imageError: string | null = null;
+  if (post.mediaUrls[0]) {
+    try {
+      image = await loadImage(post.mediaUrls[0]);
+    } catch (err) {
+      imageError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  const platformsInPost = [...new Set(post.targets.map((t) => t.account.platform))];
+  const { verdicts } = await reviewContent({ caption: post.content, image }, platformsInPost);
+  await prisma.post.update({ where: { id: postId }, data: { checks: verdicts } });
+
   for (const target of post.targets.filter((t) => t.status !== "PUBLISHED")) {
     const { account } = target;
+    const verdict = verdicts.find((v) => v.platform === account.platform);
+    const blockers = verdict?.issues.filter((i) => i.severity === "block") ?? [];
+    if (imageError || blockers.length > 0) {
+      await prisma.postTarget.update({
+        where: { id: target.id },
+        data: {
+          status: "FAILED",
+          error: imageError ? `Image unavailable: ${imageError}` : `Blocked by policy check: ${blockers.map((b) => b.message).join(" ")}`,
+        },
+      });
+      continue;
+    }
+
     const token = decrypt(account.accessTokenEncrypted);
     try {
       let externalPostId: string;
