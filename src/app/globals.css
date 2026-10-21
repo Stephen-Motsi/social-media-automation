@@ -1,5 +1,124 @@
 @import "tailwindcss";
 
+/* ---- Design tokens ------------------------------------------------------
+   Palette is drawn from the three channels we publish to:
+   Facebook blue, Instagram's sunset blend, WhatsApp green.            */
 :root {
+  --bg: #f4f1ff;
+  --ink: #1c1538;
+  --ink-soft: #5d5683;
+  --line: rgb(28 21 56 / 0.08);
+
+  --fb-1: #1877f2;
+  --fb-2: #00b2ff;
+  --ig-1: #fa7e1e;
+  --ig-2: #d62976;
+  --ig-3: #962fbf;
+  --wa-1: #25d366;
+  --wa-2: #128c7e;
+  --danger: #e0245e;
+
+  /* Glass surfaces: translucent so the blended background shows through */
+  --glass-top: rgb(255 255 255 / 0.52);
+  --glass-bottom: rgb(255 255 255 / 0.22);
+  --glass-edge: rgb(255 255 255 / 0.75);
+  --glass-shadow: 0 28px 60px -28px rgb(76 42 160 / 0.45), 0 2px 6px rgb(76 42 160 / 0.06);
+  --wash-strength: 0.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #130f26;
+    --ink: #f1edff;
+    --ink-soft: #a9a2cf;
+    --line: rgb(255 255 255 / 0.08);
+    --glass-top: rgb(58 46 112 / 0.5);
+    --glass-bottom: rgb(26 20 56 / 0.32);
+    --glass-edge: rgb(255 255 255 / 0.14);
+    --glass-shadow: 0 28px 60px -28px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.2);
+    --wash-strength: 0.38;
+  }
+}
+
+@theme inline {
+  --font-sans: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-line: var(--line);
+  --color-fb: var(--fb-1);
+  --color-ig: var(--ig-2);
+  --color-wa: var(--wa-1);
+  --color-danger: var(--danger);
+}
+
+/* ---- Page background: a slow-drifting wash of the channel colours -------- */
+html {
+  background: var(--bg);
   color-scheme: light dark;
+}
+
+body {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  color: var(--ink);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  z-index: -1;
+  opacity: var(--wash-strength);
+  background:
+    radial-gradient(38% 32% at 18% 22%, var(--fb-1), transparent 70%),
+    radial-gradient(34% 30% at 82% 18%, var(--ig-2), transparent 70%),
+    radial-gradient(36% 34% at 68% 82%, var(--ig-1), transparent 70%),
+    radial-gradient(30% 30% at 22% 86%, var(--wa-1), transparent 70%),
+    radial-gradient(28% 26% at 50% 50%, var(--ig-3), transparent 70%);
+  filter: blur(60px);
+  animation: wash-drift 38s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes wash-drift {
+  to {
+    transform: translate3d(4%, -3%, 0) rotate(10deg) scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    animation: none;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--ig-3);
+  outline-offset: 3px;
+}
+
+/* ---- Utilities ----------------------------------------------------------- */
+@utility glass {
+  background: linear-gradient(150deg, var(--glass-top), var(--glass-bottom));
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  backdrop-filter: blur(24px) saturate(170%);
+  border: 1px solid var(--glass-edge);
+  box-shadow:
+    inset 0 1px 0 var(--glass-edge),
+    var(--glass-shadow);
+}
+
+@utility blend-facebook {
+  background: linear-gradient(135deg, var(--fb-1), var(--fb-2));
+}
+@utility blend-instagram {
+  background: linear-gradient(45deg, #feda75 0%, var(--ig-1) 25%, var(--ig-2) 55%, var(--ig-3) 80%, #4f5bd5 100%);
+}
+@utility blend-whatsapp {
+  background: linear-gradient(135deg, var(--wa-1), var(--wa-2));
+}
+/* All three channels in one sweep, used for the active nav item and primary actions */
+@utility blend-meta {
+  background: linear-gradient(110deg, var(--fb-1), var(--ig-3) 45%, var(--ig-2) 70%, var(--ig-1));
 }
