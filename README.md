@@ -182,17 +182,36 @@ See [`.env.example`](.env.example) for the full list with comments. The main one
 | `META_WEBHOOK_VERIFY_TOKEN` | Must match the token set in the Meta webhook config |
 | `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_ACCESS_TOKEN` | WhatsApp Cloud API |
 
-## Meta app setup
+## Meta app setup (connecting real accounts)
 
-1. Create a **Business** app at [developers.facebook.com/apps](https://developers.facebook.com/apps).
-2. Add these products: **Facebook Login for Business**, **Instagram** (Graph API), **WhatsApp**, **Webhooks**.
-3. Permissions you'll need (request Advanced Access through App Review before going live):
-   - Facebook: `pages_show_list`, `pages_manage_posts`, `pages_read_engagement`
-   - Instagram: `instagram_basic`, `instagram_content_publish`
-   - WhatsApp: `whatsapp_business_messaging`, `whatsapp_business_management`
-4. The Instagram account must be a **Business or Creator** account linked to a Facebook Page.
-5. For WhatsApp, the dashboard gives you a test phone number ID and temporary token for development. Use a **System User** token for production.
-6. Webhooks: callback URL `<APP_URL>/api/webhooks/meta`, verify token `META_WEBHOOK_VERIFY_TOKEN`. Subscribe to `page`, `instagram` and `whatsapp_business_account` fields as needed.
+The **Accounts** page connects real Pages, Instagram accounts and WhatsApp numbers. Only admins can connect or disconnect. Tokens are stored encrypted (`SocialAccount.accessTokenEncrypted`).
+
+### 1. Create the app
+1. At [developers.facebook.com/apps](https://developers.facebook.com/apps), choose **Create app**, then the **Other → Business** type (or the "Manage everything on your Page" and "Connect with customers through WhatsApp" use cases). Connect it to your Business portfolio.
+2. **App settings → Basic:** copy the **App ID** and **App secret** into `.env` as `META_APP_ID` and `META_APP_SECRET`. Set the Privacy Policy URL and app domain (`social.yet-kenya.com`).
+
+### 2. Facebook Login (Pages + Instagram)
+1. Add the **Facebook Login for Business** product.
+2. In its **Settings**, add the redirect URI shown on the Accounts page, e.g. `https://social.yet-kenya.com/api/meta/callback`, under **Valid OAuth Redirect URIs**. It must match exactly, and it must be HTTPS.
+3. Permissions requested: `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `instagram_basic`, `instagram_content_publish`, `business_management`. Optionally create a Login configuration with these and set `META_LOGIN_CONFIG_ID`.
+4. Instagram must be a **professional (Business or Creator) account linked to a Facebook Page**. It's connected through that Page.
+5. Then go to Accounts → **Connect with Facebook**, sign in, and select the Pages to share.
+
+**Development mode:** without App Review, only people with a role on the Meta app (admin, developer or tester) can connect, and only Pages they manage. That's enough to connect your own accounts. To let other businesses connect, submit those permissions for **App Review** (Advanced Access) and complete **Business Verification**.
+
+### 3. WhatsApp
+1. Add the **WhatsApp** product. Under **API Setup**, note the **Phone number ID** and **WhatsApp Business Account ID**. Add and verify your real business number to replace the test number.
+2. For a permanent token, go to **Business settings → System users**, create a system user, assign it the app and the WhatsApp account, and generate a token with `whatsapp_business_messaging` and `whatsapp_business_management`. The temporary token on API Setup expires in 24 hours.
+3. On Accounts, enter the phone number ID and token. The app checks them with Meta before saving. Alternatively, set `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` in `.env` and use "Connect the number from server settings", so the token never goes through a browser.
+
+### 4. Webhooks (optional for now)
+Callback URL `https://social.yet-kenya.com/api/webhooks/meta`, verify token = `META_WEBHOOK_VERIFY_TOKEN` from `.env`. Subscribe to `page`, `instagram` and `whatsapp_business_account` fields as needed.
+
+### How connection works (for developers)
+- `GET /api/meta/connect` (admin): sets a CSRF `state` cookie and redirects to Facebook's OAuth dialog (`src/lib/meta/oauth.ts`).
+- `GET /api/meta/callback`: verifies `state`, exchanges the code for a long-lived user token, lists `/me/accounts` with linked `instagram_business_account`, and upserts one `SocialAccount` per Page and per Instagram account. Page tokens obtained this way don't expire; Instagram uses its Page's token.
+- All Graph calls send `appsecret_proof`, so you can enable **Require App Secret** in the Meta app.
+- Testing without Meta: set `META_GRAPH_BASE_URL` and `META_DIALOG_BASE_URL` to a mock server.
 
 ## Scripts
 
@@ -216,7 +235,7 @@ CI (`.github/workflows/ci.yml`) runs typecheck and build on every push and PR.
 
 Suggested order:
 
-1. **Connect accounts (OAuth).** Add a "Connect with Facebook" flow on `/accounts` using Facebook Login for Business. Exchange for a long-lived user token, list the user's Pages (`/me/accounts`) and their linked IG accounts (`?fields=instagram_business_account`), and save each as a `SocialAccount` with `encrypt(token)`. For WhatsApp, add a form or env-based setup for the phone number ID and system user token.
+1. ~~Connect accounts~~ Done: see [Meta app setup](#meta-app-setup-connecting-real-accounts).
 2. **Finish the composer** on `/create`: add target accounts and a schedule time to the draft (create `PostTarget` rows, then call `schedulePost(post.id, scheduledAt)` from `src/lib/queue.ts`), plus image upload (`MediaAsset` with `source: UPLOADED`, run through the same review).
 3. **Media storage.** Images are stored in Postgres and served from `/api/media/<id>`. Move them to S3, R2 or Cloudinary before real traffic.
 4. **WhatsApp audiences.** Add a contacts/recipients model, template management, and use `sendTemplate` for recipients outside the 24h window.
