@@ -17,6 +17,7 @@
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "user:create": "tsx --env-file-if-exists=.env scripts/create-user.ts",
+    "meta:check": "tsx --env-file-if-exists=.env scripts/check-meta.ts",
     "postinstall": "prisma generate"
   },
   "prisma": {
