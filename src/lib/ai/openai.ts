@@ -59,6 +59,30 @@ export async function generateImage(prompt: string, shape: ImageShape): Promise<
   return Buffer.from(json.data[0].b64_json, "base64");
 }
 
+// Refines an existing image with an instruction ("make the background brighter"), keeping the rest.
+// Docs: https://platform.openai.com/docs/api-reference/images/createEdit
+export async function editImage(
+  image: { data: Uint8Array; mimeType: string },
+  instruction: string,
+  shape: ImageShape,
+): Promise<Buffer> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new OpenAIError("OPENAI_API_KEY is not set", "not_configured");
+  const form = new FormData();
+  form.set("model", imageModel());
+  form.set("image", new Blob([Buffer.from(image.data)], { type: image.mimeType }), `image.${image.mimeType.split("/")[1] ?? "jpg"}`);
+  form.set("prompt", instruction);
+  form.set("size", IMAGE_SIZES[shape]);
+  form.set("n", "1");
+  form.set("quality", process.env.OPENAI_IMAGE_QUALITY ?? "medium");
+  form.set("output_format", "jpeg");
+  form.set("output_compression", "90");
+  const res = await fetch(`${baseUrl()}/images/edits`, { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new OpenAIError(json?.error?.message ?? `OpenAI request failed (${res.status})`, json?.error?.code, res.status);
+  return Buffer.from(json.data[0].b64_json, "base64");
+}
+
 export type ModerationResult = {
   flagged: boolean;
   categories: Record<string, boolean>;

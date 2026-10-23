@@ -9,6 +9,7 @@ import { describeSchedule, formatInZone, toLocalDateTimeInput } from "@/lib/sche
 import { scheduleSpec } from "@/lib/channels";
 import { displayHandle, groupNames, groupOrder, groupPlatforms, handleMatches, profileUrl } from "@/lib/handles";
 import { GroupCard, type ConnectView } from "./group-card";
+import { uploadHint } from "@/lib/policy/rules";
 import { NewGroup } from "./new-group";
 
 export const dynamic = "force-dynamic";
@@ -93,22 +94,34 @@ function connectFor(kind: GroupKind): ConnectView {
 
 export default async function ChannelsPage({ searchParams }: { searchParams: Promise<Params> }) {
   await pageViewer("staff");
-  const [params, session, groups, accounts, adverts] = await Promise.all([
+  const [params, session, groups, accounts] = await Promise.all([
     searchParams,
     auth(),
-    prisma.channelGroup.findMany({ include: { channels: true } }),
+    prisma.channelGroup.findMany({ include: { channels: { include: { advert: true } } } }),
     prisma.socialAccount.findMany({ orderBy: { createdAt: "asc" } }),
-    // Adverts are drafts saved from the Create page
-    prisma.post.findMany({ where: { status: "DRAFT", channelId: null }, orderBy: { createdAt: "desc" }, take: 100 }),
   ]);
+  // Each social container's advert photo (and the prompt it was made from)
+  const mediaIds = groups.flatMap((g) => g.channels.map((c) => c.advert?.mediaUrls[0]?.match(/\/api\/media\/([a-z0-9]+)$/i)?.[1])).filter((x): x is string => !!x);
+  const assets = await prisma.mediaAsset.findMany({
+    where: { id: { in: mediaIds } },
+    select: { id: true, width: true, height: true, blocked: true, prompt: true },
+  });
+  const composerAdvert = (a: (typeof groups)[number]["channels"][number]["advert"]) => {
+    if (!a) return null;
+    const asset = assets.find((x) => a.mediaUrls[0]?.endsWith(`/api/media/${x.id}`));
+    return {
+      id: a.id,
+      title: a.title ?? "",
+      about: a.about ?? "",
+      caption: a.content,
+      listed: !!a.listedAt,
+      prompt: asset?.prompt?.split(" | Refined:")[0] ?? "",
+      media: asset ? { id: asset.id, url: `/api/media/${asset.id}`, width: asset.width, height: asset.height, blocked: asset.blocked } : null,
+    };
+  };
   const admin = isStaff(session?.user?.role);
   const ordered = groupOrder.flatMap((k) => groups.filter((g) => g.kind === k));
   const missing = groupOrder.filter((k) => !groups.some((g) => g.kind === k));
-  const advertViews = adverts.map((a) => ({
-    id: a.id,
-    label: `${a.content.trim().slice(0, 60) || "(image only)"}${a.content.length > 60 ? "…" : ""} · ${day.format(a.createdAt)}`,
-    thumbnail: a.mediaUrls[0] ?? null,
-  }));
   const error = errorNotice(params);
 
   return (
@@ -187,6 +200,8 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
                     whatsappRecipients: c.whatsappRecipients,
                     whatsappTemplate: c.whatsappTemplate,
                     whatsappTemplateLang: c.whatsappTemplateLang,
+                    advert: composerAdvert(c.advert),
+                    uploadHint: uploadHint(c.platform, c.format),
                   },
                 },
               ];
@@ -196,7 +211,6 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
                 key={g.id}
                 group={{ id: g.id, kind: g.kind }}
                 items={items}
-                adverts={advertViews}
                 admin={admin}
                 connect={connectFor(g.kind)}
                 whatsappEnvReady={Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN)}

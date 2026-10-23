@@ -156,3 +156,17 @@ export const restrictedTopicSeverity: Record<Platform, Severity> = {
   // TikTok prohibits promoting drugs, weapons, gambling, tobacco and similar regulated goods
   TIKTOK: "block",
 };
+
+// Plain-language upload requirements for a platform and format (shown before uploading).
+export function uploadHint(platform: Platform, format: PostFormat): string {
+  const name = platformRules[platform].name;
+  const fmt = (list: string[]) => list.map((m) => m.replace("image/", "").toUpperCase()).join(", ");
+  const mb = (b: number) => `${Math.round(b / 1024 / 1024)} MB`;
+  if (format === "STORY" && storyRules[platform]) {
+    const r = storyRules[platform]!;
+    return `${name} stories: ${fmt(r.formats)}, up to ${mb(r.maxBytes)}, tall 9:16 photos work best.`;
+  }
+  const r = platformRules[platform].image;
+  const shape = r.minAspect && r.maxAspect ? `, between 4:5 (tall) and 1.91:1 (wide)` : "";
+  return `${name}: ${fmt(r.formats)}, up to ${mb(r.maxBytes)}${shape}.`;
+}

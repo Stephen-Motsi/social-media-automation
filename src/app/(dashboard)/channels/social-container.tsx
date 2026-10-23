@@ -1,11 +1,11 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import Link from "next/link";
 import type { Frequency, Platform, PostFormat } from "@prisma/client";
 import { platforms } from "@/components/platforms";
 import { formatSupport, type PlatformVerdict } from "@/lib/policy/rules";
 import { saveChannel } from "./actions";
+import { AdvertComposer, type ComposerAdvert } from "./advert-composer";
 
 export type ChannelView = {
   id: string;
@@ -26,8 +26,9 @@ export type ChannelView = {
   whatsappRecipients: string[];
   whatsappTemplate: string | null;
   whatsappTemplateLang: string;
+  advert: ComposerAdvert | null;
+  uploadHint: string;
 };
-export type AdvertView = { id: string; label: string; thumbnail: string | null };
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const FREQUENCIES: { value: Frequency; label: string }[] = [
@@ -69,14 +70,12 @@ function Verdict({ verdict }: { verdict: PlatformVerdict }) {
 }
 
 // The social container: post format, advert and schedule for one platform.
-export function SocialContainer({ channel, adverts, admin }: { channel: ChannelView; adverts: AdvertView[]; admin: boolean }) {
+export function SocialContainer({ channel, admin }: { channel: ChannelView; admin: boolean }) {
   const [state, action, saving] = useActionState(saveChannel, undefined);
   const [format, setFormat] = useState<PostFormat>(channel.format);
   const [frequency, setFrequency] = useState<Frequency>(channel.frequency);
   const [weekdays, setWeekdays] = useState<number[]>(channel.weekdays);
-  const [advertId, setAdvertId] = useState(channel.advertId ?? "");
   const support = formatSupport[channel.platform];
-  const advert = adverts.find((a) => a.id === advertId);
   const result = state;
   const disabled = !admin;
 
@@ -118,36 +117,13 @@ export function SocialContainer({ channel, adverts, admin }: { channel: ChannelV
           ))}
       </fieldset>
 
-      <fieldset disabled={disabled}>
-        <legend className="font-semibold">Advert</legend>
-        <div className="mt-2 flex items-start gap-3">
-          {advert?.thumbnail ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={advert.thumbnail} alt="" className="size-14 shrink-0 rounded-xl object-cover" />
-          ) : (
-            <div className="size-14 shrink-0 rounded-xl border border-dashed border-line" aria-hidden />
-          )}
-          <div className="min-w-0 flex-1">
-            <select name="advertId" value={advertId} onChange={(e) => setAdvertId(e.target.value)} className={field} aria-label="Advert">
-              <option value="">Choose a saved advert…</option>
-              {adverts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.label}
-                </option>
-              ))}
-            </select>
-            <Link href="/create" className="mt-1 inline-block text-xs text-ink-soft underline-offset-2 hover:text-ink hover:underline">
-              Create a new advert
-            </Link>
-            {channel.platform === "X" && (
-              <p className="mt-1 text-xs text-ink-soft">
-                X rejects a post that repeats one you made recently, so a repeating schedule needs a different advert
-                each time.
-              </p>
-            )}
-          </div>
-        </div>
-      </fieldset>
+      <AdvertComposer
+        channelId={channel.id}
+        platform={channel.platform}
+        uploadHint={channel.uploadHint}
+        initial={channel.advert}
+        disabled={disabled}
+      />
 
       <fieldset disabled={disabled}>
         <legend className="font-semibold">Schedule</legend>

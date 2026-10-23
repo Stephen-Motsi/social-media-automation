@@ -6,7 +6,7 @@ import { PlatformBadge, platforms } from "@/components/platforms";
 import { groupNames } from "@/lib/handles";
 import { connectWhatsApp, connectWhatsAppFromEnv, deleteGroup, disconnectAccount, updateGroup, type ActionState } from "./actions";
 import { GroupForm } from "./group-form";
-import { SocialContainer, field, type AdvertView, type ChannelView } from "./social-container";
+import { SocialContainer, field, type ChannelView } from "./social-container";
 
 export type AccountView = {
   id: string;
@@ -204,14 +204,12 @@ function Settings({
 export function GroupCard({
   group,
   items,
-  adverts,
   connect,
   whatsappEnvReady,
   admin,
 }: {
   group: { id: string; kind: GroupKind };
   items: PlatformView[];
-  adverts: AdvertView[];
   connect: ConnectView | null;
   whatsappEnvReady: boolean;
   admin: boolean;
@@ -291,7 +289,7 @@ export function GroupCard({
         <Settings kind={group.kind} items={items} connect={connect} whatsappEnvReady={whatsappEnvReady} admin={admin} />
         <div className="space-y-4">
           {items.map((i) => (
-            <SocialContainer key={i.channel.id} channel={i.channel} adverts={adverts} admin={admin} />
+            <SocialContainer key={i.channel.id} channel={i.channel} admin={admin} />
           ))}
         </div>
       </div>

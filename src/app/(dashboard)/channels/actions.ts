@@ -3,7 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import type { GroupKind, Platform } from "@prisma/client";
-import { requireStaff } from "@/lib/session";
+import { AccessError, requireStaff } from "@/lib/session";
+import { generateAdvertImage, refineAdvertImage, type ImageResult } from "@/lib/advert-images";
+import { publicMediaUrl } from "@/lib/media";
+import { proposeCampaign } from "@/lib/audience";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { GraphApiError } from "@/lib/meta/graph";
@@ -256,6 +259,17 @@ export async function saveChannel(_prev: ActionState, formData: FormData): Promi
   const badNumber = v.whatsappRecipients.find((n) => n.length < 8 || n.length > 15);
   if (badNumber) return { error: `"${badNumber}" doesn't look like a phone number. Use international format, e.g. 254712345678.` };
 
+  // The advert composed in this social container (prompt/upload + title + caption) is saved with it.
+  if (formData.get("advertComposer") === "1") {
+    const saved = await saveComposedAdvert(channel, {
+      title: String(formData.get("advertTitle") ?? ""),
+      about: String(formData.get("advertAbout") ?? ""),
+      caption: String(formData.get("advertCaption") ?? ""),
+      mediaId: optional(formData.get("advertMediaId")) ?? null,
+    }, v.format);
+    v.advertId = saved ?? undefined;
+  }
+
   const runAt = v.runAt ? parseLocalDateTime(v.runAt, channel.timezone) : null;
   const updated = {
     format: v.format,
@@ -279,10 +293,12 @@ export async function saveChannel(_prev: ActionState, formData: FormData): Promi
     const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } })).filter((a) =>
       handleMatches(channel.platform, channel.handle, a),
     ).length;
-    if (!v.advertId) problem = "Choose an advert before turning the schedule on.";
+    const advert = v.advertId ? await prisma.post.findUnique({ where: { id: v.advertId } }) : null;
+    if (!v.advertId) problem = "Create the advert (a photo or a caption) before turning the schedule on.";
+    else if (!advert?.title) problem = "Give the advert a title, so users know what they're subscribing to.";
     else if (accounts === 0) problem = `Connect ${displayHandle(channel.platform, channel.handle) || "an account"} in Settings before turning the schedule on.`;
     else if (channel.platform === "WHATSAPP" && v.whatsappRecipients.length === 0) problem = "Add at least one recipient before turning the schedule on.";
-    else if (verdict?.status === "block") problem = "This advert can't be posted here. Fix the issues below, or choose another advert.";
+    else if (verdict?.status === "block") problem = "This advert can't be posted here yet. Fix the issues below, for example by uploading a different photo or creating a new image.";
     if (problem) enabled = false;
   }
 
@@ -293,25 +309,108 @@ export async function saveChannel(_prev: ActionState, formData: FormData): Promi
   }
 
   await prisma.channel.update({ where: { id: channel.id }, data: { ...updated, enabled, nextRunAt } });
+  // Scheduling it (or posting it) is what makes the advert appear for users to subscribe to.
+  if (enabled && v.advertId) await listForUsers(v.advertId);
   refresh();
 
   // "Post now" saves the form first, then posts what's on screen.
   if (formData.get("intent") === "post") {
-    if (!v.advertId) return { error: "Saved. Choose an advert to post.", verdict };
+    if (!v.advertId) return { error: "Saved. Create the advert (a photo or a caption) first.", verdict };
     if (verdict?.status === "block") return { error: "Saved, but this advert can't be posted here.", verdict };
+    if (!(await prisma.post.findUnique({ where: { id: v.advertId } }))?.title) {
+      return { error: "Saved. Give the advert a title before posting, so users know what they're subscribing to.", verdict };
+    }
+    await listForUsers(v.advertId);
     try {
       await runChannel(channel.id);
     } catch (err) {
       return { error: `Saved, but couldn't post: ${err instanceof Error ? err.message : err}`, verdict };
     }
     refresh();
-    return { ok: true, verdict, message: "Saved and queued. The result shows here and under Posts in a few seconds." };
+    return { ok: true, verdict, message: "Saved and queued, and it's now listed for users to subscribe to. The result shows here and under Posts in a few seconds." };
   }
 
   if (problem) return { error: `Saved, but the schedule is off. ${problem}`, verdict };
   return {
     ok: true,
     verdict,
-    message: enabled && nextRunAt ? `Saved. Next post: ${formatInZone(nextRunAt, channel.timezone)}.` : "Saved. The schedule is off.",
+    message:
+      enabled && nextRunAt
+        ? `Saved. Next post: ${formatInZone(nextRunAt, channel.timezone)}. The advert is listed for users to subscribe to.`
+        : "Saved. The schedule is off.",
   };
+}
+
+// ---- The social container's own advert -----------------------------------------------
+
+type ChannelRow = { id: string; platform: Platform; format: "POST" | "STORY"; advertId: string | null };
+
+// Creates the container's advert, or updates the one it already uses. Returns its ID (null if empty).
+async function saveComposedAdvert(
+  channel: ChannelRow,
+  input: { title: string; about: string; caption: string; mediaId: string | null },
+  format: "POST" | "STORY",
+): Promise<string | null> {
+  const viewer = await requireStaff();
+  const caption = input.caption.trim();
+  const asset = input.mediaId ? await prisma.mediaAsset.findUnique({ where: { id: input.mediaId } }) : null;
+  const usableAsset = asset && !asset.blocked ? asset : null;
+  if (!caption && !usableAsset && !input.title.trim()) return channel.advertId;
+
+  const { verdicts } = await reviewContent({ caption, image: usableAsset, prompt: usableAsset?.prompt ?? undefined }, [channel.platform], {
+    [channel.platform]: format,
+  });
+  const existing = channel.advertId
+    ? await prisma.post.findFirst({ where: { id: channel.advertId, status: "DRAFT", channelId: null } })
+    : null;
+  const data = {
+    title: input.title.trim().slice(0, 120) || null,
+    about: input.about.trim().slice(0, 500) || null,
+    content: caption,
+    mediaUrls: usableAsset ? [publicMediaUrl(usableAsset.id)] : [],
+  };
+  if (existing) {
+    const others = ((existing.checks as PlatformVerdict[] | null) ?? []).filter((c) => c.platform !== channel.platform);
+    await prisma.post.update({
+      where: { id: existing.id },
+      data: {
+        ...data,
+        checks: [...others, ...verdicts],
+        targetPlatforms: existing.targetPlatforms.includes(channel.platform) ? existing.targetPlatforms : [...existing.targetPlatforms, channel.platform],
+      },
+    });
+    return existing.id;
+  }
+  const post = await prisma.post.create({
+    data: { ...data, status: "DRAFT", checks: verdicts, targetPlatforms: [channel.platform], authorId: viewer.id },
+  });
+  return post.id;
+}
+
+async function listForUsers(advertId: string) {
+  const advert = await prisma.post.findUnique({ where: { id: advertId } });
+  if (!advert || advert.listedAt || !advert.title) return;
+  await prisma.post.update({ where: { id: advertId }, data: { listedAt: new Date() } });
+  await proposeCampaign(advertId, "Advert listed").catch(() => null);
+  revalidatePath("/");
+  revalidatePath("/me");
+  revalidatePath("/admin/adverts");
+}
+
+async function channelFor(channelId: string) {
+  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+  if (!channel) throw new AccessError("This container no longer exists.");
+  return channel;
+}
+
+export async function generateForChannel(channelId: string, prompt: string, caption: string): Promise<ImageResult> {
+  const viewer = await requireStaff();
+  const channel = await channelFor(channelId);
+  return generateAdvertImage(viewer.id, prompt, channel.platform, channel.format, caption);
+}
+
+export async function refineForChannel(channelId: string, mediaId: string, instruction: string, caption: string): Promise<ImageResult> {
+  const viewer = await requireStaff();
+  const channel = await channelFor(channelId);
+  return refineAdvertImage(viewer.id, mediaId, instruction, channel.platform, channel.format, caption);
 }

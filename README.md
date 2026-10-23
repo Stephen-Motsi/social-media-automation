@@ -266,11 +266,16 @@ The **Channels** page (`/channels`) is where adverts get posted automatically.
   - **X / TikTok:** the platform's sign-in and consent screen. Signing in as a different account than the handle is refused, naming both. (TikTok needs the `user.info.profile` scope to confirm the username.)
 - **Each social container** (one per platform inside the parent) holds:
   - **Post as:** Post or Story (Facebook, Instagram); Message (WhatsApp; Status isn't available); Post (X, TikTok).
-  - **Advert:** a draft saved from the Create page.
+  - **Advert**, made right here for this platform (`advert-composer.tsx`):
+    - **Create with AI:** describe the photo; it's generated in the shape the platform shows best (tall for stories and TikTok, wide for X, square otherwise; `shapeForChannel` in `src/lib/advert-images.ts`).
+    - **Upload a photo** (second option): the platform's accepted formats and limits are shown first (`uploadHint`); the upload is checked against that platform's rules for the format (e.g. TikTok refuses PNG, Instagram needs JPEG) and the content rules (`POST /api/uploads`, staff only, up to 20 MB).
+    - **Refine:** describe a change ("warmer light, add sliced mango") and the current photo is edited with OpenAI's image edit endpoint rather than regenerated. Instructions are screened like prompts.
+    - **Title, about, caption.** Saved together with the schedule (one **Save**).
+    - **Schedule on** (or **Post now**) lists the advert, so users can subscribe to it on this platform. Listing needs a title and a passing check for this platform and format.
   - **Schedule:** Once (date and time), Daily, Weekly (chosen days) or Monthly (chosen date; shorter months use their last day), at a time in `APP_TIMEZONE` (default `Africa/Nairobi`).
   - **WhatsApp only:** recipients (one per line, international format) and an approved template name and language.
   - **Schedule on**, **Save** and **Post now**. Post now saves the form first.
-- **Turning a schedule on requires** an advert, a connected account matching the handle, WhatsApp recipients where relevant, and a passing check for that platform **and format**. Otherwise it's saved switched off, with the reason.
+- **Turning a schedule on requires** an advert with a title, a connected account matching the handle, WhatsApp recipients where relevant, and a passing check for that platform **and format**. Otherwise it's saved switched off, with the reason.
 - **Each run** copies the advert into a new post targeting the connected accounts that match the handle, and the worker publishes it after re-running the checks. The result (or the platform's error) shows on the social container and under Posts.
 - **The scheduler** is in the worker (`runDueChannels`, every `SCHEDULER_TICK_MS`, default 30s). Each run is claimed atomically, so multiple workers don't double-post. If the worker was down, a missed run posts once, then continues from the next future time. **Nothing posts unless `npm run worker` is running.**
 
