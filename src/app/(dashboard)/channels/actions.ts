@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import type { GroupKind, Platform } from "@prisma/client";
-import { auth } from "@/auth";
+import { requireStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { GraphApiError } from "@/lib/meta/graph";
@@ -27,8 +27,7 @@ import { DEFAULT_TIMEZONE, formatInZone, parseLocalDateTime, parseTime } from "@
 export type ActionState = { ok?: boolean; error?: string; message?: string; verdict?: PlatformVerdict } | undefined;
 
 async function requireAdmin() {
-  const session = await auth();
-  if (session?.user?.role !== "ADMIN") throw new Error("Only admins can change channels.");
+  await requireStaff();
 }
 
 function refresh() {

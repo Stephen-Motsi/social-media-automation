@@ -3,11 +3,12 @@
 import { useActionState } from "react";
 import { login } from "./actions";
 
-export function LoginForm() {
+export function LoginForm({ callbackUrl }: { callbackUrl?: string | null }) {
   const [error, action, pending] = useActionState(login, undefined);
 
   return (
     <form action={action} className="space-y-4">
+      {callbackUrl && <input type="hidden" name="callbackUrl" value={callbackUrl} />}
       <label className="block">
         <span className="text-sm font-medium">Email</span>
         <input

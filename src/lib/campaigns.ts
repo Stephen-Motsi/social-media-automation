@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/db";
 import {
+  CONSENT_TEXT,
+  newManageToken,
+  proposeAll,
   getAudienceTemplate,
   manageUrl,
   MIN_HOURS_BETWEEN_MESSAGES,
@@ -121,6 +124,33 @@ async function replier() {
   };
 }
 
+// Links a confirmed WhatsApp number to a user account. JOIN from the number is itself the opt-in.
+async function linkUserNumber(userId: string, phone: string, reply: (to: string, body: string) => Promise<void>) {
+  const existing = await prisma.subscriber.findUnique({ where: { phone } });
+  if (existing?.userId && existing.userId !== userId) {
+    await reply(phone, "This number is already linked to another account.");
+    return;
+  }
+  const consent = { consentText: CONSENT_TEXT, consentAt: new Date(), confirmedAt: new Date(), userId };
+  const sub = existing
+    ? await prisma.subscriber.update({ where: { id: existing.id }, data: { ...consent, ...(existing.status === "UNSUBSCRIBED" || existing.status === "REJECTED" ? { source: "user_account" } : {}) } })
+    : await prisma.subscriber.create({
+        data: { ...consent, name: (await prisma.user.findUnique({ where: { id: userId } }))?.name ?? "Subscriber", phone, source: "user_account", manageToken: newManageToken() },
+      });
+  await prisma.user.update({ where: { id: userId }, data: { whatsappCode: null, whatsappPending: null } });
+  const status = await evaluateSubscription(sub.id);
+  await prisma.activityLog.create({ data: { userId, action: "WHATSAPP_LINKED", detail: { phone: `+${phone}`, status } } });
+  if (status === "ACTIVE") {
+    await proposeForSubscriber(sub.id).catch(() => null);
+    await proposeAll().catch(() => null);
+    await reply(phone, `Your WhatsApp is linked. Adverts you subscribe to on WhatsApp will arrive here. Reply STOP to stop them.`);
+  } else if (status === "NEEDS_REVIEW") {
+    await reply(phone, "Thanks. We're reviewing your number and will start sending adverts once it's approved.");
+  } else if (status === "REJECTED") {
+    await reply(phone, "Sorry, we can't send adverts to this number.");
+  }
+}
+
 async function handleIncoming(from: string, text: string, reply: (to: string, body: string) => Promise<void>) {
   const phone = from.replace(/\D/g, "");
   if (STOP_WORDS.test(text)) {
@@ -135,6 +165,16 @@ async function handleIncoming(from: string, text: string, reply: (to: string, bo
   const join = JOIN.exec(text);
   if (join) {
     const code = join[1]?.toUpperCase();
+    // A signed-in user linking their number from their dashboard
+    const linking = code ? await prisma.user.findUnique({ where: { whatsappCode: code } }) : null;
+    if (linking) {
+      if (linking.whatsappPending !== phone) {
+        await reply(phone, "That code was for a different number. Enter this number in your dashboard to get its own code.");
+        return;
+      }
+      await linkUserNumber(linking.id, phone, reply);
+      return;
+    }
     const sub = code
       ? await prisma.subscriber.findUnique({ where: { confirmCode: code } })
       : await prisma.subscriber.findFirst({ where: { phone, status: "PENDING", source: "subscribe_page" } });

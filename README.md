@@ -11,7 +11,8 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 
 | Decision | Detail |
 | --- | --- |
-| **Sign-in only, no sign-up (staff)** | There is no registration page for staff. Users are created by an admin with a CLI script (see [Managing users](#managing-users)). The first admin comes from `ADMIN_EMAIL` / `ADMIN_PASSWORD` via the seed. |
+| **Three roles** | **Users** sign in with Google or Facebook (an account is created on first sign-in) and subscribe to adverts. **Admins** run adverts, channels, the audience and users. The **super admin** also promotes and demotes admins (`/admin/roles`). Staff sign in with email and password (no public sign-up; the first super admin comes from `ADMIN_EMAIL` / `ADMIN_PASSWORD` via the seed). See [Accounts, roles and sessions](#accounts-roles-and-sessions). |
+| **Admins define adverts; users subscribe per platform** | An advert has a title, what it's about, topics, target platforms (the channels' real handles), an AI image and a caption. Listed adverts appear on the public home page and users' dashboards; users subscribe to an advert on specific platforms, and that decides what's sent to whom. |
 | **Subscribers are the audience (user side)** | The public home page is `/subscribe` (signed-out visitors to `/` land there). People subscribe to adverts on WhatsApp about topics they choose, with no account or password, or an admin adds them. Adverts are matched to them automatically; **an admin approves every send**. WhatsApp is the only channel that can deliver to an individual; the other platforms only allow public posts (Channels). |
 | **Subscriptions are approved automatically** | Each subscription runs through checks based on WhatsApp's policies (`src/lib/policy/subscriptions.ts`). Passing ones are accepted with no admin action; only flagged ones wait on Approvals. |
 | **Five platforms** | Facebook, Instagram and WhatsApp go through the Meta Graph API (`src/lib/meta/`). X (`src/lib/x.ts`) and TikTok (`src/lib/tiktok.ts`) have their own OAuth and posting clients. Adding a platform means a new `Platform` enum value, a client, rules in `rules.ts`, and a connect route. |
@@ -26,7 +27,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 ## Tech stack
 
 - **Next.js 15** (App Router, TypeScript, Server Actions) + **Tailwind CSS 4**
-- **Auth.js (NextAuth v5)** with email/password credentials, JWT sessions
+- **Auth.js (NextAuth v5)**: Google and Facebook for users, email/password for staff; signed cookies backed by a database session record checked on every request
 - **PostgreSQL** + **Prisma** ORM
 - **Redis** + **BullMQ** for scheduled publishing jobs
 - **Meta Graph API** (Facebook Pages API, Instagram Content Publishing API, WhatsApp Cloud API)
@@ -42,15 +43,18 @@ prisma/
   migrations/             SQL migrations (commit new ones)
   seed.ts                 Creates the first admin user
 scripts/
-  create-user.ts          Admin CLI to add users (replaces sign-up)
+  create-user.ts          Create a password account (--admin / --super for staff)
+  dev/mock-oauth.mjs      Stand-in Google/Facebook-style login provider for testing
   set-env.sh              Save values into .env without showing them (e.g. app secrets)
   check-meta.ts           `npm run meta:check`: verify Meta settings with Meta
 src/
-  auth.ts / auth.config.ts  Auth.js setup (credentials provider)
-  middleware.ts           Protects every page except /login, /api/auth, /api/webhooks
+  auth.ts / auth.config.ts  Auth.js: providers, database-backed session checks, sign-in records
+  middleware.ts           Sends signed-out people to /login (except public pages); roles are checked on the server
   app/
-    login/                Sign-in page + server action
-    (dashboard)/          Signed-in area: Overview, Create, Channels, Posts
+    page.tsx              PUBLIC home page: listed adverts and sign-in
+    login/                Sign-in: Google/Facebook for users, email + password for staff
+    me/                   USER dashboard: subscribe per advert/platform, WhatsApp link, feed, sessions
+    (dashboard)/          Staff area: admin/ (overview, adverts, users, roles), Create, Channels, Audience, Approvals, Posts
       create/             AI image + caption composer with per-platform checks (saves adverts as drafts)
       channels/           Meta / X / TikTok containers: settings (connect/disconnect) + social containers
       audience/           Subscribers, topics, WhatsApp template, subscribe link
@@ -62,6 +66,8 @@ src/
     api/meta|x|tiktok/    OAuth "connect" + "callback" routes per platform
   lib/
     db.ts                 Prisma client
+    session.ts            pageViewer / requireStaff / requireSuperAdmin, activity log
+    adverts.ts            Listing adverts, their platforms/handles, posting an advert to its platforms
     crypto.ts             Token encryption
     queue.ts              BullMQ queue + schedulePost()
     schedule.ts           Next-run calculation (once/daily/weekly/monthly, timezone-aware)
@@ -165,6 +171,38 @@ Set `OPENAI_API_KEY` in `.env`. GPT image models require a [verified OpenAI orga
 
 For local testing without a key, point `OPENAI_BASE_URL` at a mock server that implements `POST /images/generations` and `POST /moderations`.
 
+## Accounts, roles and sessions
+
+| Role | Signs in with | Lands on | Can |
+| --- | --- | --- | --- |
+| User | Google or Facebook | `/me` | Browse listed adverts, subscribe per platform, link and confirm a WhatsApp number, see what was sent/posted, manage their sessions |
+| Admin | Email + password, or a user promoted by the super admin (keeps their social sign-in) | `/admin` | Everything on the admin side, plus **Users** (`/admin/users`): each user's sign-in methods, sessions, subscriptions and activity, and "Sign out everywhere" |
+| Super admin | Email + password | `/admin` | Everything, plus **Roles** (`/admin/roles`): promote users to admin and demote admins. Can't change their own role |
+
+The public home page (`/`) lists the adverts and links to sign-in; `/subscribe` remains for people who want offers by topic on WhatsApp without an account.
+
+**How sessions are secured** (`src/auth.ts`, `src/lib/session.ts`):
+- Every sign-in creates a **`UserSession`** row (provider, IP, browser, created, last seen, expiry 30 days) and an **`ActivityLog`** `SIGN_IN` entry. The signed, encrypted cookie only carries that session's ID.
+- **Every server-side read of the session checks the database**: the session must exist, be unrevoked and unexpired, and the user not disabled. `lastSeenAt` is updated as they use the site (at most once a minute). The **role is read fresh each time**, so promotions and demotions apply on the person's next click, without signing in again.
+- **Access is decided on the server.** Middleware only separates signed-in from signed-out people. Every staff page calls `pageViewer("staff")` (or `"super"`), and every staff action calls `requireStaff()` / `requireSuperAdmin()`. User actions (`src/app/me/actions.ts`) only touch rows belonging to the signed-in user's ID from the checked session, never IDs sent by the browser.
+- Users can **sign out other devices** from `/me`; admins can sign a user out everywhere. A revoked device lands on "Your session ended" at its next request. Tampered cookies are rejected.
+- **No account takeover by email:** a social sign-in whose email matches a staff (password) account is refused ("sign in with your password"). Social accounts are linked by provider and provider account ID (`Account`).
+- After sign-in, return paths are limited to this site (no open redirects).
+
+**Setup:** add `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` (Google Cloud → OAuth client, redirect URI `https://social.yet-kenya.com/api/auth/callback/google`) and/or `AUTH_FACEBOOK_ID` / `AUTH_FACEBOOK_SECRET` (your Meta app → Facebook Login, redirect URI `https://social.yet-kenya.com/api/auth/callback/facebook`, permissions `email`, `public_profile`). The buttons appear when the keys are set.
+
+**Testing social login without real keys:** run `node scripts/dev/mock-oauth.mjs` and set `MOCK_OAUTH_URL="http://localhost:4040"` in `.env` (development only; ignored in production). A "Continue with Test login" button appears, with a consent screen for test identities (including one using the staff email, which must be refused). It exercises the same flow as Google/Facebook: state, PKCE, token exchange, userinfo, account creation and session records.
+
+## Adverts and what users receive
+
+1. **Admin defines the advert** on **Create**: title, what it's about (shown to users), topics (for topic subscribers), target platforms (only platforms with a container and handle on Channels), AI image, caption. Saving runs every platform check and goes to **Adverts** (`/admin/adverts`).
+2. **List** it (optionally "List & post now"). Listed adverts appear on `/` and in users' dashboards with the real handles they're on.
+3. **Users subscribe per platform** on `/me` (`AdvertSubscription`). WhatsApp requires a linked, confirmed number: the user enters it, then sends `JOIN <code>` from that phone (a code sent from another number links nothing). The same automatic approval checks as other subscribers apply.
+4. **What's sent to whom:**
+   - **WhatsApp:** users subscribed to that advert on WhatsApp (plus topic subscribers) are matched automatically, and the send waits on **Approvals**. After approval it goes to their own numbers.
+   - **Facebook, Instagram, X, TikTok** (which don't allow messaging individuals): the advert is posted on the business's handle ("List & post now", "Post to platforms now", or a Channels schedule). Subscribers see it in their feed with a link.
+5. Each user's **"What you've received"** feed shows their WhatsApp deliveries and the posts of the adverts they subscribed to on each platform.
+
 ## Audience, subscribers and approvals
 
 **The user side.** `/subscribe` is the public home page (signed-out visitors to `/` are sent there; staff sign in at `/login`).
@@ -262,11 +300,12 @@ npm run worker                  # second terminal
 
 ## Managing users
 
-There is no sign-up. To add someone:
+Users create their own accounts by signing in with Google or Facebook. Staff are promoted by the super admin on `/admin/roles`, or created with a password from the command line:
 
 ```bash
 npm run user:create -- jane@company.com 'a-strong-password' "Jane Doe"
 npm run user:create -- ops@company.com 'another-password' "Ops" --admin
+npm run user:create -- owner@company.com 'a-third-password' "Owner" --super
 ```
 
 A future improvement is an admin-only "Users" page in the dashboard that does the same thing.

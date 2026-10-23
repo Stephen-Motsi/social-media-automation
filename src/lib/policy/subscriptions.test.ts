@@ -22,6 +22,7 @@ const base: Subscriber = {
   consentIp: null,
   source: "subscribe_page",
   addedById: null,
+  userId: null,
   confirmCode: "ABC234",
   confirmedAt: null,
   checks: null,

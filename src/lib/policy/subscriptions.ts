@@ -43,7 +43,7 @@ function countryOf(phone: string) {
 
 export async function runSubscriptionChecks(sub: Subscriber): Promise<SubscriptionCheck[]> {
   const checks: SubscriptionCheck[] = [];
-  const selfSignup = sub.source === "subscribe_page";
+  const selfSignup = sub.source === "subscribe_page" || sub.source === "user_account";
 
   checks.push(
     sub.consentText && sub.consentAt

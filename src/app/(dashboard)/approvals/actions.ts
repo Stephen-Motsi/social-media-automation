@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { auth } from "@/auth";
+import { requireStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { getAudienceTemplate } from "@/lib/audience";
 import { handleMatches } from "@/lib/handles";
@@ -10,9 +10,7 @@ import { queueCampaign } from "@/lib/queue";
 export type ApprovalState = { ok?: boolean; error?: string; message?: string } | undefined;
 
 async function requireAdmin() {
-  const session = await auth();
-  if (session?.user?.role !== "ADMIN" || !session.user.id) throw new Error("Only admins can approve adverts.");
-  return session.user.id;
+  return (await requireStaff()).id;
 }
 
 const refresh = () => {

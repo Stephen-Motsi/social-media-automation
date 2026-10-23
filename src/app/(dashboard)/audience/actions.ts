@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { auth } from "@/auth";
+import { requireStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { CONSENT_METHODS, newManageToken, normalizeLocation, normalizePhone, proposeForSubscriber } from "@/lib/audience";
 import { evaluateSubscription } from "@/lib/policy/subscriptions";
@@ -9,9 +9,8 @@ import { evaluateSubscription } from "@/lib/policy/subscriptions";
 export type AudienceState = { ok?: boolean; error?: string; message?: string } | undefined;
 
 async function requireAdmin() {
-  const session = await auth();
-  if (session?.user?.role !== "ADMIN" || !session.user.id) throw new Error("Only admins can change the audience.");
-  return { id: session.user.id, email: session.user.email ?? "admin" };
+  const v = await requireStaff();
+  return { id: v.id, email: v.email };
 }
 
 const refresh = () => {

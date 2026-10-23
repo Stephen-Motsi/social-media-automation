@@ -1,8 +1,10 @@
+import { isStaff, pageViewer } from "@/lib/session";
 import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export default async function PostsPage() {
+  await pageViewer("staff");
   const posts = await prisma.post.findMany({
     orderBy: { createdAt: "desc" },
     include: { targets: { include: { account: true } } },

@@ -45,6 +45,7 @@ export async function runChannel(channelId: string): Promise<string> {
       scheduledAt: new Date(),
       authorId: channel.advert.authorId,
       channelId: channel.id,
+      sourceAdvertId: channel.advert.id,
       targets: { create: targets },
     },
   });

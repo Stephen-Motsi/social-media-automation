@@ -7,9 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// USER: signs in with Google/Facebook and subscribes to adverts.
+// ADMIN: runs adverts, channels, audience and users. SUPER_ADMIN: also promotes and demotes admins.
 enum Role {
+  USER
   ADMIN
-  MEMBER
+  SUPER_ADMIN
 }
 
 enum Platform {
@@ -61,13 +64,26 @@ enum TargetStatus {
 
 // Users are created by an admin (seed script or `npm run user:create`). No self sign-up.
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String    @id @default(cuid())
+  email        String    @unique
   name         String?
-  passwordHash String
-  role         Role     @default(MEMBER)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  image        String?
+  // Staff sign in with a password; users sign in with Google/Facebook (no password)
+  passwordHash String?
+  role         Role      @default(USER)
+  disabledAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  accounts        Account[]
+  sessions        UserSession[]
+  activity        ActivityLog[]
+  subscriptions   AdvertSubscription[]
+  // The user's WhatsApp number record (for adverts they subscribe to on WhatsApp)
+  subscriber      Subscriber?
+  // Linking a WhatsApp number: it's only linked when "JOIN <code>" arrives from that number
+  whatsappPending String?
+  whatsappCode    String?              @unique
 
   posts Post[]
   media MediaAsset[]
@@ -123,6 +139,18 @@ model Post {
   interests       Interest[]
   targetLocations String[]
   campaigns       Campaign[]
+
+  // Advert details set by the admin; listed adverts are shown to users, who subscribe to them
+  title           String?
+  about           String?
+  targetPlatforms Platform[]
+  listedAt        DateTime?
+  subscriptions   AdvertSubscription[]
+
+  // Posts made from this advert on social platforms (shown in subscribers' feeds)
+  sourceAdvertId String?
+  sourceAdvert   Post?   @relation("AdvertPosts", fields: [sourceAdvertId], references: [id], onDelete: SetNull)
+  advertPosts    Post[]  @relation("AdvertPosts")
 
   targets PostTarget[]
 }
@@ -278,6 +306,10 @@ model Subscriber {
   status    SubscriberStatus @default(PENDING)
   interests Interest[]
 
+  // Set when a signed-in user added their WhatsApp number from their dashboard
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
   // Opt-in record (WhatsApp requires businesses to have it before messaging)
   consentText String
   consentAt   DateTime
@@ -353,4 +385,63 @@ model Setting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+// ---- Accounts, sessions and activity -------------------------------------------------
+
+// A social login linked to a user (Google, Facebook)
+model Account {
+  id                String   @id @default(cuid())
+  provider          String
+  providerAccountId String
+  createdAt         DateTime @default(now())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+// Every sign-in creates one; the session cookie carries its ID and is checked against it on each request.
+model UserSession {
+  id         String    @id @default(cuid())
+  provider   String
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  // e.g. SIGN_IN, SIGN_OUT, SUBSCRIBE, UNSUBSCRIBE, ROLE_CHANGE, SESSIONS_REVOKED, WHATSAPP_ADDED
+  action    String
+  detail    Json?
+  ip        String?
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Who did it, when it isn't the user themselves (e.g. a super admin changing a role)
+  actorId   String?
+
+  @@index([userId, createdAt])
+}
+
+// A user's subscription to one advert on one platform handle
+model AdvertSubscription {
+  id        String   @id @default(cuid())
+  platform  Platform
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  advertId  String
+  advert    Post     @relation(fields: [advertId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, advertId, platform])
+  @@index([advertId, platform])
 }

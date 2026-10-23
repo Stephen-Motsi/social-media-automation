@@ -1,3 +1,4 @@
+import { isStaff, pageViewer } from "@/lib/session";
 import Link from "next/link";
 import type { Platform } from "@prisma/client";
 import { auth } from "@/auth";
@@ -22,6 +23,7 @@ function plural(n: number, [one, many]: [string, string]) {
 
 export default async function OverviewPage() {
   const session = await auth();
+  await pageViewer("staff");
   const now = new Date();
   const weekAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 

@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import type { Platform } from "@prisma/client";
 import type { ImageShape } from "@/lib/ai/openai";
 import type { Issue, PlatformVerdict } from "@/lib/policy/rules";
 import { PlatformBadge, platforms } from "@/components/platforms";
@@ -22,7 +23,14 @@ const statusCopy: Record<PlatformVerdict["status"], { label: string; className: 
 const field =
   "w-full rounded-2xl border border-line bg-white/50 px-4 py-3 placeholder:text-ink-soft/70 dark:bg-white/5";
 
-export function Studio({ interests }: { interests: { id: string; name: string }[] }) {
+export function Studio({
+  interests,
+  channelPlatforms,
+}: {
+  interests: { id: string; name: string }[];
+  // Platforms that have a social container (with handle) the advert can target
+  channelPlatforms: { platform: Platform; handle: string }[];
+}) {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
   const [shape, setShape] = useState<ImageShape>("square");
@@ -33,6 +41,9 @@ export function Studio({ interests }: { interests: { id: string; name: string }[
   const [error, setError] = useState<{ message: string; issues?: Issue[] } | null>(null);
   const [busy, setBusy] = useState<"generate" | "check" | "save" | null>(null);
   const [topics, setTopics] = useState<string[]>([]);
+  const [title, setTitle] = useState("");
+  const [about, setAbout] = useState("");
+  const [targetPlatforms, setTargetPlatforms] = useState<Platform[]>(channelPlatforms.map((c) => c.platform));
   const [towns, setTowns] = useState("");
   const [, startTransition] = useTransition();
 
@@ -77,6 +88,9 @@ export function Studio({ interests }: { interests: { id: string; name: string }[
         mediaId: media?.id,
         caption,
         interestIds: topics,
+        title,
+        about,
+        targetPlatforms,
         locations: towns.split(","),
       });
       if (!res.ok) {
@@ -85,12 +99,46 @@ export function Studio({ interests }: { interests: { id: string; name: string }[
       }
       setVerdicts(res.verdicts);
       // Adverts for subscribers go to Approvals; others are used in Channels.
-      router.push(res.proposed ? "/approvals" : "/channels");
+      router.push("/admin/adverts");
     });
 
   return (
     <div className="mt-8 grid gap-6 lg:grid-cols-2">
       <section className="glass space-y-6 rounded-[28px] p-6">
+        <div className="space-y-3">
+          <label className="block">
+            <span className="font-medium">Advert title</span>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Weekend phone sale" maxLength={120} className={`mt-2 ${field}`} />
+          </label>
+          <label className="block">
+            <span className="font-medium">What it&rsquo;s about</span>
+            <span className="block text-sm text-ink-soft">Shown to users when they choose adverts to subscribe to.</span>
+            <textarea value={about} onChange={(e) => setAbout(e.target.value)} rows={2} maxLength={500} placeholder="20% off smartphones at our Westlands shop, Friday to Sunday." className={`mt-2 ${field}`} />
+          </label>
+          <fieldset>
+            <legend className="font-medium">Target platforms</legend>
+            {channelPlatforms.length === 0 ? (
+              <p className="mt-1 text-sm text-ink-soft">Add containers on Channels first; each platform needs a handle.</p>
+            ) : (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {channelPlatforms.map((c) => (
+                  <label key={c.platform} className="cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={targetPlatforms.includes(c.platform)}
+                      onChange={(e) => setTargetPlatforms((t) => (e.target.checked ? [...t, c.platform] : t.filter((x) => x !== c.platform)))}
+                      className="peer sr-only"
+                    />
+                    <span className="inline-block rounded-full border border-line px-3 py-1.5 text-sm peer-checked:border-transparent peer-checked:bg-ink peer-checked:text-white peer-focus-visible:outline-2 peer-focus-visible:outline-[var(--ig-3)] dark:peer-checked:bg-white dark:peer-checked:text-ink">
+                      {c.handle}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </fieldset>
+        </div>
+
         <div>
           <label htmlFor="prompt" className="font-medium">
             Image

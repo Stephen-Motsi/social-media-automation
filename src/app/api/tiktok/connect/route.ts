@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { isStaff } from "@/lib/session";
 import { TIKTOK_STATE_COOKIE, tiktokAuthorizeUrl, tiktokConfigured } from "@/lib/tiktok";
 import { channelsUrl, randomToken, setOAuthCookie } from "@/lib/oauth-state";
 
 // Starts "Add account" for the TikTok container. Admin only.
 export async function GET(req: Request) {
   const session = await auth();
-  if (session?.user?.role !== "ADMIN") return NextResponse.redirect(channelsUrl(req, { error: "admin_only" }));
+  if (!isStaff(session?.user?.role)) return NextResponse.redirect(channelsUrl(req, { error: "admin_only" }));
   if (!tiktokConfigured()) return NextResponse.redirect(channelsUrl(req, { error: "tiktok_not_configured" }));
 
   const state = randomToken();

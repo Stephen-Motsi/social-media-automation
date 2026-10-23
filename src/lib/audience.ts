@@ -66,19 +66,30 @@ const REACHED: Prisma.DeliveryWhereInput = {
 // who haven't already received or been queued for it.
 export async function matchSubscribers(advertId: string) {
   const advert = await prisma.post.findUnique({ where: { id: advertId }, include: { interests: true } });
-  if (!advert || advert.interests.length === 0) return [];
-  const subscribers = await prisma.subscriber.findMany({
-    where: {
-      status: "ACTIVE",
-      interests: { some: { id: { in: advert.interests.map((i) => i.id) } } },
-      deliveries: { none: { ...REACHED, campaign: { advertId } } },
-    },
-    include: { interests: true },
-  });
-  // Location matching is case-insensitive; adverts without locations go everywhere.
-  return advert.targetLocations.length
-    ? subscribers.filter((s) => s.location && advert.targetLocations.some((l) => sameLocation(l, s.location!)))
-    : subscribers;
+  if (!advert) return [];
+  // An advert targeting specific platforms without WhatsApp isn't sent on WhatsApp.
+  if (advert.targetPlatforms.length && !advert.targetPlatforms.includes("WHATSAPP")) return [];
+  const notReached = { deliveries: { none: { ...REACHED, campaign: { advertId } } } };
+  // 1. Signed-in users who subscribed to this advert on WhatsApp (listed adverts only)
+  const bySubscription = advert.listedAt
+    ? await prisma.subscriber.findMany({
+        where: { status: "ACTIVE", ...notReached, user: { subscriptions: { some: { advertId, platform: "WHATSAPP" } } } },
+        include: { interests: true },
+      })
+    : [];
+  // 2. Topic subscribers (subscribe page / admin-added), filtered by the advert's towns
+  const byTopic = advert.interests.length
+    ? (
+        await prisma.subscriber.findMany({
+          where: { status: "ACTIVE", ...notReached, interests: { some: { id: { in: advert.interests.map((i) => i.id) } } } },
+          include: { interests: true },
+        })
+      ).filter(
+        (s) => !advert.targetLocations.length || (s.location && advert.targetLocations.some((l) => sameLocation(l, s.location!))),
+      )
+    : [];
+  const seen = new Set<string>();
+  return [...bySubscription, ...byTopic].filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)));
 }
 
 // Proposes (or tops up) a campaign for an advert. Adverts whose campaign was rejected aren't proposed again.
@@ -125,7 +136,11 @@ export async function proposeForSubscriber(subscriberId: string) {
 // Safety net run by the worker: catches anything missed (e.g. a subscriber whose send was skipped).
 export async function proposeAll() {
   const adverts = await prisma.post.findMany({
-    where: { status: "DRAFT", channelId: null, interests: { some: {} } },
+    where: {
+      status: "DRAFT",
+      channelId: null,
+      OR: [{ interests: { some: {} } }, { listedAt: { not: null }, subscriptions: { some: { platform: "WHATSAPP" } } }],
+    },
     select: { id: true },
   });
   let proposed = 0;

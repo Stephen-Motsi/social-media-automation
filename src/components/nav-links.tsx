@@ -4,21 +4,24 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const nav = [
-  { href: "/", label: "Overview" },
+  { href: "/admin", label: "Overview" },
+  { href: "/admin/adverts", label: "Adverts" },
   { href: "/create", label: "Create" },
   { href: "/channels", label: "Channels" },
   { href: "/audience", label: "Audience" },
   { href: "/approvals", label: "Approvals" },
   { href: "/posts", label: "Posts" },
+  { href: "/admin/users", label: "Users" },
 ];
+const superNav = [{ href: "/admin/roles", label: "Roles" }];
 
-export function NavLinks({ pendingApprovals = 0 }: { pendingApprovals?: number }) {
+export function NavLinks({ pendingApprovals = 0, superAdmin = false }: { pendingApprovals?: number; superAdmin?: boolean }) {
   const pathname = usePathname();
 
   return (
     <nav className="flex min-w-0 gap-1 overflow-x-auto text-sm">
-      {nav.map((item) => {
-        const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+      {[...nav, ...(superAdmin ? superNav : [])].map((item) => {
+        const active = item.href === "/admin" ? pathname === "/admin" : pathname.startsWith(item.href);
         return (
           <Link
             key={item.href}

@@ -1,3 +1,4 @@
+import { isStaff, pageViewer } from "@/lib/session";
 import type { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
@@ -23,6 +24,7 @@ export default async function AudiencePage({
 }: {
   searchParams: Promise<{ q?: string; topic?: string; status?: string }>;
 }) {
+  await pageViewer("staff");
   const { q = "", topic = "", status = "ACTIVE" } = await searchParams;
   const where: Prisma.SubscriberWhereInput = {
     ...(status in STATUSES ? { status: status as keyof typeof STATUSES } : {}),
@@ -53,7 +55,7 @@ export default async function AudiencePage({
     prisma.subscriber.count({ where: { status: "PENDING" } }),
     prisma.subscriber.count({ where: { status: "NEEDS_REVIEW" } }),
   ]);
-  const admin = session?.user?.role === "ADMIN";
+  const admin = isStaff(session?.user?.role);
   const subscribeUrl = `${(process.env.AUTH_URL ?? "").replace(/\/$/, "")}/subscribe`;
   const stats = [
     { label: "Subscribed", value: active },

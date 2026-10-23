@@ -6,5 +6,5 @@ export default NextAuth(authConfig).auth;
 export const config = {
   // Everything except auth endpoints, Meta webhooks, public post images, the public subscribe pages,
   // and static assets requires sign-in.
-  matcher: ["/((?!api/auth|api/webhooks|api/media|subscribe|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

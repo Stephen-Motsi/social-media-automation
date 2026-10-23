@@ -1,3 +1,4 @@
+import { isStaff, pageViewer } from "@/lib/session";
 import type { GroupKind } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
@@ -91,6 +92,7 @@ function connectFor(kind: GroupKind): ConnectView {
 }
 
 export default async function ChannelsPage({ searchParams }: { searchParams: Promise<Params> }) {
+  await pageViewer("staff");
   const [params, session, groups, accounts, adverts] = await Promise.all([
     searchParams,
     auth(),
@@ -99,7 +101,7 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
     // Adverts are drafts saved from the Create page
     prisma.post.findMany({ where: { status: "DRAFT", channelId: null }, orderBy: { createdAt: "desc" }, take: 100 }),
   ]);
-  const admin = session?.user?.role === "ADMIN";
+  const admin = isStaff(session?.user?.role);
   const ordered = groupOrder.flatMap((k) => groups.filter((g) => g.kind === k));
   const missing = groupOrder.filter((k) => !groups.some((g) => g.kind === k));
   const advertViews = adverts.map((a) => ({

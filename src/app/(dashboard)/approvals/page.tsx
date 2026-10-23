@@ -1,3 +1,4 @@
+import { isStaff, pageViewer } from "@/lib/session";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import type { PlatformVerdict } from "@/lib/policy/rules";
@@ -36,6 +37,7 @@ function tally<T extends string>(values: T[]) {
 }
 
 export default async function ApprovalsPage() {
+  await pageViewer("staff");
   const [session, pending, history, toReview, waiting] = await Promise.all([
     auth(),
     prisma.campaign.findMany({
@@ -55,7 +57,7 @@ export default async function ApprovalsPage() {
     prisma.subscriber.findMany({ where: { status: "NEEDS_REVIEW" }, orderBy: { createdAt: "asc" }, include: { interests: true, addedBy: true } }),
     prisma.subscriber.count({ where: { status: "PENDING" } }),
   ]);
-  const admin = session?.user?.role === "ADMIN";
+  const admin = isStaff(session?.user?.role);
 
   return (
     <div className="space-y-8">
@@ -138,8 +140,10 @@ export default async function ApprovalsPage() {
                         {subs.length} <span className="text-base font-normal text-ink-soft">{subs.length === 1 ? "subscriber" : "subscribers"}</span>
                       </p>
                       <p className="mt-1 text-sm text-ink-soft">
-                        Topics: {c.advert.interests.map((i) => i.name).join(", ")}
-                        {c.advert.targetLocations.length ? ` · Towns: ${c.advert.targetLocations.join(", ")}` : " · All towns"}
+                        {c.advert.title && <span className="font-medium text-ink">{c.advert.title} · </span>}
+                        {c.advert.interests.length
+                          ? `Topics: ${c.advert.interests.map((i) => i.name).join(", ")}${c.advert.targetLocations.length ? ` · Towns: ${c.advert.targetLocations.join(", ")}` : " · All towns"}`
+                          : "Users who subscribed to this advert on WhatsApp"}
                       </p>
                     </div>
                     <dl className="grid grid-cols-2 gap-4 text-sm">

@@ -1,7 +1,7 @@
 "use server";
 
 import { z } from "zod";
-import { auth } from "@/auth";
+import { requireStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { generateImage, OpenAIError, IMAGE_SIZES, type ImageShape } from "@/lib/ai/openai";
 import { imageInfo, publicMediaUrl } from "@/lib/media";
@@ -29,9 +29,7 @@ async function reviewTargets(): Promise<{ platforms: Platform[]; formats: Format
 }
 
 async function requireUser() {
-  const session = await auth();
-  if (!session?.user?.id) throw new Error("Not signed in");
-  return session.user.id;
+  return (await requireStaff()).id;
 }
 
 const generateSchema = z.object({
@@ -138,6 +136,9 @@ export async function saveDraftAction(input: {
   caption: string;
   interestIds?: string[];
   locations?: string[];
+  title?: string;
+  about?: string;
+  targetPlatforms?: Platform[];
 }): Promise<ActionResult<{ postId: string; verdicts: PlatformVerdict[]; proposed: boolean }>> {
   const userId = await requireUser();
   const asset = input.mediaId ? await loadOwnAsset(userId, input.mediaId) : null;
@@ -148,7 +149,13 @@ export async function saveDraftAction(input: {
 
   // Never trust the client's last check: review again on save. Adverts for subscribers go out on WhatsApp.
   const targets = await reviewTargets();
-  const platforms = interestIds.length && !targets.platforms.includes("WHATSAPP") ? [...targets.platforms, "WHATSAPP" as const] : targets.platforms;
+  const chosen = (input.targetPlatforms ?? []).filter((p) => platformOrder.includes(p));
+  // Check against the platforms the admin chose for this advert; otherwise every channel's platform.
+  const platforms = chosen.length
+    ? platformOrder.filter((p) => chosen.includes(p))
+    : interestIds.length && !targets.platforms.includes("WHATSAPP")
+      ? [...targets.platforms, "WHATSAPP" as const]
+      : targets.platforms;
   const formats = targets.formats;
   const { verdicts } = await reviewContent(
     { caption: input.caption, image: asset, prompt: asset?.prompt ?? undefined },
@@ -168,6 +175,9 @@ export async function saveDraftAction(input: {
       authorId: userId,
       interests: { connect: interestIds.map((id) => ({ id })) },
       targetLocations: locations,
+      title: input.title?.trim().slice(0, 120) || null,
+      about: input.about?.trim().slice(0, 500) || null,
+      targetPlatforms: platforms.filter((p) => chosen.includes(p)),
     },
   });
   // Automatic: match subscribers now and queue the send for admin approval.

@@ -18,7 +18,7 @@ async function main() {
       email: email.toLowerCase(),
       name: process.env.ADMIN_NAME ?? "Admin",
       passwordHash,
-      role: "ADMIN",
+      role: "SUPER_ADMIN",
     },
   });
   console.log(`Admin user ready: ${user.email}`);

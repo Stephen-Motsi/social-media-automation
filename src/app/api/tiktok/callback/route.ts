@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { isStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { TIKTOK_STATE_COOKIE, tiktokExchangeCode, tiktokGetUser } from "@/lib/tiktok";
@@ -14,7 +15,7 @@ export async function GET(req: NextRequest) {
   };
 
   const session = await auth();
-  if (session?.user?.role !== "ADMIN") return done({ error: "admin_only" });
+  if (!isStaff(session?.user?.role)) return done({ error: "admin_only" });
   if (req.nextUrl.searchParams.get("error")) return done({ error: "cancelled" });
   if (!stateMatches(req, TIKTOK_STATE_COOKIE)) return done({ error: "state_mismatch" });
   const code = req.nextUrl.searchParams.get("code");

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { isStaff } from "@/lib/session";
 import { loginUrl, metaConfigured, STATE_COOKIE } from "@/lib/meta/oauth";
 import { channelsUrl, randomToken, setOAuthCookie } from "@/lib/oauth-state";
 
@@ -7,7 +8,7 @@ import { channelsUrl, randomToken, setOAuthCookie } from "@/lib/oauth-state";
 // container's Facebook Page and Instagram account. Admin only.
 export async function GET(req: Request) {
   const session = await auth();
-  if (session?.user?.role !== "ADMIN") return NextResponse.redirect(channelsUrl(req, { error: "admin_only" }));
+  if (!isStaff(session?.user?.role)) return NextResponse.redirect(channelsUrl(req, { error: "admin_only" }));
   if (!metaConfigured()) return NextResponse.redirect(channelsUrl(req, { error: "meta_not_configured" }));
 
   // CSRF protection: Facebook sends `state` back and we compare it with the cookie.

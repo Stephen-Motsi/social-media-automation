@@ -29,7 +29,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
             <BrandMark />
             <span className="hidden sm:inline">Social Automation</span>
           </span>
-          <NavLinks pendingApprovals={pendingApprovals} />
+          <NavLinks pendingApprovals={pendingApprovals} superAdmin={session?.user?.role === "SUPER_ADMIN"} />
           <form
             className="ml-auto flex shrink-0 items-center gap-3 text-sm"
             action={async () => {
