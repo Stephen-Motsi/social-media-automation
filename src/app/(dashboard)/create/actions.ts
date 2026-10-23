@@ -3,10 +3,11 @@
 import { z } from "zod";
 import { requireStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
-import { generateImage, OpenAIError, IMAGE_SIZES, type ImageShape } from "@/lib/ai/openai";
+import { generateImage, imageModel, OpenAIError, IMAGE_SIZES, type ImageShape } from "@/lib/ai/openai";
 import { imageInfo, publicMediaUrl } from "@/lib/media";
 import { blockedEverywhere, reviewContent, reviewPrompt } from "@/lib/policy/review";
-import { normalizeLocation, proposeCampaign } from "@/lib/audience";
+import { normalizeLocation } from "@/lib/audience";
+import { revalidatePath } from "next/cache";
 import { platformOrder, type Issue, type PlatformVerdict } from "@/lib/policy/rules";
 import type { Formats } from "@/lib/policy/review";
 import type { Platform } from "@prisma/client";
@@ -40,6 +41,7 @@ const generateSchema = z.object({
 export async function generateAction(input: {
   prompt: string;
   shape: ImageShape;
+  targetPlatforms?: Platform[];
 }): Promise<ActionResult<{ media: GeneratedMedia; verdicts: PlatformVerdict[] }>> {
   const userId = await requireUser();
   if (!process.env.OPENAI_API_KEY) return { ok: false, error: NOT_CONFIGURED };
@@ -77,6 +79,9 @@ export async function generateAction(input: {
     if (err instanceof OpenAIError && err.status === 403) {
       return { ok: false, error: "This OpenAI account can't use image generation yet. Verify your organization in the OpenAI dashboard." };
     }
+    if (err instanceof OpenAIError && /does not exist|model_not_found/i.test(`${err.message} ${err.code}`)) {
+      return { ok: false, error: `The image model "${imageModel()}" isn't available on this OpenAI account. Set OPENAI_IMAGE_MODEL in .env to one it offers (e.g. gpt-image-2).` };
+    }
     if (err instanceof OpenAIError && err.code === "moderation_blocked") {
       return { ok: false, error: "The image service declined this prompt under its safety rules. Try rewording it." };
     }
@@ -87,7 +92,7 @@ export async function generateAction(input: {
 
   // 4. Check the generated image against every platform's rules
   const image = { ...info, data: new Uint8Array(bytes), sizeBytes: bytes.byteLength };
-  const { platforms, formats } = await reviewTargets();
+  const { platforms, formats } = await targetsFor(input.targetPlatforms);
   const { verdicts, moderation } = await reviewContent({ caption: "", image, prompt }, platforms, formats);
 
   const asset = await prisma.mediaAsset.create({
@@ -110,19 +115,28 @@ export async function generateAction(input: {
   };
 }
 
-async function loadOwnAsset(userId: string, mediaId: string) {
-  const asset = await prisma.mediaAsset.findFirst({ where: { id: mediaId, createdById: userId } });
+// Any staff member can use any generated image (all images are staff-made).
+async function loadAsset(mediaId: string) {
+  const asset = await prisma.mediaAsset.findUnique({ where: { id: mediaId } });
   if (!asset) throw new Error("Image not found");
   return asset;
+}
+
+// The platforms to check: the ones chosen for this advert, else every channel's platform.
+async function targetsFor(targetPlatforms?: Platform[]): Promise<{ platforms: Platform[]; formats: Formats }> {
+  const targets = await reviewTargets();
+  const chosen = (targetPlatforms ?? []).filter((p) => platformOrder.includes(p));
+  return chosen.length ? { platforms: platformOrder.filter((p) => chosen.includes(p)), formats: targets.formats } : targets;
 }
 
 export async function checkAction(input: {
   mediaId?: string;
   caption: string;
+  targetPlatforms?: Platform[];
 }): Promise<ActionResult<{ verdicts: PlatformVerdict[] }>> {
-  const userId = await requireUser();
-  const asset = input.mediaId ? await loadOwnAsset(userId, input.mediaId) : null;
-  const { platforms, formats } = await reviewTargets();
+  await requireUser();
+  const asset = input.mediaId ? await loadAsset(input.mediaId) : null;
+  const { platforms, formats } = await targetsFor(input.targetPlatforms);
   const { verdicts } = await reviewContent(
     { caption: input.caption, image: asset, prompt: asset?.prompt ?? undefined },
     platforms,
@@ -131,56 +145,52 @@ export async function checkAction(input: {
   return { ok: true, verdicts };
 }
 
+// Creates a draft, or updates one when `id` is given. Drafts save even when a check fails;
+// publishing (listing) is what requires the checks to pass. Drafts are never sent to anyone.
 export async function saveDraftAction(input: {
-  mediaId?: string;
+  id?: string;
+  mediaId?: string | null;
   caption: string;
   interestIds?: string[];
   locations?: string[];
   title?: string;
   about?: string;
   targetPlatforms?: Platform[];
-}): Promise<ActionResult<{ postId: string; verdicts: PlatformVerdict[]; proposed: boolean }>> {
+}): Promise<ActionResult<{ postId: string; verdicts: PlatformVerdict[] }>> {
   const userId = await requireUser();
-  const asset = input.mediaId ? await loadOwnAsset(userId, input.mediaId) : null;
+  if (input.id) {
+    const existing = await prisma.post.findFirst({ where: { id: input.id, status: "DRAFT", channelId: null } });
+    if (!existing) return { ok: false, error: "This draft no longer exists." };
+  }
+  const asset = input.mediaId ? await loadAsset(input.mediaId) : null;
   const interestIds = input.interestIds?.length
     ? (await prisma.interest.findMany({ where: { id: { in: input.interestIds } }, select: { id: true } })).map((i) => i.id)
     : [];
   const locations = [...new Set((input.locations ?? []).map((l) => normalizeLocation(l)).filter((l): l is string => Boolean(l)))].slice(0, 20);
+  const chosen = platformOrder.filter((p) => (input.targetPlatforms ?? []).includes(p));
 
-  // Never trust the client's last check: review again on save. Adverts for subscribers go out on WhatsApp.
-  const targets = await reviewTargets();
-  const chosen = (input.targetPlatforms ?? []).filter((p) => platformOrder.includes(p));
-  // Check against the platforms the admin chose for this advert; otherwise every channel's platform.
-  const platforms = chosen.length
-    ? platformOrder.filter((p) => chosen.includes(p))
-    : interestIds.length && !targets.platforms.includes("WHATSAPP")
-      ? [...targets.platforms, "WHATSAPP" as const]
-      : targets.platforms;
-  const formats = targets.formats;
+  // Never trust the client's last check: review again on save and store the result.
+  const { platforms, formats } = await targetsFor(chosen);
   const { verdicts } = await reviewContent(
     { caption: input.caption, image: asset, prompt: asset?.prompt ?? undefined },
     platforms,
     formats,
   );
-  if (verdicts.every((v) => v.status === "block")) {
-    return { ok: false, error: "This post can't go on any platform yet. Fix the issues below and try again." };
-  }
-
-  const post = await prisma.post.create({
-    data: {
-      content: input.caption.trim(),
-      mediaUrls: asset ? [publicMediaUrl(asset.id)] : [],
-      status: "DRAFT",
-      checks: verdicts,
-      authorId: userId,
-      interests: { connect: interestIds.map((id) => ({ id })) },
-      targetLocations: locations,
-      title: input.title?.trim().slice(0, 120) || null,
-      about: input.about?.trim().slice(0, 500) || null,
-      targetPlatforms: platforms.filter((p) => chosen.includes(p)),
-    },
-  });
-  // Automatic: match subscribers now and queue the send for admin approval.
-  const proposed = interestIds.length ? Boolean(await proposeCampaign(post.id, "New advert").catch(() => null)) : false;
-  return { ok: true, postId: post.id, verdicts, proposed };
+  const data = {
+    content: input.caption.trim(),
+    mediaUrls: asset ? [publicMediaUrl(asset.id)] : [],
+    checks: verdicts,
+    targetLocations: locations,
+    title: input.title?.trim().slice(0, 120) || null,
+    about: input.about?.trim().slice(0, 500) || null,
+    targetPlatforms: chosen,
+  };
+  const post = input.id
+    ? await prisma.post.update({ where: { id: input.id }, data: { ...data, interests: { set: interestIds.map((id) => ({ id })) } } })
+    : await prisma.post.create({
+        data: { ...data, status: "DRAFT", authorId: userId, interests: { connect: interestIds.map((id) => ({ id })) } },
+      });
+  revalidatePath("/admin/adverts");
+  revalidatePath("/");
+  return { ok: true, postId: post.id, verdicts };
 }

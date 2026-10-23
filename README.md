@@ -139,7 +139,7 @@ The **Create** page (`/create`) generates an image from a description with OpenA
 
 1. **Daily limit.** Each user can generate `IMAGE_DAILY_LIMIT` images per 24 hours (default 20) to control cost.
 2. **Prompt screening.** The prompt goes through OpenAI moderation first. If any platform would block it, nothing is generated. This uses the strictest rule across platforms.
-3. **Generation.** Uses `OPENAI_IMAGE_MODEL` (default `gpt-image-1`) with `moderation: "auto"` (OpenAI's stricter filter; don't lower it) and JPEG output, because Instagram only accepts JPEG. Refusals from OpenAI are shown to the user.
+3. **Generation.** Uses `OPENAI_IMAGE_MODEL` (default `gpt-image-2`; `gpt-image-1` was retired for generation) with `moderation: "auto"` (OpenAI's stricter filter; don't lower it) and JPEG output, because Instagram only accepts JPEG. Refusals from OpenAI are shown to the user.
 4. **Image + caption review**, per platform (`src/lib/policy/review.ts`):
    - **Technical:** file format, file size, aspect ratio, minimum width, caption length, hashtag and @mention counts, and required image/text.
    - **Content:** OpenAI moderation on the image and caption together. Each category is mapped to block or warn per platform in `moderationPolicy`. Scores near the limit become warnings.
@@ -195,13 +195,18 @@ The public home page (`/`) lists the adverts and links to sign-in; `/subscribe` 
 
 ## Adverts and what users receive
 
-1. **Admin defines the advert** on **Create**: title, what it's about (shown to users), topics (for topic subscribers), target platforms (only platforms with a container and handle on Channels), AI image, caption. Saving runs every platform check and goes to **Adverts** (`/admin/adverts`).
-2. **List** it (optionally "List & post now"). Listed adverts appear on `/` and in users' dashboards with the real handles they're on.
-3. **Users subscribe per platform** on `/me` (`AdvertSubscription`). WhatsApp requires a linked, confirmed number: the user enters it, then sends `JOIN <code>` from that phone (a code sent from another number links nothing). The same automatic approval checks as other subscribers apply.
-4. **What's sent to whom:**
+1. **Admin defines the advert** on **Create** (`/create`), in three steps:
+   - **Details:** title, what it's about (shown to users), target platforms (only platforms with a container and handle on Channels), and optional topics/towns for topic subscribers.
+   - **Photo:** **Create photo for this advert** builds the image prompt from the details (`src/lib/advert-prompt.ts`: subject, category, a realistic bright style, and no words/prices/logos in the image, since AI images misspell text) and generates it. The prompt and shape can be adjusted and the photo regenerated. Square by default (works everywhere); portrait when every target is a story.
+   - **Caption.**
+2. **Save as draft** at any time. Drafts save even when a check fails, are **never sent to anyone**, and reopen from **Adverts → Edit draft** (`/create?id=…`) with everything restored.
+3. **Preview** shows exactly what users will see: the card on the website, and each target platform's post (Facebook Page post, Instagram post with the "… more" cut, the WhatsApp template message with a sample name, X with its 280 counter, TikTok, stories full-screen), each with its platform check.
+4. **Publish** from the preview: lists it on `/` and users' dashboards, and optionally posts it on the social platforms now. Publishing requires a title, a target platform, and that it can go on at least one of them. (Adverts can also be published or unlisted from **Adverts**.)
+5. **Users subscribe per platform** on `/me` (`AdvertSubscription`). WhatsApp requires a linked, confirmed number: the user enters it, then sends `JOIN <code>` from that phone (a code sent from another number links nothing). The same automatic approval checks as other subscribers apply.
+6. **What's sent to whom:**
    - **WhatsApp:** users subscribed to that advert on WhatsApp (plus topic subscribers) are matched automatically, and the send waits on **Approvals**. After approval it goes to their own numbers.
    - **Facebook, Instagram, X, TikTok** (which don't allow messaging individuals): the advert is posted on the business's handle ("List & post now", "Post to platforms now", or a Channels schedule). Subscribers see it in their feed with a link.
-5. Each user's **"What you've received"** feed shows their WhatsApp deliveries and the posts of the adverts they subscribed to on each platform.
+7. Each user's **"What you've received"** feed shows their WhatsApp deliveries and the posts of the adverts they subscribed to on each platform.
 
 ## Audience, subscribers and approvals
 
@@ -233,7 +238,7 @@ All pass → **accepted automatically** (`decidedBy: "auto"`), and they're immed
 
 **What's automatic.**
 - **Matching:** active subscribers with any of the advert's topics, in its towns if set (case-insensitive), who haven't already received or been queued for it.
-- **Proposals:** a campaign is proposed when an advert with topics is saved, when someone subscribes or changes topics, and every ~10 minutes by the worker (safety net). New matches top up a proposal that's still waiting. Rejected adverts are never proposed again.
+- **Proposals:** only **published** adverts are proposed (drafts never are): when an advert is published, when someone subscribes (or subscribes to it on WhatsApp) or changes topics, and every ~10 minutes by the worker (safety net). New matches top up a proposal that's still waiting. Rejected adverts are never proposed again.
 - **Sending** (worker, after approval): checks the advert against WhatsApp's rules again; sends through the WhatsApp number connected in the **Meta container** (matching its handle); skips people who unsubscribed or got an advert within `AUDIENCE_MIN_HOURS_BETWEEN_MESSAGES` (default 24). Skipped and failed people are proposed again later.
 - **Receipts:** WhatsApp `delivered` / `read` / `failed` statuses update each delivery (requires the webhook below).
 

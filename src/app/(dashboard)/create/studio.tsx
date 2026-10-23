@@ -2,56 +2,85 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import type { Platform } from "@prisma/client";
+import type { Platform, PostFormat } from "@prisma/client";
 import type { ImageShape } from "@/lib/ai/openai";
 import type { Issue, PlatformVerdict } from "@/lib/policy/rules";
+import { advertImagePrompt, shapeFor } from "@/lib/advert-prompt";
 import { PlatformBadge, platforms } from "@/components/platforms";
 import { checkAction, generateAction, saveDraftAction, type GeneratedMedia } from "./actions";
+import { setListed } from "../admin/actions";
+import { AdvertPreview } from "./preview";
+
+export type ChannelOption = { platform: Platform; label: string; handle: string; format: PostFormat };
+export type DraftInput = {
+  id: string;
+  title: string;
+  about: string;
+  caption: string;
+  topics: string[];
+  towns: string;
+  targetPlatforms: Platform[];
+  media: GeneratedMedia | null;
+  prompt: string;
+  listed: boolean;
+};
 
 const shapes: { value: ImageShape; label: string; hint: string; box: string }[] = [
-  { value: "square", label: "Square", hint: "Works everywhere", box: "h-5 w-5" },
-  { value: "landscape", label: "Landscape", hint: "3:2, works everywhere", box: "h-4 w-6" },
-  { value: "portrait", label: "Portrait", hint: "2:3, too tall for Instagram", box: "h-6 w-4" },
+  { value: "square", label: "Square", hint: "Works on every platform", box: "h-5 w-5" },
+  { value: "landscape", label: "Landscape", hint: "3:2, works on every platform", box: "h-4 w-6" },
+  { value: "portrait", label: "Portrait", hint: "2:3, for stories; too tall for Instagram posts", box: "h-6 w-4" },
 ];
 
 const statusCopy: Record<PlatformVerdict["status"], { label: string; className: string }> = {
-  pass: { label: "Ready to post", className: "bg-wa/15 text-emerald-700 dark:text-emerald-300" },
-  warn: { label: "Check before posting", className: "bg-amber-400/20 text-amber-800 dark:text-amber-200" },
+  pass: { label: "Ready", className: "bg-wa/15 text-emerald-700 dark:text-emerald-300" },
+  warn: { label: "Check", className: "bg-amber-400/20 text-amber-800 dark:text-amber-200" },
   block: { label: "Can't post", className: "bg-danger/15 text-danger" },
 };
 
-const field =
-  "w-full rounded-2xl border border-line bg-white/50 px-4 py-3 placeholder:text-ink-soft/70 dark:bg-white/5";
+const field = "w-full rounded-2xl border border-line bg-white/50 px-4 py-3 placeholder:text-ink-soft/70 dark:bg-white/5";
+const chip =
+  "inline-block rounded-full border border-line px-3 py-1.5 text-sm peer-checked:border-transparent peer-checked:bg-ink peer-checked:text-white peer-focus-visible:outline-2 peer-focus-visible:outline-[var(--ig-3)] dark:peer-checked:bg-white dark:peer-checked:text-ink";
 
 export function Studio({
   interests,
-  channelPlatforms,
+  channels,
+  draft,
 }: {
   interests: { id: string; name: string }[];
-  // Platforms that have a social container (with handle) the advert can target
-  channelPlatforms: { platform: Platform; handle: string }[];
+  // Platforms with a social container (and handle) the advert can target
+  channels: ChannelOption[];
+  draft?: DraftInput;
 }) {
   const router = useRouter();
-  const [prompt, setPrompt] = useState("");
-  const [shape, setShape] = useState<ImageShape>("square");
-  const [caption, setCaption] = useState("");
-  const [media, setMedia] = useState<GeneratedMedia | null>(null);
+  const [draftId, setDraftId] = useState(draft?.id);
+  const [listed] = useState(draft?.listed ?? false);
+  const [title, setTitle] = useState(draft?.title ?? "");
+  const [about, setAbout] = useState(draft?.about ?? "");
+  const [caption, setCaption] = useState(draft?.caption ?? "");
+  const [topics, setTopics] = useState<string[]>(draft?.topics ?? []);
+  const [towns, setTowns] = useState(draft?.towns ?? "");
+  const [targetPlatforms, setTargetPlatforms] = useState<Platform[]>(draft?.targetPlatforms ?? channels.map((c) => c.platform));
+  const [prompt, setPrompt] = useState(draft?.prompt ?? "");
+  const [shape, setShape] = useState<ImageShape>(() =>
+    shapeFor(channels.filter((c) => (draft?.targetPlatforms ?? channels.map((x) => x.platform)).includes(c.platform))),
+  );
+  const [media, setMedia] = useState<GeneratedMedia | null>(draft?.media ?? null);
   const [verdicts, setVerdicts] = useState<PlatformVerdict[] | null>(null);
-  const [checkedCaption, setCheckedCaption] = useState("");
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
+  const [postNow, setPostNow] = useState(true);
   const [error, setError] = useState<{ message: string; issues?: Issue[] } | null>(null);
-  const [busy, setBusy] = useState<"generate" | "check" | "save" | null>(null);
-  const [topics, setTopics] = useState<string[]>([]);
-  const [title, setTitle] = useState("");
-  const [about, setAbout] = useState("");
-  const [targetPlatforms, setTargetPlatforms] = useState<Platform[]>(channelPlatforms.map((c) => c.platform));
-  const [towns, setTowns] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"photo" | "check" | "save" | "publish" | null>(null);
   const [, startTransition] = useTransition();
 
-  const stale = verdicts !== null && caption !== checkedCaption;
+  const targets = channels.filter((c) => targetPlatforms.includes(c.platform));
+  const topicNames = interests.filter((i) => topics.includes(i.id)).map((i) => i.name);
+  const autoPrompt = advertImagePrompt({ title, about, caption, topics: topicNames });
 
   function run(kind: NonNullable<typeof busy>, task: () => Promise<void>) {
     setBusy(kind);
     setError(null);
+    setNotice(null);
     startTransition(async () => {
       try {
         await task();
@@ -63,150 +92,198 @@ export function Studio({
     });
   }
 
-  const generate = () =>
-    run("generate", async () => {
-      const res = await generateAction({ prompt, shape });
+  const draftPayload = () => ({
+    id: draftId,
+    mediaId: media && !media.blocked ? media.id : null,
+    caption,
+    interestIds: topics,
+    title,
+    about,
+    targetPlatforms,
+    locations: towns.split(","),
+  });
+
+  // "Create photo": builds the prompt from the advert's details (or uses the edited one) and generates it.
+  const createPhoto = (usePrompt: string) =>
+    run("photo", async () => {
+      if (!usePrompt.trim()) return setError({ message: "Add a title or description first, so the photo has something to show." });
+      setPrompt(usePrompt);
+      const res = await generateAction({ prompt: usePrompt, shape, targetPlatforms });
       if (!res.ok) return setError({ message: res.error, issues: res.issues });
       setMedia(res.media);
-      // Re-check with the current caption so results cover image + caption together
-      const checked = caption.trim() ? await checkAction({ mediaId: res.media.id, caption }) : null;
-      setVerdicts(checked?.ok ? checked.verdicts : res.verdicts);
-      setCheckedCaption(caption);
+      const checked = await checkAction({ mediaId: res.media.id, caption, targetPlatforms });
+      setVerdicts(checked.ok ? checked.verdicts : res.verdicts);
     });
 
-  const check = () =>
+  const preview = () =>
     run("check", async () => {
-      const res = await checkAction({ mediaId: media?.id, caption });
+      const res = await checkAction({ mediaId: media && !media.blocked ? media.id : undefined, caption, targetPlatforms });
       if (!res.ok) return setError({ message: res.error });
       setVerdicts(res.verdicts);
-      setCheckedCaption(caption);
+      setMode("preview");
+      window.scrollTo({ top: 0, behavior: "smooth" });
     });
 
-  const save = () =>
+  const saveDraft = () =>
     run("save", async () => {
-      const res = await saveDraftAction({
-        mediaId: media?.id,
-        caption,
-        interestIds: topics,
-        title,
-        about,
-        targetPlatforms,
-        locations: towns.split(","),
-      });
-      if (!res.ok) {
-        setError({ message: res.error });
-        return;
-      }
+      const res = await saveDraftAction(draftPayload());
+      if (!res.ok) return setError({ message: res.error });
       setVerdicts(res.verdicts);
-      // Adverts for subscribers go to Approvals; others are used in Channels.
+      if (!draftId) router.replace(`/create?id=${res.postId}`, { scroll: false });
+      setDraftId(res.postId);
+      setNotice(listed ? "Saved. Users see the updated advert." : "Draft saved. You can come back to it from Adverts.");
+    });
+
+  const publish = () =>
+    run("publish", async () => {
+      const saved = await saveDraftAction(draftPayload());
+      if (!saved.ok) return setError({ message: saved.error });
+      setDraftId(saved.postId);
+      setVerdicts(saved.verdicts);
+      const res = await setListed(saved.postId, true, postNow);
+      if (res?.error) {
+        if (!draftId) router.replace(`/create?id=${saved.postId}`, { scroll: false });
+        return setError({ message: `Saved as a draft, but not published: ${res.error}` });
+      }
       router.push("/admin/adverts");
     });
+
+  const socialTargets = targets.filter((t) => t.platform !== "WHATSAPP").map((t) => platforms[t.platform].name);
+  const publishProblem = !title.trim()
+    ? "Add a title."
+    : targets.length === 0
+      ? "Choose at least one target platform."
+      : !caption.trim() && !media
+        ? "Add a caption or a photo."
+        : verdicts && targets.every((t) => verdicts.find((v) => v.platform === t.platform)?.status === "block")
+          ? "It can't be posted on any of its platforms yet. See the checks."
+          : null;
+
+  const actions = (
+    <div className="flex flex-wrap items-center gap-3">
+      <button type="button" onClick={saveDraft} disabled={busy !== null} className="rounded-full border border-line bg-white/50 px-5 py-2.5 font-medium hover:bg-white/80 disabled:opacity-50 dark:bg-white/10">
+        {busy === "save" ? "Saving…" : listed ? "Save changes" : "Save as draft"}
+      </button>
+      {mode === "edit" ? (
+        <button type="button" onClick={preview} disabled={busy !== null || (!caption.trim() && !media)} className="rounded-full bg-ink px-5 py-2.5 font-medium text-white disabled:opacity-50 dark:bg-white dark:text-ink">
+          {busy === "check" ? "Checking…" : "Preview"}
+        </button>
+      ) : (
+        <>
+          <button type="button" onClick={() => setMode("edit")} disabled={busy !== null} className="rounded-full px-4 py-2.5 text-ink-soft hover:text-ink">
+            Back to editing
+          </button>
+          {!listed && (
+            <button
+              type="button"
+              onClick={publish}
+              disabled={busy !== null || !!publishProblem}
+              className="blend-meta rounded-full px-6 py-2.5 font-medium text-white shadow-md shadow-fuchsia-500/25 disabled:opacity-50"
+            >
+              {busy === "publish" ? "Publishing…" : "Publish"}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  const feedback = (
+    <>
+      {notice && <p className="text-sm text-emerald-700 dark:text-emerald-300" role="status">{notice}</p>}
+      {error && (
+        <div role="alert" className="rounded-2xl border border-danger/30 bg-danger/10 p-4 text-sm">
+          <p className="font-medium text-danger">{error.message}</p>
+          {error.issues && error.issues.length > 0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {error.issues.map((i) => (
+                <li key={i.code}>{i.message}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </>
+  );
+
+  if (mode === "preview") {
+    return (
+      <div className="mt-8 space-y-6">
+        <section className="glass space-y-5 rounded-[28px] p-6">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-xl font-semibold">Preview</h2>
+            <p className="text-sm text-ink-soft">This is what users will see. Nothing has been published yet.</p>
+          </div>
+          <AdvertPreview title={title} about={about} caption={caption} image={media && !media.blocked ? media.url : null} targets={targets} verdicts={verdicts ?? []} />
+        </section>
+        <section className="glass space-y-4 rounded-[28px] p-6">
+          {!listed && (
+            <>
+              <h2 className="font-semibold">Publish</h2>
+              <ul className="list-disc space-y-1 pl-5 text-sm text-ink-soft">
+                <li>It&rsquo;s listed on the home page and in users&rsquo; dashboards, where they subscribe per platform.</li>
+                {targets.some((t) => t.platform === "WHATSAPP") && <li>WhatsApp subscribers get it on their number after you approve the send.</li>}
+              </ul>
+              {socialTargets.length > 0 && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={postNow} onChange={(e) => setPostNow(e.target.checked)} className="size-4 accent-[var(--ig-3)]" />
+                  Also post it on {socialTargets.join(", ")} now
+                </label>
+              )}
+              {publishProblem && <p className="text-sm text-danger">Can&rsquo;t publish yet: {publishProblem}</p>}
+            </>
+          )}
+          {actions}
+          {feedback}
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-8 grid gap-6 lg:grid-cols-2">
       <section className="glass space-y-6 rounded-[28px] p-6">
         <div className="space-y-3">
+          <h2 className="text-lg font-semibold">1. Details</h2>
           <label className="block">
             <span className="font-medium">Advert title</span>
             <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Weekend phone sale" maxLength={120} className={`mt-2 ${field}`} />
           </label>
           <label className="block">
             <span className="font-medium">What it&rsquo;s about</span>
-            <span className="block text-sm text-ink-soft">Shown to users when they choose adverts to subscribe to.</span>
+            <span className="block text-sm text-ink-soft">Shown to users, and used to create the photo.</span>
             <textarea value={about} onChange={(e) => setAbout(e.target.value)} rows={2} maxLength={500} placeholder="20% off smartphones at our Westlands shop, Friday to Sunday." className={`mt-2 ${field}`} />
           </label>
           <fieldset>
             <legend className="font-medium">Target platforms</legend>
-            {channelPlatforms.length === 0 ? (
+            {channels.length === 0 ? (
               <p className="mt-1 text-sm text-ink-soft">Add containers on Channels first; each platform needs a handle.</p>
             ) : (
               <div className="mt-2 flex flex-wrap gap-2">
-                {channelPlatforms.map((c) => (
+                {channels.map((c) => (
                   <label key={c.platform} className="cursor-pointer">
                     <input
                       type="checkbox"
                       checked={targetPlatforms.includes(c.platform)}
-                      onChange={(e) => setTargetPlatforms((t) => (e.target.checked ? [...t, c.platform] : t.filter((x) => x !== c.platform)))}
+                      onChange={(e) => {
+                        const next = e.target.checked ? [...targetPlatforms, c.platform] : targetPlatforms.filter((x) => x !== c.platform);
+                        setTargetPlatforms(next);
+                        if (!media) setShape(shapeFor(channels.filter((x) => next.includes(x.platform))));
+                      }}
                       className="peer sr-only"
                     />
-                    <span className="inline-block rounded-full border border-line px-3 py-1.5 text-sm peer-checked:border-transparent peer-checked:bg-ink peer-checked:text-white peer-focus-visible:outline-2 peer-focus-visible:outline-[var(--ig-3)] dark:peer-checked:bg-white dark:peer-checked:text-ink">
-                      {c.handle}
-                    </span>
+                    <span className={chip}>{c.label}</span>
                   </label>
                 ))}
               </div>
             )}
           </fieldset>
-        </div>
-
-        <div>
-          <label htmlFor="prompt" className="font-medium">
-            Image
-          </label>
-          <textarea
-            id="prompt"
-            rows={4}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="A bright flat-lay of fresh mangoes and passion fruit on a turquoise table, morning light"
-            className={`mt-2 ${field}`}
-          />
-          <fieldset className="mt-3">
-            <legend className="sr-only">Shape</legend>
-            <div className="flex flex-wrap gap-2">
-              {shapes.map((s) => (
-                <label
-                  key={s.value}
-                  className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
-                    shape === s.value
-                      ? "border-transparent bg-ink text-white dark:bg-white dark:text-ink"
-                      : "border-line text-ink-soft hover:text-ink"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="shape"
-                    value={s.value}
-                    checked={shape === s.value}
-                    onChange={() => setShape(s.value)}
-                    className="sr-only"
-                  />
-                  <span aria-hidden className={`${s.box} rounded-[3px] border-2 border-current`} />
-                  {s.label}
-                </label>
-              ))}
-            </div>
-            <p className="mt-2 text-sm text-ink-soft">{shapes.find((s) => s.value === shape)?.hint}</p>
-          </fieldset>
-          <button
-            type="button"
-            onClick={generate}
-            disabled={busy !== null || prompt.trim().length < 3}
-            className="blend-meta mt-4 rounded-full px-5 py-2.5 font-medium text-white shadow-md shadow-fuchsia-500/25 disabled:opacity-50"
-          >
-            {busy === "generate" ? "Generating… (up to a minute)" : media ? "Generate again" : "Generate image"}
-          </button>
-        </div>
-
-        <div>
-          <label htmlFor="caption" className="font-medium">
-            Caption
-          </label>
-          <textarea
-            id="caption"
-            rows={5}
-            value={caption}
-            onChange={(e) => setCaption(e.target.value)}
-            placeholder="Fresh from the market this morning 🥭 #FreshFruit"
-            className={`mt-2 ${field}`}
-          />
-          <div className="mt-1 text-right text-xs text-ink-soft tabular-nums">{caption.length.toLocaleString()} characters</div>
           {interests.length > 0 && (
-            <fieldset className="mt-5">
-              <legend className="font-medium">Send to subscribers on WhatsApp</legend>
-              <p className="mt-0.5 text-sm text-ink-soft">
-                Subscribers interested in these topics are matched automatically. You approve before anything is sent.
-              </p>
+            <fieldset>
+              <legend className="font-medium">
+                Topics <span className="font-normal text-ink-soft">(optional)</span>
+              </legend>
+              <p className="text-sm text-ink-soft">Also sends it on WhatsApp to people who chose these topics, after your approval.</p>
               <div className="mt-2 flex flex-wrap gap-2">
                 {interests.map((i) => (
                   <label key={i.id} className="cursor-pointer">
@@ -216,9 +293,7 @@ export function Studio({
                       onChange={(e) => setTopics((t) => (e.target.checked ? [...t, i.id] : t.filter((x) => x !== i.id)))}
                       className="peer sr-only"
                     />
-                    <span className="inline-block rounded-full border border-line px-3 py-1.5 text-sm transition-colors peer-checked:border-transparent peer-checked:bg-ink peer-checked:text-white peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--ig-3)] dark:peer-checked:bg-white dark:peer-checked:text-ink">
-                      {i.name}
-                    </span>
+                    <span className={chip}>{i.name}</span>
                   </label>
                 ))}
               </div>
@@ -230,100 +305,98 @@ export function Studio({
               )}
             </fieldset>
           )}
-          <div className="mt-3 flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={check}
-              disabled={busy !== null || (!caption.trim() && !media)}
-              className="rounded-full border border-line bg-white/50 px-5 py-2.5 font-medium transition-colors hover:bg-white/80 disabled:opacity-50 dark:bg-white/10 dark:hover:bg-white/20"
-            >
-              {busy === "check" ? "Checking…" : "Check post"}
-            </button>
-            <button
-              type="button"
-              onClick={save}
-              disabled={busy !== null || (!caption.trim() && !media)}
-              className="rounded-full bg-ink px-5 py-2.5 font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50 dark:bg-white dark:text-ink"
-            >
-              {busy === "save" ? "Saving…" : "Save as draft"}
-            </button>
-          </div>
         </div>
 
-        {error && (
-          <div role="alert" className="rounded-2xl border border-danger/30 bg-danger/10 p-4 text-sm">
-            <p className="font-medium text-danger">{error.message}</p>
-            {error.issues && error.issues.length > 0 && (
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                {error.issues.map((i) => (
-                  <li key={i.code}>{i.message}</li>
+        <div className="space-y-3 border-t border-line pt-6">
+          <h2 className="text-lg font-semibold">2. Photo</h2>
+          <button
+            type="button"
+            onClick={() => createPhoto(autoPrompt)}
+            disabled={busy !== null || !autoPrompt}
+            className="blend-meta w-full rounded-full px-5 py-3 font-medium text-white shadow-md shadow-fuchsia-500/25 disabled:opacity-50"
+          >
+            {busy === "photo" ? "Creating photo… (up to a minute)" : media ? "Create a new photo from the details" : "Create photo for this advert"}
+          </button>
+          {!autoPrompt && <p className="text-sm text-ink-soft">Add a title or description first.</p>}
+          <details className="text-sm" open={!!prompt && prompt !== autoPrompt}>
+            <summary className="cursor-pointer text-ink-soft hover:text-ink">Adjust the photo description or shape</summary>
+            <textarea value={prompt || autoPrompt} onChange={(e) => setPrompt(e.target.value)} rows={4} aria-label="Photo description" className={`mt-2 ${field}`} />
+            <fieldset className="mt-2">
+              <legend className="sr-only">Shape</legend>
+              <div className="flex flex-wrap gap-2">
+                {shapes.map((s) => (
+                  <label key={s.value} className="cursor-pointer">
+                    <input type="radio" name="shape" checked={shape === s.value} onChange={() => setShape(s.value)} className="peer sr-only" />
+                    <span className={chip.replace("inline-block", "inline-flex items-center gap-2")}>
+                      <span aria-hidden className={`${s.box} inline-block shrink-0 rounded-[3px] border-2 border-current`} />
+                      {s.label}
+                    </span>
+                  </label>
                 ))}
-              </ul>
-            )}
-          </div>
-        )}
+              </div>
+              <p className="mt-1 text-xs text-ink-soft">{shapes.find((s) => s.value === shape)?.hint}</p>
+            </fieldset>
+            <button
+              type="button"
+              onClick={() => createPhoto(prompt || autoPrompt)}
+              disabled={busy !== null}
+              className="mt-2 rounded-full border border-line bg-white/50 px-4 py-2 font-medium hover:bg-white/80 disabled:opacity-50 dark:bg-white/10"
+            >
+              Create photo with this description
+            </button>
+          </details>
+        </div>
+
+        <div className="space-y-2 border-t border-line pt-6">
+          <h2 className="text-lg font-semibold">3. Caption</h2>
+          <textarea
+            id="caption"
+            rows={5}
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+            placeholder="Smartphones 20% off this weekend at Mango Market Westlands. Show this message in store!"
+            className={field}
+          />
+          <div className="text-right text-xs text-ink-soft tabular-nums">{caption.length.toLocaleString()} characters</div>
+        </div>
+
+        {actions}
+        {feedback}
       </section>
 
       <div className="space-y-6">
         <section className="glass overflow-hidden rounded-[28px]">
           {media?.blocked ? (
             <div className="flex aspect-square flex-col items-center justify-center gap-2 p-10 text-center">
-              <p className="font-medium text-danger">Image hidden</p>
-              <p className="max-w-xs text-ink-soft">
-                This image breaks the content rules on every platform, so it won’t be shown or published. Change the
-                description and generate again.
-              </p>
+              <p className="font-medium text-danger">Photo hidden</p>
+              <p className="max-w-xs text-ink-soft">It breaks the content rules on every platform. Change the description and create another.</p>
             </div>
           ) : media ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={media.url}
-              alt={prompt}
-              width={media.width}
-              height={media.height}
-              className="h-auto w-full"
-            />
+            <img src={media.url} alt={title || "Advert photo"} width={media.width} height={media.height} className="h-auto w-full" />
           ) : (
             <div className="flex aspect-square items-center justify-center p-10 text-center text-ink-soft">
-              {busy === "generate" ? "Creating your image…" : "Your image appears here."}
+              {busy === "photo" ? "Creating your photo…" : "The advert's photo appears here."}
             </div>
           )}
         </section>
-
         <section className="glass rounded-[28px] p-6" aria-live="polite">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">Platform check</h2>
-            {stale && <span className="text-sm text-ink-soft">Caption changed. Check again.</span>}
-          </div>
+          <h2 className="text-lg font-semibold">Platform checks</h2>
           {!verdicts ? (
-            <p className="mt-3 text-ink-soft">
-              Each platform has its own rules on image shape, file type, caption length and content. Results show here
-              after you generate an image or check your post.
-            </p>
+            <p className="mt-2 text-sm text-ink-soft">Each target platform&rsquo;s rules are checked when you create the photo or preview the advert.</p>
           ) : (
-            <ul className={`mt-4 space-y-4 ${stale ? "opacity-60" : ""}`}>
+            <ul className="mt-3 space-y-3">
               {verdicts.map((v) => (
                 <li key={v.platform}>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <PlatformBadge platform={v.platform} />
-                    <span className="font-medium">
-                      {platforms[v.platform].name}
-                      {v.format === "STORY" && <span className="font-normal text-ink-soft"> story</span>}
-                    </span>
-                    <span className={`ml-auto rounded-full px-3 py-1 text-xs font-medium ${statusCopy[v.status].className}`}>
-                      {statusCopy[v.status].label}
-                    </span>
+                    <span className="text-sm font-medium">{platforms[v.platform].name}</span>
+                    <span className={`ml-auto rounded-full px-2.5 py-0.5 text-xs font-medium ${statusCopy[v.status].className}`}>{statusCopy[v.status].label}</span>
                   </div>
                   {v.issues.length > 0 && (
-                    <ul className="mt-2 space-y-1 pl-10 text-sm text-ink-soft">
+                    <ul className="mt-1 space-y-0.5 pl-9 text-xs text-ink-soft">
                       {v.issues.map((i) => (
-                        <li key={i.code} className="flex gap-2">
-                          <span
-                            aria-hidden
-                            className={`mt-1.5 size-1.5 shrink-0 rounded-full ${i.severity === "block" ? "bg-danger" : "bg-amber-500"}`}
-                          />
-                          {i.message}
-                        </li>
+                        <li key={i.code}>{i.message}</li>
                       ))}
                     </ul>
                   )}

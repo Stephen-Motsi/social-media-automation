@@ -95,7 +95,8 @@ export async function matchSubscribers(advertId: string) {
 // Proposes (or tops up) a campaign for an advert. Adverts whose campaign was rejected aren't proposed again.
 export async function proposeCampaign(advertId: string, reason: string) {
   const advert = await prisma.post.findUnique({ where: { id: advertId }, include: { campaigns: true } });
-  if (!advert || advert.status !== "DRAFT" || advert.channelId) return null;
+  // Only published (listed) adverts are sent; drafts never are.
+  if (!advert || advert.status !== "DRAFT" || advert.channelId || !advert.listedAt) return null;
   if (advert.campaigns.some((c) => c.status === "REJECTED")) return null;
 
   const matched = await matchSubscribers(advertId);
@@ -124,6 +125,7 @@ export async function proposeForSubscriber(subscriberId: string) {
     where: {
       status: "DRAFT",
       channelId: null,
+      listedAt: { not: null },
       interests: { some: { id: { in: sub.interests.map((i) => i.id) } } },
     },
     select: { id: true },
@@ -139,7 +141,8 @@ export async function proposeAll() {
     where: {
       status: "DRAFT",
       channelId: null,
-      OR: [{ interests: { some: {} } }, { listedAt: { not: null }, subscriptions: { some: { platform: "WHATSAPP" } } }],
+      listedAt: { not: null },
+      OR: [{ interests: { some: {} } }, { subscriptions: { some: { platform: "WHATSAPP" } } }],
     },
     select: { id: true },
   });

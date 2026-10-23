@@ -20,15 +20,16 @@ const statuses = (v: ReturnType<typeof review>) => v.map((x) => `${x.platform[0]
 const codes = (v: ReturnType<typeof review>) => v.flatMap((x) => x.issues.map((i) => i.code));
 
 // ---- Feed posts, all five platforms
-expect("square jpeg + caption", statuses(review({ caption: "Hello", image: img(1024, 1024) }, clean)), ["F:pass", "I:pass", "W:warn", "X:pass", "T:pass"]);
-expect("portrait 2:3 -> IG blocked", statuses(review({ caption: "Hi", image: img(1024, 1536) }, clean)), ["F:pass", "I:block", "W:warn", "X:pass", "T:pass"]);
-expect("landscape 3:2 ok on IG", statuses(review({ caption: "Hi", image: img(1536, 1024) }, clean)), ["F:pass", "I:pass", "W:warn", "X:pass", "T:pass"]);
-expect("png -> IG and TikTok blocked", statuses(review({ caption: "Hi", image: img(1024, 1024, "image/png") }, clean)), ["F:pass", "I:block", "W:warn", "X:pass", "T:block"]);
+expect("WhatsApp photo caption over 1,024 chars -> warn", review({ caption: "a".repeat(1100), image: img(1024, 1024) }, clean, ["WHATSAPP"]).map((v) => v.issues.map((i) => i.code)).flat(), ["image.whatsapp_caption"]);
+expect("square jpeg + caption", statuses(review({ caption: "Hello", image: img(1024, 1024) }, clean)), ["F:pass", "I:pass", "W:pass", "X:pass", "T:pass"]);
+expect("portrait 2:3 -> IG blocked", statuses(review({ caption: "Hi", image: img(1024, 1536) }, clean)), ["F:pass", "I:block", "W:pass", "X:pass", "T:pass"]);
+expect("landscape 3:2 ok on IG", statuses(review({ caption: "Hi", image: img(1536, 1024) }, clean)), ["F:pass", "I:pass", "W:pass", "X:pass", "T:pass"]);
+expect("png -> IG and TikTok blocked", statuses(review({ caption: "Hi", image: img(1024, 1024, "image/png") }, clean)), ["F:pass", "I:block", "W:pass", "X:pass", "T:block"]);
 expect("9MB -> size limits (TikTok allows 20MB)", statuses(review({ caption: "Hi", image: img(1024, 1024, "image/jpeg", 9 * 1024 * 1024) }, clean)), ["F:block", "I:block", "W:block", "X:block", "T:pass"]);
 expect("text only -> IG and TikTok need an image", statuses(review({ caption: "Hi" }, clean)), ["F:pass", "I:block", "W:pass", "X:pass", "T:block"]);
 expect("image only -> WA needs text", statuses(review({ caption: "", image: img(1024, 1024) }, clean)), ["F:pass", "I:pass", "W:block", "X:pass", "T:pass"]);
-expect("31 hashtags -> IG blocked", statuses(review({ caption: Array.from({ length: 31 }, (_, i) => `#t${i}`).join(" "), image: img(1024, 1024) }, clean)), ["F:pass", "I:block", "W:warn", "X:pass", "T:pass"]);
-expect("2201 chars -> IG and X blocked", statuses(review({ caption: "a".repeat(2201), image: img(1024, 1024) }, clean)), ["F:pass", "I:block", "W:warn", "X:block", "T:pass"]);
+expect("31 hashtags -> IG blocked", statuses(review({ caption: Array.from({ length: 31 }, (_, i) => `#t${i}`).join(" "), image: img(1024, 1024) }, clean)), ["F:pass", "I:block", "W:pass", "X:pass", "T:pass"]);
+expect("2201 chars -> IG and X blocked, WhatsApp caption cut", statuses(review({ caption: "a".repeat(2201), image: img(1024, 1024) }, clean)), ["F:pass", "I:block", "W:warn", "X:block", "T:pass"]);
 
 // ---- X weighted length
 expect("X: 280 plain chars ok", statuses(review({ caption: "a".repeat(280) }, clean, ["X"])), ["X:pass"]);
@@ -37,7 +38,7 @@ expect("X: long link counts as 23", String(xWeightedLength("a".repeat(250) + " h
 expect("X: emoji count as 2", String(xWeightedLength("🥭🥭")), "4");
 
 // ---- Content and restricted topics
-expect("'get' is not 'bet' (no false positive)", statuses(review({ caption: "Get yours today", image: img(1024, 1024) }, clean)), ["F:pass", "I:pass", "W:warn", "X:pass", "T:pass"]);
+expect("'get' is not 'bet' (no false positive)", statuses(review({ caption: "Get yours today", image: img(1024, 1024) }, clean)), ["F:pass", "I:pass", "W:pass", "X:pass", "T:pass"]);
 expect("betting -> FB/IG/X warn, WA/TikTok block", statuses(review({ caption: "Big betting odds tonight", image: img(1024, 1024) }, clean)), ["F:warn", "I:warn", "W:block", "X:warn", "T:block"]);
 const sexual = { flagged: true, categories: { sexual: true }, category_scores: { sexual: 0.9 } };
 expect("sexual flagged -> blocked everywhere", statuses(review({ caption: "x", image: img(1024, 1024) }, sexual)), ["F:block", "I:block", "W:block", "X:block", "T:block"]);

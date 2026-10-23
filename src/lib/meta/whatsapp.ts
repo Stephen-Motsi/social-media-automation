@@ -25,6 +25,25 @@ export async function sendText(opts: {
   });
 }
 
+// Image with the text as its caption (free-form, like sendText). Captions are limited to 1,024 characters.
+export async function sendImage(opts: {
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
+  imageUrl: string; // must be publicly reachable
+  caption: string;
+}): Promise<SendResult> {
+  return graphRequest<SendResult>(`${opts.phoneNumberId}/messages`, opts.accessToken, {
+    method: "POST",
+    body: {
+      messaging_product: "whatsapp",
+      to: opts.to,
+      type: "image",
+      image: { link: opts.imageUrl, caption: opts.caption.slice(0, 1024) },
+    },
+  });
+}
+
 export async function sendTemplate(opts: {
   phoneNumberId: string;
   accessToken: string;

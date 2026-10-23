@@ -21,6 +21,9 @@ export function AdvertButtons({ id, listed }: { id: string; listed: boolean }) {
   const { state, pending, run } = useAction();
   return (
     <div className="flex flex-wrap items-center gap-2">
+      <a href={`/create?id=${id}`} className={ghost}>
+        {listed ? "Edit" : "Edit draft"}
+      </a>
       {listed ? (
         <>
           <button type="button" disabled={pending} onClick={() => run(() => postNow(id))} className={ghost}>
@@ -38,10 +41,10 @@ export function AdvertButtons({ id, listed }: { id: string; listed: boolean }) {
             onClick={() => run(() => setListed(id, true, true))}
             className="blend-meta rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
           >
-            List &amp; post now
+            Publish &amp; post now
           </button>
           <button type="button" disabled={pending} onClick={() => run(() => setListed(id, true, false))} className={ghost}>
-            List only
+            Publish only
           </button>
         </>
       )}

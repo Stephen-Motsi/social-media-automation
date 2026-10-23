@@ -9,7 +9,7 @@ import { proposeAll } from "@/lib/audience";
 import { expireUnconfirmed } from "@/lib/policy/subscriptions";
 import { publishPagePost, publishPageStory } from "@/lib/meta/facebook";
 import { publishImage } from "@/lib/meta/instagram";
-import { sendTemplate, sendText } from "@/lib/meta/whatsapp";
+import { sendImage, sendTemplate, sendText } from "@/lib/meta/whatsapp";
 import { xCreatePost, xUploadImage } from "@/lib/x";
 import { tiktokPublishPhoto } from "@/lib/tiktok";
 import { loadImage, type LoadedImage } from "@/lib/media";
@@ -56,7 +56,9 @@ async function send({ account, format, recipient, content, imageUrl, image, what
             templateName: whatsappTemplate.name,
             languageCode: whatsappTemplate.lang,
           })
-        : await sendText({ phoneNumberId: account.externalId, accessToken: token, to: recipient, body: content });
+        : imageUrl
+          ? await sendImage({ phoneNumberId: account.externalId, accessToken: token, to: recipient, imageUrl, caption: content })
+          : await sendText({ phoneNumberId: account.externalId, accessToken: token, to: recipient, body: content });
       return res.messages[0].id;
     }
     case "X": {

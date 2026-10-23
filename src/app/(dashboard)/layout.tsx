@@ -27,7 +27,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         <div className="glass mx-auto flex max-w-6xl items-center gap-2 rounded-full py-2 pr-2 pl-3 sm:gap-3 sm:pl-4">
           <span className="flex items-center gap-2 font-semibold tracking-tight">
             <BrandMark />
-            <span className="hidden sm:inline">Social Automation</span>
+            <span className="hidden whitespace-nowrap xl:inline">Social Automation</span>
           </span>
           <NavLinks pendingApprovals={pendingApprovals} superAdmin={session?.user?.role === "SUPER_ADMIN"} />
           <form
@@ -37,7 +37,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
               await signOut({ redirectTo: "/login" });
             }}
           >
-            <span className="hidden text-ink-soft md:inline">{session?.user?.email}</span>
+            <span className="hidden text-ink-soft 2xl:inline">{session?.user?.email}</span>
             <button
               type="submit"
               className="flex items-center rounded-full px-2 py-1.5 whitespace-nowrap text-ink-soft transition-colors hover:bg-white/40 hover:text-ink sm:px-3 dark:hover:bg-white/10"

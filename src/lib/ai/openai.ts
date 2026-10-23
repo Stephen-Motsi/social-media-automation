@@ -40,9 +40,12 @@ export const IMAGE_SIZES = {
 } as const;
 export type ImageShape = keyof typeof IMAGE_SIZES;
 
+// gpt-image-1 was retired for generation in 2026; gpt-image-2 is the current default.
+export const imageModel = () => process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+
 export async function generateImage(prompt: string, shape: ImageShape): Promise<Buffer> {
   const json = await call<{ data: { b64_json: string }[] }>("images/generations", {
-    model: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-1",
+    model: imageModel(),
     prompt,
     size: IMAGE_SIZES[shape],
     n: 1,

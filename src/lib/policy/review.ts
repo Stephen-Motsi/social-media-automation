@@ -130,11 +130,12 @@ export function technicalIssues(platform: Platform, input: ReviewInput, format: 
         message: `${rules.name} may upscale images narrower than ${rules.image.minWidth}px, which looks blurry.`,
       });
     }
-    if (platform === "WHATSAPP") {
+    // WhatsApp sends the photo with the text as its caption (limited to 1,024 characters).
+    if (platform === "WHATSAPP" && text.length > 1024) {
       issues.push({
-        code: "image.whatsapp_text_only",
+        code: "image.whatsapp_caption",
         severity: "warn",
-        message: "WhatsApp messages are sent as text for now, so the image won't be included.",
+        message: "WhatsApp photo captions are cut at 1,024 characters. Shorten the caption to show it all.",
       });
     }
   }

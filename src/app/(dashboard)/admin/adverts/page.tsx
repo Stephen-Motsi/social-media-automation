@@ -54,7 +54,7 @@ export default async function AdvertsPage() {
                     <div className="flex flex-wrap items-baseline gap-2">
                       <h2 className="font-semibold">{a.title ?? <span className="text-ink-soft">Untitled</span>}</h2>
                       <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${a.listedAt ? "bg-wa/15 text-emerald-700 dark:text-emerald-300" : "bg-ink/10 text-ink-soft"}`}>
-                        {a.listedAt ? "Listed" : "Not listed"}
+                        {a.listedAt ? "Published" : "Draft"}
                       </span>
                       {a.advertPosts.length > 0 && <span className="text-xs text-ink-soft">posted {a.advertPosts.length}×</span>}
                     </div>
