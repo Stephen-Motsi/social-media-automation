@@ -296,7 +296,7 @@ export async function saveChannel(_prev: ActionState, formData: FormData): Promi
     const advert = v.advertId ? await prisma.post.findUnique({ where: { id: v.advertId } }) : null;
     if (!v.advertId) problem = "Create the advert (a photo or a caption) before turning the schedule on.";
     else if (!advert?.title) problem = "Give the advert a title, so users know what they're subscribing to.";
-    else if (accounts === 0) problem = `Connect ${displayHandle(channel.platform, channel.handle) || "an account"} in Settings before turning the schedule on.`;
+    else if (accounts === 0) problem = `Before turning the schedule on, ${connectHowTo(channel.platform, channel.handle)}`;
     else if (channel.platform === "WHATSAPP" && v.whatsappRecipients.length === 0) problem = "Add at least one recipient before turning the schedule on.";
     else if (verdict?.status === "block") problem = "This advert can't be posted here yet. Fix the issues below, for example by uploading a different photo or creating a new image.";
     if (problem) enabled = false;
@@ -320,12 +320,17 @@ export async function saveChannel(_prev: ActionState, formData: FormData): Promi
     if (!(await prisma.post.findUnique({ where: { id: v.advertId } }))?.title) {
       return { error: "Saved. Give the advert a title before posting, so users know what they're subscribing to.", verdict };
     }
-    await listForUsers(v.advertId);
+    // Posting needs a connected account for this handle; say exactly how to connect it.
+    if (!(await hasMatchingAccount(channel.platform, channel.handle))) {
+      return { error: `Saved. To post, ${connectHowTo(channel.platform, channel.handle)}`, verdict };
+    }
     try {
       await runChannel(channel.id);
     } catch (err) {
       return { error: `Saved, but couldn't post: ${err instanceof Error ? err.message : err}`, verdict };
     }
+    // Listed only once it's actually going out, so users never subscribe to something that can't be delivered.
+    await listForUsers(v.advertId);
     refresh();
     return { ok: true, verdict, message: "Saved and queued, and it's now listed for users to subscribe to. The result shows here and under Posts in a few seconds." };
   }
@@ -413,4 +418,20 @@ export async function refineForChannel(channelId: string, mediaId: string, instr
   const viewer = await requireStaff();
   const channel = await channelFor(channelId);
   return refineAdvertImage(viewer.id, mediaId, instruction, channel.platform, channel.format, caption);
+}
+
+async function hasMatchingAccount(platform: Platform, handle: string | null) {
+  return (await prisma.socialAccount.findMany({ where: { platform } })).some((a) => handleMatches(platform, handle, a));
+}
+
+// What the admin needs to do to connect this container's account.
+function connectHowTo(platform: Platform, handle: string | null) {
+  const who = displayHandle(platform, handle) || "the account";
+  if (platform === "WHATSAPP") {
+    return `connect ${who}: in this container's Settings, choose "Connect with a phone number ID and token" and enter the Phone number ID and a permanent access token from your Meta app (WhatsApp → API Setup).`;
+  }
+  if (platform === "FACEBOOK" || platform === "INSTAGRAM") {
+    return `connect ${who}: in this container's Settings, press "Connect Facebook & Instagram" and sign in as an admin of that Page. This needs META_APP_ID and META_APP_SECRET in .env.`;
+  }
+  return `connect ${who}: in this container's Settings, press Connect and sign in as ${who}.`;
 }

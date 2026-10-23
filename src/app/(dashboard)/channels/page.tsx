@@ -7,6 +7,7 @@ import { xConfigured, xRedirectUri } from "@/lib/x";
 import { tiktokConfigured, tiktokRedirectUri } from "@/lib/tiktok";
 import { describeSchedule, formatInZone, toLocalDateTimeInput } from "@/lib/schedule";
 import { scheduleSpec } from "@/lib/channels";
+import { platforms } from "@/components/platforms";
 import { displayHandle, groupNames, groupOrder, groupPlatforms, handleMatches, profileUrl } from "@/lib/handles";
 import { GroupCard, type ConnectView } from "./group-card";
 import { uploadHint } from "@/lib/policy/rules";
@@ -202,6 +203,8 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
                     whatsappTemplateLang: c.whatsappTemplateLang,
                     advert: composerAdvert(c.advert),
                     uploadHint: uploadHint(c.platform, c.format),
+                    connected: accounts.some((a) => a.platform === platform && handleMatches(platform, c.handle, a)),
+                    handleDisplay: displayHandle(platform, c.handle) || platforms[platform].name,
                   },
                 },
               ];

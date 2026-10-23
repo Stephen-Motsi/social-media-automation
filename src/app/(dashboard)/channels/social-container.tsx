@@ -28,6 +28,9 @@ export type ChannelView = {
   whatsappTemplateLang: string;
   advert: ComposerAdvert | null;
   uploadHint: string;
+  // A connected account matches this container's handle (needed to post)
+  connected: boolean;
+  handleDisplay: string;
 };
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -250,7 +253,8 @@ export function SocialContainer({ channel, admin }: { channel: ChannelView; admi
                 fd.set("intent", "post");
                 action(fd);
               }}
-              disabled={saving}
+              disabled={saving || !channel.connected}
+              title={channel.connected ? undefined : `Connect ${channel.handleDisplay} in Settings to post`}
               className="rounded-full border border-line bg-white/50 px-4 py-2 text-sm font-medium hover:bg-white/80 disabled:opacity-60 dark:bg-white/10"
             >
               Post now
@@ -259,6 +263,12 @@ export function SocialContainer({ channel, admin }: { channel: ChannelView; admi
         )}
       </div>
 
+      {!channel.connected && admin && (
+        <p className="text-xs text-ink-soft">
+          Not connected yet: connect {channel.handleDisplay} in Settings above to post or schedule. You can still save
+          the advert.
+        </p>
+      )}
       <div className="space-y-1 text-sm" aria-live="polite">
         <p className="text-ink-soft">
           {channel.enabled && channel.nextRunText ? (
