@@ -67,6 +67,7 @@ export async function exchangeCodeForLongLivedToken(code: string) {
 export type ManagedPage = {
   id: string;
   name: string;
+  username?: string;
   access_token: string;
   tasks?: string[];
   instagram_business_account?: { id: string; username?: string; name?: string };
@@ -81,7 +82,7 @@ export async function listManagedPages(userToken: string): Promise<ManagedPage[]
       userToken,
       {
         query: {
-          fields: "id,name,access_token,tasks,instagram_business_account{id,username,name}",
+          fields: "id,name,username,access_token,tasks,instagram_business_account{id,username,name}",
           limit: "100",
           after,
         },

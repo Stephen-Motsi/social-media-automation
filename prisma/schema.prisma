@@ -26,6 +26,13 @@ enum PostFormat {
   STORY
 }
 
+// Parent containers on the Channels page: Meta groups Facebook, Instagram and WhatsApp.
+enum GroupKind {
+  META
+  X
+  TIKTOK
+}
+
 enum Frequency {
   ONCE
   DAILY
@@ -75,6 +82,9 @@ model SocialAccount {
   accessTokenEncrypted  String // AES-256-GCM, see src/lib/crypto.ts
   // X and TikTok issue short-lived access tokens plus a refresh token
   refreshTokenEncrypted String?
+  // The account's real handle as reported by the platform (Page username, @username, phone digits)
+  handle                String?
+  profileUrl            String?
   tokenExpiresAt        DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
@@ -159,11 +169,25 @@ model MediaAsset {
   @@index([createdById, createdAt])
 }
 
-// One container per platform: which advert to post, as a post or story, and when.
+// A parent container (Meta, X or TikTok) holding one social container per platform.
+model ChannelGroup {
+  id        String    @id @default(cuid())
+  kind      GroupKind @unique
+  createdAt DateTime  @default(now())
+  channels  Channel[]
+}
+
+// One social container per platform: which handle, which advert, as a post or story, and when.
 model Channel {
   id       String     @id @default(cuid())
   platform Platform   @unique
   format   PostFormat @default(POST)
+
+  groupId String
+  group   ChannelGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  // The handle the admin expects to post to; only connected accounts matching it are used
+  handle String?
 
   advertId String?
   advert   Post?   @relation("ChannelAdvert", fields: [advertId], references: [id], onDelete: SetNull)

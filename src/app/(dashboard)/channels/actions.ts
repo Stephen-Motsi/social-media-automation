@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import type { Platform } from "@prisma/client";
+import type { GroupKind, Platform } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
@@ -11,7 +11,17 @@ import { getWhatsAppNumber } from "@/lib/meta/oauth";
 import { computeNextRun, runChannel } from "@/lib/channels";
 import { loadImage } from "@/lib/media";
 import { reviewContent } from "@/lib/policy/review";
-import { formatSupport, platformOrder, type PlatformVerdict } from "@/lib/policy/rules";
+import { formatSupport, type PlatformVerdict } from "@/lib/policy/rules";
+import {
+  displayHandle,
+  groupNames,
+  groupOrder,
+  groupPlatforms,
+  handleMatches,
+  normalizeHandle,
+  profileUrl,
+  validateHandle,
+} from "@/lib/handles";
 import { DEFAULT_TIMEZONE, formatInZone, parseLocalDateTime, parseTime } from "@/lib/schedule";
 
 export type ActionState = { ok?: boolean; error?: string; message?: string; verdict?: PlatformVerdict } | undefined;
@@ -26,26 +36,91 @@ function refresh() {
   revalidatePath("/");
 }
 
-// ---- Parent containers ------------------------------------------------------
+// ---- Parent containers (Meta, X, TikTok) ------------------------------------------
 
-export async function createChannel(platform: Platform): Promise<ActionState> {
+export type GroupInput = { kind: GroupKind; platforms: Platform[]; handles: Partial<Record<Platform, string>> };
+
+function checkGroupInput({ kind, platforms, handles }: GroupInput): string | null {
+  if (!groupOrder.includes(kind)) return "Unknown container type.";
+  if (platforms.length === 0) return "Choose at least one platform.";
+  if (platforms.some((p) => !groupPlatforms[kind].includes(p))) return "That platform doesn't belong in this container.";
+  for (const p of platforms) {
+    const problem = validateHandle(p, handles[p] ?? "");
+    if (problem) return problem;
+  }
+  return null;
+}
+
+export async function createGroup(input: GroupInput): Promise<ActionState> {
   await requireAdmin();
-  if (!platformOrder.includes(platform)) return { error: "Unknown platform." };
-  const exists = await prisma.channel.findUnique({ where: { platform } });
-  if (exists) return { error: "That platform already has a container." };
-  await prisma.channel.create({ data: { platform, timezone: DEFAULT_TIMEZONE } });
+  const problem = checkGroupInput(input);
+  if (problem) return { error: problem };
+  if (await prisma.channelGroup.findUnique({ where: { kind: input.kind } })) {
+    return { error: `There's already a ${groupNames[input.kind]} container.` };
+  }
+  await prisma.channelGroup.create({
+    data: {
+      kind: input.kind,
+      channels: {
+        create: input.platforms.map((platform) => ({
+          platform,
+          handle: normalizeHandle(platform, input.handles[platform]),
+          timezone: DEFAULT_TIMEZONE,
+        })),
+      },
+    },
+  });
   refresh();
   return { ok: true };
 }
 
-// Deleting a container stops its schedule and disconnects its accounts.
-export async function deleteChannel(id: string): Promise<ActionState> {
+// Edit a container's platforms and handles. Removing a platform deletes its social container
+// and disconnects its accounts; changing a handle unlinks accounts that no longer match it.
+export async function updateGroup(groupId: string, input: Omit<GroupInput, "kind">): Promise<ActionState> {
   await requireAdmin();
-  const channel = await prisma.channel.findUnique({ where: { id } });
-  if (!channel) return { ok: true };
+  const group = await prisma.channelGroup.findUnique({ where: { id: groupId }, include: { channels: true } });
+  if (!group) return { error: "This container no longer exists." };
+  const problem = checkGroupInput({ kind: group.kind, ...input });
+  if (problem) return { error: problem };
+
+  const removed = group.channels.filter((c) => !input.platforms.includes(c.platform));
+  for (const c of removed) {
+    await prisma.$transaction([
+      prisma.channel.delete({ where: { id: c.id } }),
+      prisma.socialAccount.deleteMany({ where: { platform: c.platform } }),
+    ]);
+  }
+  let unlinked = 0;
+  for (const platform of input.platforms) {
+    const handle = normalizeHandle(platform, input.handles[platform]);
+    const existing = group.channels.find((c) => c.platform === platform);
+    if (!existing) {
+      await prisma.channel.create({ data: { platform, handle, groupId, timezone: DEFAULT_TIMEZONE } });
+      continue;
+    }
+    if (existing.handle === handle) continue;
+    await prisma.channel.update({ where: { id: existing.id }, data: { handle } });
+    const accounts = await prisma.socialAccount.findMany({ where: { platform } });
+    const stale = accounts.filter((a) => !handleMatches(platform, handle, a)).map((a) => a.id);
+    if (stale.length) unlinked += (await prisma.socialAccount.deleteMany({ where: { id: { in: stale } } })).count;
+  }
+  refresh();
+  return {
+    ok: true,
+    message: unlinked
+      ? `Saved. ${unlinked} connected account${unlinked === 1 ? "" : "s"} didn't match the new handle and ${unlinked === 1 ? "was" : "were"} disconnected.`
+      : "Saved.",
+  };
+}
+
+// Deleting a container stops its schedules and disconnects all of its accounts.
+export async function deleteGroup(groupId: string): Promise<ActionState> {
+  await requireAdmin();
+  const group = await prisma.channelGroup.findUnique({ where: { id: groupId } });
+  if (!group) return { ok: true };
   await prisma.$transaction([
-    prisma.channel.delete({ where: { id } }),
-    prisma.socialAccount.deleteMany({ where: { platform: channel.platform } }),
+    prisma.channelGroup.delete({ where: { id: groupId } }),
+    prisma.socialAccount.deleteMany({ where: { platform: { in: groupPlatforms[group.kind] } } }),
   ]);
   refresh();
   return { ok: true };
@@ -67,14 +142,21 @@ const whatsappSchema = z.object({
 
 async function saveWhatsApp(phoneNumberId: string, accessToken: string): Promise<ActionState> {
   try {
-    // Confirms the ID and token work together before saving anything.
+    // Confirms the ID and token work together, and that it's the number this container names.
     const number = await getWhatsAppNumber(phoneNumberId, accessToken);
+    const handle = normalizeHandle("WHATSAPP", number.display_phone_number);
+    const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
+    if (!handleMatches("WHATSAPP", channel?.handle, { handle, displayName: number.verified_name, externalId: number.id })) {
+      return {
+        error: `These details are for ${number.display_phone_number}, but this container is for ${displayHandle("WHATSAPP", channel?.handle)}. Use that number's phone number ID, or edit the container.`,
+      };
+    }
     const displayName = `${number.verified_name} (${number.display_phone_number})`;
-    const token = encrypt(accessToken);
+    const data = { displayName, accessTokenEncrypted: encrypt(accessToken), handle, profileUrl: profileUrl("WHATSAPP", handle) };
     await prisma.socialAccount.upsert({
       where: { platform_externalId: { platform: "WHATSAPP", externalId: number.id } },
-      update: { displayName, accessTokenEncrypted: token },
-      create: { platform: "WHATSAPP", externalId: number.id, displayName, accessTokenEncrypted: token },
+      update: data,
+      create: { platform: "WHATSAPP", externalId: number.id, ...data },
     });
     refresh();
     return { ok: true, message: `Connected ${displayName}.` };
@@ -195,9 +277,11 @@ export async function saveChannel(_prev: ActionState, formData: FormData): Promi
   let problem: string | undefined;
   if (v.advertId) verdict = (await checkAdvert(channel.platform, v.format, v.advertId)) ?? undefined;
   if (enabled) {
-    const accounts = await prisma.socialAccount.count({ where: { platform: channel.platform } });
+    const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } })).filter((a) =>
+      handleMatches(channel.platform, channel.handle, a),
+    ).length;
     if (!v.advertId) problem = "Choose an advert before turning the schedule on.";
-    else if (accounts === 0) problem = "Connect an account in Settings before turning the schedule on.";
+    else if (accounts === 0) problem = `Connect ${displayHandle(channel.platform, channel.handle) || "an account"} in Settings before turning the schedule on.`;
     else if (channel.platform === "WHATSAPP" && v.whatsappRecipients.length === 0) problem = "Add at least one recipient before turning the schedule on.";
     else if (verdict?.status === "block") problem = "This advert can't be posted here. Fix the issues below, or choose another advert.";
     if (problem) enabled = false;

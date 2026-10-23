@@ -20,7 +20,8 @@ const apiBase = () => (process.env.TIKTOK_API_BASE_URL ?? "https://open.tiktokap
 
 export const TIKTOK_STATE_COOKIE = "tiktok_oauth_state";
 
-export const TIKTOK_SCOPES = ["user.info.basic", "video.publish"];
+// user.info.profile returns the @username, used to confirm the right account was linked
+export const TIKTOK_SCOPES = ["user.info.basic", "user.info.profile", "video.publish"];
 
 export const tiktokConfigured = () => Boolean(process.env.TIKTOK_CLIENT_KEY && process.env.TIKTOK_CLIENT_SECRET);
 
@@ -88,8 +89,8 @@ async function api<T>(path: string, token: string, init: { method?: "GET" | "POS
 }
 
 export async function tiktokGetUser(token: string) {
-  const data = await api<{ user: { open_id: string; display_name: string; avatar_url?: string } }>(
-    "/v2/user/info/?fields=open_id,display_name,avatar_url",
+  const data = await api<{ user: { open_id: string; display_name: string; username?: string; avatar_url?: string } }>(
+    "/v2/user/info/?fields=open_id,display_name,username,avatar_url",
     token,
   );
   return data.user;

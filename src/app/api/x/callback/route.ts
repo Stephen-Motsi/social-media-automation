@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { X_STATE_COOKIE, X_VERIFIER_COOKIE, xExchangeCode, xGetMe } from "@/lib/x";
 import { channelsUrl, clearOAuthCookies, stateMatches } from "@/lib/oauth-state";
+import { displayHandle, handleMatches, normalizeHandle, profileUrl } from "@/lib/handles";
 
 export async function GET(req: NextRequest) {
   const done = (params: Record<string, string>) => {
@@ -23,8 +24,16 @@ export async function GET(req: NextRequest) {
   try {
     const tokens = await xExchangeCode(code, verifier);
     const me = await xGetMe(tokens.access_token);
+    const handle = normalizeHandle("X", me.username);
+    // Only link the account the X container's handle names.
+    const channel = await prisma.channel.findUnique({ where: { platform: "X" } });
+    if (!handleMatches("X", channel?.handle, { handle, displayName: me.name, externalId: me.id })) {
+      return done({ error: "handle_mismatch", expected: displayHandle("X", channel?.handle), got: `@${handle}`, platform: "X" });
+    }
     const data = {
       displayName: `@${me.username}`,
+      handle,
+      profileUrl: profileUrl("X", handle),
       accessTokenEncrypted: encrypt(tokens.access_token),
       refreshTokenEncrypted: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
       tokenExpiresAt: tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null,

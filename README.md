@@ -13,7 +13,8 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 | --- | --- |
 | **Sign-in only, no sign-up** | There is no registration page. Users are created by an admin with a CLI script (see [Managing users](#managing-users)). The first admin comes from `ADMIN_EMAIL` / `ADMIN_PASSWORD` via the seed. |
 | **Five platforms** | Facebook, Instagram and WhatsApp go through the Meta Graph API (`src/lib/meta/`). X (`src/lib/x.ts`) and TikTok (`src/lib/tiktok.ts`) have their own OAuth and posting clients. Adding a platform means a new `Platform` enum value, a client, rules in `rules.ts`, and a connect route. |
-| **One container per platform** | The Channels page has at most one container per platform (`Channel.platform` is unique). Each holds the platform's settings (connect/disconnect only) and its schedule (format, advert, timing). |
+| **Meta, X and TikTok containers** | The Channels page has one parent container per provider (`ChannelGroup.kind` is unique): **Meta** (holding any of Facebook, Instagram, WhatsApp), **X** and **TikTok**. Each has Settings (connect/disconnect only) and one social container per platform (`Channel`, unique per platform) with format, advert and schedule. |
+| **Handles decide which real account is used** | Admins enter the handle for each platform (Page username, @handle, WhatsApp number). Connecting only links the account the platform reports for that handle, and posts only go to accounts matching it (`src/lib/handles.ts`). A handle alone can't grant posting rights: the account owner still signs in and approves. |
 | **Only what each API supports** | Stories exist only on Facebook and Instagram. WhatsApp's Business API can't post **Status**, and the X and TikTok APIs can't post stories, so those options are shown disabled with the reason (`formatSupport` in `rules.ts`). |
 | **WhatsApp is messaging, not a feed** | "Publishing" to WhatsApp means sending a message to recipients. Free-form text only works within 24h of the recipient's last message; otherwise a pre-approved **template** is required (`sendTemplate`). |
 | **Instagram needs media** | The Instagram API cannot post text-only. Images must be at a **public URL** that Meta can fetch. |
@@ -35,7 +36,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 ```
 .devcontainer/            Codespaces / dev container (app + Postgres + Redis)
 prisma/
-  schema.prisma           Data model: User, SocialAccount, Channel, Post, PostTarget, MediaAsset, WebhookEvent
+  schema.prisma           Data model: User, SocialAccount, ChannelGroup, Channel, Post, PostTarget, MediaAsset, WebhookEvent
   migrations/             SQL migrations (commit new ones)
   seed.ts                 Creates the first admin user
 scripts/
@@ -49,7 +50,7 @@ src/
     login/                Sign-in page + server action
     (dashboard)/          Signed-in area: Overview, Create, Channels, Posts
       create/             AI image + caption composer with per-platform checks (saves adverts as drafts)
-      channels/           Platform containers: settings (connect/disconnect) + schedule
+      channels/           Meta / X / TikTok containers: settings (connect/disconnect) + social containers
     api/auth/             Auth.js route handlers
     api/webhooks/meta/    Meta webhook (verification + signed event intake)
     api/media/[id]/       Public image URLs platforms download from (blocked images return 404)
@@ -61,6 +62,7 @@ src/
     schedule.ts           Next-run calculation (once/daily/weekly/monthly, timezone-aware)
     channels.ts           runChannel() and runDueChannels(): turn a channel's advert into a post
     tokens.ts             Access token lookup with X/TikTok refresh
+    handles.ts            Container groups, handle cleanup/matching, profile links
     oauth-state.ts        CSRF state + PKCE cookies for OAuth flows
     x.ts / tiktok.ts      X and TikTok clients
     media.ts              Image format/size detection, public URLs, loading
@@ -80,8 +82,9 @@ src/
 
 ### Data model in short
 
-- **SocialAccount** is one connected Facebook Page, Instagram account, WhatsApp number, X account or TikTok account, with encrypted tokens.
-- **Channel** is one platform container: post format (`POST`/`STORY`), the advert (a draft `Post`), the schedule (`frequency`, `runAt`, `timeOfDay`, `weekdays`, `dayOfMonth`, `timezone`), `enabled`/`nextRunAt`, the last run's result, and WhatsApp recipients/template.
+- **SocialAccount** is one connected Facebook Page, Instagram account, WhatsApp number, X account or TikTok account, with encrypted tokens and the real `handle`/`profileUrl` the platform reported.
+- **ChannelGroup** is a parent container (`META`, `X`, `TIKTOK`) holding its platforms' social containers.
+- **Channel** is one platform's social container: the expected `handle`, post format (`POST`/`STORY`), the advert (a draft `Post`), the schedule (`frequency`, `runAt`, `timeOfDay`, `weekdays`, `dayOfMonth`, `timezone`), `enabled`/`nextRunAt`, the last run's result, and WhatsApp recipients/template.
 - **Post** holds the content, media URLs, status and schedule time.
 - **PostTarget** links one post to one account, with its `format` (and, for WhatsApp, a recipient). Each target succeeds or fails on its own, so a failure on one platform doesn't block the others. Posts created by a schedule have `channelId` set.
 - **WebhookEvent** stores raw Meta webhook payloads for later processing.
@@ -153,16 +156,24 @@ For local testing without a key, point `OPENAI_BASE_URL` at a mock server that i
 
 The **Channels** page (`/channels`) is where adverts get posted automatically.
 
-- **Create new** adds a container for a platform. The dropdown lists only platforms without a container, since two containers for the same platform can't exist. **Delete** removes a container, stops its schedule and disconnects its accounts (after a confirmation).
-- **Settings** (left side of each container) is only for connecting and disconnecting accounts. **Add account** sends the admin to the platform's own login and consent screen; after approval the account shows as connected with a **Disconnect** button. WhatsApp numbers are added with a phone number ID and access token instead.
-- **The social container** (right side) holds:
+- **Add new** (top right) opens a dropdown of containers that don't exist yet: **Meta**, **X**, **TikTok**. Choosing **Meta** lists Facebook, Instagram and WhatsApp to tick. Each chosen platform needs its **handle**:
+  - Facebook: Page username or link, e.g. `facebook.com/mangomarketke` (a Page name or ID also works)
+  - Instagram, X, TikTok: `@handle` or a profile link
+  - WhatsApp: the business number, e.g. `+254 700 000 000`
+
+  Handles are cleaned up (links, `@`, case, spaces), so pasting a profile URL is fine.
+- **Edit** (on each container) changes handles and, for Meta, which platforms are included. Removing a platform deletes its social container and disconnects its accounts. Changing a handle disconnects accounts that no longer match. **Delete** removes the whole container.
+- **Settings** is only for connecting and disconnecting the real accounts. It shows each handle (linked to the real profile) and what's connected:
+  - **Meta:** one **Connect Facebook & Instagram** sign-in. Facebook lists the Pages the admin shares; only the Page matching the Facebook handle and the Instagram account matching the Instagram handle are linked. If the named Page/account wasn't shared, the page says so and lists what was shared. WhatsApp connects with a phone number ID and token, and is refused if it's a different number from the handle.
+  - **X / TikTok:** the platform's sign-in and consent screen. Signing in as a different account than the handle is refused, naming both. (TikTok needs the `user.info.profile` scope to confirm the username.)
+- **Each social container** (one per platform inside the parent) holds:
   - **Post as:** Post or Story (Facebook, Instagram); Message (WhatsApp; Status isn't available); Post (X, TikTok).
   - **Advert:** a draft saved from the Create page.
   - **Schedule:** Once (date and time), Daily, Weekly (chosen days) or Monthly (chosen date; shorter months use their last day), at a time in `APP_TIMEZONE` (default `Africa/Nairobi`).
   - **WhatsApp only:** recipients (one per line, international format) and an approved template name and language.
   - **Schedule on**, **Save** and **Post now**. Post now saves the form first.
-- **Turning a schedule on requires** an advert, a connected account, WhatsApp recipients where relevant, and a passing check for that platform **and format**. Otherwise it's saved switched off, with the reason.
-- **Each run** copies the advert into a new post targeting every connected account on that platform, and the worker publishes it after re-running the checks. The result (or the platform's error) shows on the container and under Posts.
+- **Turning a schedule on requires** an advert, a connected account matching the handle, WhatsApp recipients where relevant, and a passing check for that platform **and format**. Otherwise it's saved switched off, with the reason.
+- **Each run** copies the advert into a new post targeting the connected accounts that match the handle, and the worker publishes it after re-running the checks. The result (or the platform's error) shows on the social container and under Posts.
 - **The scheduler** is in the worker (`runDueChannels`, every `SCHEDULER_TICK_MS`, default 30s). Each run is claimed atomically, so multiple workers don't double-post. If the worker was down, a missed run posts once, then continues from the next future time. **Nothing posts unless `npm run worker` is running.**
 
 Platform behaviour to know:
@@ -222,7 +233,7 @@ See [`.env.example`](.env.example) for the full list with comments. The main one
 
 ## Meta app setup (connecting real accounts)
 
-Accounts are connected from each container's **Settings** on the Channels page. Only admins can connect or disconnect. In the Facebook container, "Add account" saves Pages; in the Instagram container, it saves the Instagram professional accounts linked to those Pages. Run `npm run meta:check` to verify the app ID and secret with Meta.
+Accounts are connected from each container's **Settings** on the Channels page. Only admins can connect or disconnect. In the Meta container, one Facebook sign-in links the Page and Instagram account matching the container's handles. Run `npm run meta:check` to verify the app ID and secret with Meta.
 
 ### 1. Create the app
 1. At [developers.facebook.com/apps](https://developers.facebook.com/apps), choose **Create app**, then the **Other → Business** type (or the "Manage everything on your Page" and "Connect with customers through WhatsApp" use cases). Connect it to your Business portfolio.
@@ -230,24 +241,24 @@ Accounts are connected from each container's **Settings** on the Channels page. 
 
 ### 2. Facebook Login (Pages + Instagram)
 1. Add the **Facebook Login for Business** product.
-2. In its **Settings**, add the redirect URI shown in the Facebook container's Settings (Channels page), e.g. `https://social.yet-kenya.com/api/meta/callback`, under **Valid OAuth Redirect URIs**. It must match exactly, and it must be HTTPS.
+2. In its **Settings**, add the redirect URI shown in the Meta container's Settings (Channels page), e.g. `https://social.yet-kenya.com/api/meta/callback`, under **Valid OAuth Redirect URIs**. It must match exactly, and it must be HTTPS.
 3. Permissions requested: `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `instagram_basic`, `instagram_content_publish`, `business_management`. Optionally create a Login configuration with these and set `META_LOGIN_CONFIG_ID`.
 4. Instagram must be a **professional (Business or Creator) account linked to a Facebook Page**. It's connected through that Page.
-5. Then on Channels, add a Facebook (or Instagram) container and press **Add account** in its Settings, sign in, and select the Pages to share.
+5. Then on Channels, choose **Add new → Meta**, tick the platforms, enter their handles, and press **Connect Facebook & Instagram** in the container's Settings. Sign in and select the Page to share.
 
 **Development mode:** without App Review, only people with a role on the Meta app (admin, developer or tester) can connect, and only Pages they manage. That's enough to connect your own accounts. To let other businesses connect, submit those permissions for **App Review** (Advanced Access) and complete **Business Verification**.
 
 ### 3. WhatsApp
 1. Add the **WhatsApp** product. Under **API Setup**, note the **Phone number ID** and **WhatsApp Business Account ID**. Add and verify your real business number to replace the test number.
 2. For a permanent token, go to **Business settings → System users**, create a system user, assign it the app and the WhatsApp account, and generate a token with `whatsapp_business_messaging` and `whatsapp_business_management`. The temporary token on API Setup expires in 24 hours.
-3. In the WhatsApp container's Settings, enter the phone number ID and token. The app checks them with Meta before saving. Alternatively, set `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` in `.env` and use "Add number from server settings", so the token never goes through a browser.
+3. In the Meta container's Settings (with WhatsApp ticked and its number as the handle), enter the phone number ID and token. The app checks them with Meta before saving. Alternatively, set `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` in `.env` and use "Add number from server settings", so the token never goes through a browser.
 
 ### 4. Webhooks (optional for now)
 Callback URL `https://social.yet-kenya.com/api/webhooks/meta`, verify token = `META_WEBHOOK_VERIFY_TOKEN` from `.env`. Subscribe to `page`, `instagram` and `whatsapp_business_account` fields as needed.
 
 ### How connection works (for developers)
 - `GET /api/meta/connect` (admin): sets a CSRF `state` cookie and redirects to Facebook's OAuth dialog (`src/lib/meta/oauth.ts`).
-- `GET /api/meta/callback`: verifies `state`, exchanges the code for a long-lived user token, lists `/me/accounts` with linked `instagram_business_account`, and upserts a `SocialAccount` per Page (Facebook container) or per linked Instagram account (Instagram container). Page tokens obtained this way don't expire; Instagram uses its Page's token.
+- `GET /api/meta/callback`: verifies `state`, exchanges the code for a long-lived user token, lists `/me/accounts` with linked `instagram_business_account`, and upserts a `SocialAccount` for the Page matching the Facebook handle and the linked Instagram account matching the Instagram handle. Page tokens obtained this way don't expire; Instagram uses its Page's token.
 - All Graph calls send `appsecret_proof`, so you can enable **Require App Secret** in the Meta app.
 - Testing without Meta: set `META_GRAPH_BASE_URL` and `META_DIALOG_BASE_URL` to a mock server.
 
@@ -261,7 +272,7 @@ Callback URL `https://social.yet-kenya.com/api/webhooks/meta`, verify token = `M
 1. In the [TikTok developer portal](https://developers.tiktok.com), create an app and add **Login Kit** and **Content Posting API** (with Direct Post).
 2. Set the redirect URI `https://social.yet-kenya.com/api/tiktok/callback`, and verify the domain/URL prefix `https://social.yet-kenya.com/api/media/` so TikTok can pull photos.
 3. Put the **Client key** and **Client secret** in `.env` as `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET`.
-4. Scopes requested: `user.info.basic,video.publish`. Until TikTok audits the app, posts are private (`SELF_ONLY`). After approval, set `TIKTOK_PRIVACY_LEVEL` (e.g. `PUBLIC_TO_EVERYONE`).
+4. Scopes requested: `user.info.basic,user.info.profile,video.publish` (`user.info.profile` returns the username used to confirm the right account). Until TikTok audits the app, posts are private (`SELF_ONLY`). After approval, set `TIKTOK_PRIVACY_LEVEL` (e.g. `PUBLIC_TO_EVERYONE`).
 
 ## Scripts
 
@@ -277,7 +288,7 @@ Callback URL `https://social.yet-kenya.com/api/webhooks/meta`, verify token = `M
 | `npm run db:studio` | Prisma Studio |
 | `npm run user:create` | Add a user (see above) |
 | `npm run meta:check` | Check Meta app and WhatsApp settings with Meta |
-| `npm test` | Policy rule and schedule tests |
+| `npm test` | Policy rule, schedule and handle tests |
 | `bash scripts/set-env.sh NAME…` | Save `.env` values without showing them |
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and PR.

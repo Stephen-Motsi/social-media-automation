@@ -2,6 +2,7 @@ import type { Channel } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { schedulePost } from "@/lib/queue";
 import { nextRun, type ScheduleSpec } from "@/lib/schedule";
+import { displayHandle, handleMatches } from "@/lib/handles";
 
 export const scheduleSpec = (c: Channel): ScheduleSpec => ({
   frequency: c.frequency,
@@ -20,8 +21,13 @@ export async function runChannel(channelId: string): Promise<string> {
   const channel = await prisma.channel.findUniqueOrThrow({ where: { id: channelId }, include: { advert: true } });
   if (!channel.advert) throw new Error("No advert chosen for this channel.");
 
-  const accounts = await prisma.socialAccount.findMany({ where: { platform: channel.platform } });
-  if (accounts.length === 0) throw new Error("No connected account. Add one in this channel's settings.");
+  // Only post to accounts matching the handle set on this social container.
+  const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } })).filter((a) =>
+    handleMatches(channel.platform, channel.handle, a),
+  );
+  if (accounts.length === 0) {
+    throw new Error(`No connected account matches ${displayHandle(channel.platform, channel.handle) || "this container"}. Connect it in Settings.`);
+  }
 
   const targets =
     channel.platform === "WHATSAPP"

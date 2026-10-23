@@ -1,18 +1,11 @@
 "use client";
 
-import { useActionState, useState, useTransition } from "react";
+import { useActionState, useState } from "react";
 import Link from "next/link";
 import type { Frequency, Platform, PostFormat } from "@prisma/client";
-import { PlatformBadge, platforms } from "@/components/platforms";
+import { platforms } from "@/components/platforms";
 import { formatSupport, type PlatformVerdict } from "@/lib/policy/rules";
-import {
-  connectWhatsApp,
-  connectWhatsAppFromEnv,
-  deleteChannel,
-  disconnectAccount,
-  saveChannel,
-  type ActionState,
-} from "./actions";
+import { saveChannel } from "./actions";
 
 export type ChannelView = {
   id: string;
@@ -34,9 +27,7 @@ export type ChannelView = {
   whatsappTemplate: string | null;
   whatsappTemplateLang: string;
 };
-export type AccountView = { id: string; displayName: string; connectedText: string };
 export type AdvertView = { id: string; label: string; thumbnail: string | null };
-export type ConnectView = { href?: string; ready: boolean; setupHint: string; envReady?: boolean };
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const FREQUENCIES: { value: Frequency; label: string }[] = [
@@ -51,19 +42,11 @@ const statusCopy: Record<PlatformVerdict["status"], { label: string; className: 
   block: { label: "Can't post", className: "bg-danger/15 text-danger" },
 };
 
-const field = "w-full rounded-xl border border-line bg-white/55 px-3 py-2 dark:bg-white/5";
-const pill = (on: boolean) =>
+export const field = "w-full rounded-xl border border-line bg-white/55 px-3 py-2 dark:bg-white/5";
+export const pill = (on: boolean) =>
   `cursor-pointer rounded-full border px-3 py-1.5 text-sm transition-colors ${
     on ? "border-transparent bg-ink text-white dark:bg-white dark:text-ink" : "border-line text-ink-soft hover:text-ink"
   }`;
-
-function TrashIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
-    </svg>
-  );
-}
 
 function Verdict({ verdict }: { verdict: PlatformVerdict }) {
   return (
@@ -85,109 +68,8 @@ function Verdict({ verdict }: { verdict: PlatformVerdict }) {
   );
 }
 
-function Settings({
-  channel,
-  accounts,
-  connect,
-  admin,
-}: {
-  channel: ChannelView;
-  accounts: AccountView[];
-  connect: ConnectView;
-  admin: boolean;
-}) {
-  const name = platforms[channel.platform].name;
-  const [pending, start] = useTransition();
-  const [waState, waAction, waPending] = useActionState(connectWhatsApp, undefined);
-  const [envState, setEnvState] = useState<ActionState>();
-  const wa = envState ?? waState;
-
-  return (
-    <section aria-label={`${name} settings`} className="self-start rounded-3xl border border-line bg-white/25 p-5 dark:bg-white/[0.03]">
-      <h3 className="font-semibold">Settings</h3>
-      <p className="mt-0.5 text-sm text-ink-soft">Connected {name} accounts</p>
-
-      {accounts.length === 0 ? (
-        <p className="mt-4 text-sm text-ink-soft">No account connected.</p>
-      ) : (
-        <ul className="mt-3 divide-y divide-line">
-          {accounts.map((a) => (
-            <li key={a.id} className="flex items-center gap-2 py-2.5">
-              <span className="size-2 shrink-0 rounded-full bg-wa" aria-hidden />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{a.displayName}</p>
-                <p className="text-xs text-ink-soft">{a.connectedText}</p>
-              </div>
-              {admin && (
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() => start(async () => void (await disconnectAccount(a.id)))}
-                  className="rounded-full px-2.5 py-1 text-xs text-ink-soft hover:bg-danger/10 hover:text-danger"
-                >
-                  Disconnect
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {admin && channel.platform !== "WHATSAPP" && (
-        <div className="mt-4">
-          {connect.ready && connect.href ? (
-            <a
-              href={connect.href}
-              className={`${platforms[channel.platform].blend} inline-block rounded-full px-4 py-2 text-sm font-medium text-white shadow-md`}
-            >
-              {accounts.length ? "Add another account" : "Add account"}
-            </a>
-          ) : (
-            <p className="rounded-2xl border border-dashed border-line px-3 py-2.5 text-xs text-ink-soft">{connect.setupHint}</p>
-          )}
-        </div>
-      )}
-
-      {admin && channel.platform === "WHATSAPP" && (
-        <div className="mt-4 space-y-3">
-          {connect.envReady && (
-            <button
-              type="button"
-              onClick={() => start(async () => setEnvState(await connectWhatsAppFromEnv()))}
-              className="blend-whatsapp rounded-full px-4 py-2 text-sm font-medium text-white shadow-md"
-            >
-              Add number from server settings
-            </button>
-          )}
-          <details className="text-sm" open={accounts.length === 0 && !connect.envReady}>
-            <summary className="cursor-pointer text-ink-soft hover:text-ink">Add account with an access token</summary>
-            <form action={waAction} className="mt-3 space-y-2">
-              <label className="block">
-                <span className="text-xs font-medium">Phone number ID</span>
-                <input name="phoneNumberId" inputMode="numeric" autoComplete="off" required className={field} />
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium">Access token</span>
-                <input name="accessToken" type="password" autoComplete="off" required className={field} />
-              </label>
-              <button
-                type="submit"
-                disabled={waPending}
-                className="rounded-full border border-line bg-white/50 px-4 py-1.5 font-medium hover:bg-white/80 disabled:opacity-60 dark:bg-white/10"
-              >
-                {waPending ? "Checking with Meta…" : "Add account"}
-              </button>
-            </form>
-          </details>
-          {wa?.error && <p role="alert" className="text-sm text-danger">{wa.error}</p>}
-          {wa?.ok && <p className="text-sm text-emerald-700 dark:text-emerald-300">{wa.message}</p>}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function SocialContainer({ channel, adverts, admin }: { channel: ChannelView; adverts: AdvertView[]; admin: boolean }) {
+// The social container: post format, advert and schedule for one platform.
+export function SocialContainer({ channel, adverts, admin }: { channel: ChannelView; adverts: AdvertView[]; admin: boolean }) {
   const [state, action, saving] = useActionState(saveChannel, undefined);
   const [format, setFormat] = useState<PostFormat>(channel.format);
   const [frequency, setFrequency] = useState<Frequency>(channel.frequency);
@@ -199,8 +81,12 @@ function SocialContainer({ channel, adverts, admin }: { channel: ChannelView; ad
   const disabled = !admin;
 
   return (
-    <form action={action} className="glass space-y-5 rounded-3xl p-5">
+    <form action={action} className="glass space-y-5 rounded-3xl p-5" aria-label={`${platforms[channel.platform].name} schedule`}>
       <input type="hidden" name="id" value={channel.id} />
+      <h3 className="flex items-center gap-2 font-semibold">
+        <span className={`${platforms[channel.platform].blend} size-2.5 rounded-full`} aria-hidden />
+        {platforms[channel.platform].name}
+      </h3>
 
       <fieldset disabled={disabled}>
         <legend className="font-semibold">Post as</legend>
@@ -414,61 +300,5 @@ function SocialContainer({ channel, adverts, admin }: { channel: ChannelView; ad
         {result?.verdict && <Verdict verdict={result.verdict} />}
       </div>
     </form>
-  );
-}
-
-// Parent container: the platform's settings plus its social container.
-export function ChannelCard({
-  channel,
-  accounts,
-  adverts,
-  connect,
-  admin,
-}: {
-  channel: ChannelView;
-  accounts: AccountView[];
-  adverts: AdvertView[];
-  connect: ConnectView;
-  admin: boolean;
-}) {
-  const p = platforms[channel.platform];
-  const [deleting, startDelete] = useTransition();
-  const status =
-    accounts.length === 0
-      ? "No account connected"
-      : channel.enabled && channel.nextRunText
-        ? `Active · next post ${channel.nextRunText}`
-        : "Schedule off";
-
-  return (
-    <article className="glass relative overflow-hidden rounded-[32px] p-5 sm:p-6" aria-label={`${p.name} container`}>
-      <div aria-hidden className={`${p.blend} pointer-events-none absolute -top-24 -right-24 size-64 rounded-full opacity-30 blur-3xl`} />
-      <header className="relative flex items-center gap-3">
-        <PlatformBadge platform={channel.platform} size="lg" />
-        <div className="min-w-0 flex-1">
-          <h2 className="text-xl font-semibold">{p.name}</h2>
-          <p className="text-sm text-ink-soft">{status}</p>
-        </div>
-        {admin && (
-          <button
-            type="button"
-            disabled={deleting}
-            onClick={() => {
-              if (confirm(`Delete the ${p.name} container? This stops its schedule and disconnects its accounts.`)) {
-                startDelete(async () => void (await deleteChannel(channel.id)));
-              }
-            }}
-            className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-ink-soft hover:bg-danger/10 hover:text-danger"
-          >
-            <TrashIcon />
-            {deleting ? "Deleting…" : "Delete"}
-          </button>
-        )}
-      </header>
-      <div className="relative mt-5 grid gap-4 lg:grid-cols-[minmax(0,5fr)_minmax(0,8fr)]">
-        <Settings channel={channel} accounts={accounts} connect={connect} admin={admin} />
-        <SocialContainer channel={channel} adverts={adverts} admin={admin} />
-      </div>
-    </article>
   );
 }

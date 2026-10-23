@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { TIKTOK_STATE_COOKIE, tiktokExchangeCode, tiktokGetUser } from "@/lib/tiktok";
 import { channelsUrl, clearOAuthCookies, stateMatches } from "@/lib/oauth-state";
+import { displayHandle, handleMatches, normalizeHandle, profileUrl } from "@/lib/handles";
 
 export async function GET(req: NextRequest) {
   const done = (params: Record<string, string>) => {
@@ -22,8 +23,17 @@ export async function GET(req: NextRequest) {
   try {
     const tokens = await tiktokExchangeCode(code);
     const user = await tiktokGetUser(tokens.access_token);
+    const channel = await prisma.channel.findUnique({ where: { platform: "TIKTOK" } });
+    const handle = user.username ? normalizeHandle("TIKTOK", user.username) : null;
+    // Without the username we can't confirm it's the right account, so don't link it.
+    if (channel?.handle && !handle) return done({ error: "tiktok_no_username" });
+    if (!handleMatches("TIKTOK", channel?.handle, { handle, displayName: user.display_name, externalId: tokens.open_id })) {
+      return done({ error: "handle_mismatch", expected: displayHandle("TIKTOK", channel?.handle), got: `@${handle}`, platform: "TIKTOK" });
+    }
     const data = {
-      displayName: user.display_name,
+      displayName: handle ? `${user.display_name} (@${handle})` : user.display_name,
+      handle,
+      profileUrl: profileUrl("TIKTOK", handle),
       accessTokenEncrypted: encrypt(tokens.access_token),
       refreshTokenEncrypted: encrypt(tokens.refresh_token),
       tokenExpiresAt: new Date(Date.now() + tokens.expires_in * 1000),
