@@ -1,12 +1,15 @@
-import type { Platform } from "@prisma/client";
+import type { Platform, PostFormat } from "@prisma/client";
 import { moderate, type ModerationResult } from "@/lib/ai/openai";
 import {
   BORDERLINE_SCORE,
+  formatSupport,
   moderationPolicy,
   platformOrder,
   platformRules,
   restrictedTopics,
   restrictedTopicSeverity,
+  STORY_ASPECT,
+  storyRules,
   type Issue,
   type PlatformVerdict,
 } from "./rules";
@@ -25,7 +28,63 @@ function ratioLabel(w: number, h: number) {
   return `${w / d}:${h / d}`;
 }
 
-export function technicalIssues(platform: Platform, { caption, image }: ReviewInput): Issue[] {
+// X counts links as 23 characters and emoji/CJK characters as 2.
+export function xWeightedLength(text: string) {
+  const withoutUrls = text.replace(/https?:\/\/\S+/g, "");
+  const urls = text.match(/https?:\/\/\S+/g)?.length ?? 0;
+  let n = urls * 23;
+  for (const ch of withoutUrls) n += ch.codePointAt(0)! > 0x10ff ? 2 : 1;
+  return n;
+}
+
+function storyIssues(platform: Platform, { caption, image }: ReviewInput): Issue[] {
+  const name = platformRules[platform].name;
+  const rules = storyRules[platform]!;
+  const issues: Issue[] = [];
+  if (!image) {
+    issues.push({ code: "story.image_required", severity: "block", message: `${name} stories need an image.` });
+    return issues;
+  }
+  if (!rules.formats.includes(image.mimeType)) {
+    issues.push({
+      code: "story.format",
+      severity: "block",
+      message: `${name} stories accept ${rules.formats.map(prettyFormat).join(", ")} images; this one is ${prettyFormat(image.mimeType)}.`,
+    });
+  }
+  if (image.sizeBytes > rules.maxBytes) {
+    issues.push({
+      code: "story.size",
+      severity: "block",
+      message: `${name} story images must be under ${mb(rules.maxBytes)}; this one is ${mb(image.sizeBytes)}.`,
+    });
+  }
+  const aspect = image.width / image.height;
+  if (aspect < STORY_ASPECT.min || aspect > STORY_ASPECT.max) {
+    issues.push({
+      code: "story.aspect",
+      severity: "warn",
+      message: `Stories fill the screen at 9:16. This image is ${ratioLabel(image.width, image.height)}, so ${name} will crop or add borders.`,
+    });
+  }
+  if (caption.trim()) {
+    issues.push({
+      code: "story.caption",
+      severity: "warn",
+      message: `${name} stories don't show captions. Put any text you need inside the image.`,
+    });
+  }
+  return issues;
+}
+
+export function technicalIssues(platform: Platform, input: ReviewInput, format: PostFormat = "POST"): Issue[] {
+  const support = formatSupport[platform][format];
+  if (!support.supported) {
+    return [{ code: "format.unsupported", severity: "block", message: support.reason ?? `${support.label} isn't supported.` }];
+  }
+  if (format === "STORY") return storyIssues(platform, input);
+
+  const { caption, image } = input;
   const rules = platformRules[platform];
   const issues: Issue[] = [];
   const text = caption.trim();
@@ -80,11 +139,12 @@ export function technicalIssues(platform: Platform, { caption, image }: ReviewIn
     }
   }
 
-  if (text.length > rules.text.maxLength) {
+  const length = platform === "X" ? xWeightedLength(text) : text.length;
+  if (length > rules.text.maxLength) {
     issues.push({
       code: "text.length",
       severity: "block",
-      message: `${rules.name} allows ${rules.text.maxLength.toLocaleString()} characters; this has ${text.length.toLocaleString()}.`,
+      message: `${rules.name} allows ${rules.text.maxLength.toLocaleString()} characters; this has ${length.toLocaleString()}.`,
     });
   }
   const hashtags = text.match(/#[\p{L}\p{N}_]+/gu)?.length ?? 0;
@@ -167,14 +227,16 @@ export function topicIssues(platform: Platform, caption: string, prompt?: string
     }));
 }
 
-function verdict(platform: Platform, issues: Issue[]): PlatformVerdict {
+function verdict(platform: Platform, format: PostFormat, issues: Issue[]): PlatformVerdict {
   const status = issues.some((i) => i.severity === "block")
     ? "block"
     : issues.some((i) => i.severity === "warn")
       ? "warn"
       : "pass";
-  return { platform, status, issues };
+  return { platform, format, status, issues };
 }
+
+export type Formats = Partial<Record<Platform, PostFormat>>;
 
 // Pure review from an already-computed moderation result (or null when it couldn't run).
 export function review(
@@ -182,9 +244,11 @@ export function review(
   moderation: ModerationResult | null,
   platforms: Platform[] = platformOrder,
   moderationError?: string,
+  formats: Formats = {},
 ): PlatformVerdict[] {
   return platforms.map((platform) => {
-    const issues = [...technicalIssues(platform, input), ...topicIssues(platform, input.caption, input.prompt)];
+    const format = formats[platform] ?? "POST";
+    const issues = [...technicalIssues(platform, input, format), ...topicIssues(platform, input.caption, input.prompt)];
     if (moderation) {
       issues.push(...moderationIssues(platform, moderation));
     } else {
@@ -198,7 +262,7 @@ export function review(
             : `Content check couldn't run${moderationError ? ` (${moderationError})` : ""}. Try again shortly.`,
       });
     }
-    return verdict(platform, issues);
+    return verdict(platform, format, issues);
   });
 }
 
@@ -206,6 +270,7 @@ export function review(
 export async function reviewContent(
   input: ReviewInput & { prompt?: string },
   platforms: Platform[] = platformOrder,
+  formats: Formats = {},
 ): Promise<{ verdicts: PlatformVerdict[]; moderation: ModerationResult | null }> {
   let moderation: ModerationResult | null = null;
   let error: string | undefined;
@@ -217,7 +282,7 @@ export async function reviewContent(
   } catch (err) {
     error = !process.env.OPENAI_API_KEY ? KEY_MISSING : err instanceof Error ? err.message : String(err);
   }
-  return { verdicts: review(input, moderation, platforms, error), moderation };
+  return { verdicts: review(input, moderation, platforms, error, formats), moderation };
 }
 
 // Screens an image prompt before spending money on generation.

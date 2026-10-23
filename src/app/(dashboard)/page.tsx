@@ -3,16 +3,11 @@ import type { Platform } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { platforms, platformOrder, PlatformBadge } from "@/components/platforms";
+import { formatSupport } from "@/lib/policy/rules";
+import { describeSchedule, formatInZone } from "@/lib/schedule";
+import { scheduleSpec } from "@/lib/channels";
 
 export const dynamic = "force-dynamic";
-
-const when = new Intl.DateTimeFormat("en-GB", {
-  weekday: "short",
-  day: "numeric",
-  month: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-});
 
 function greeting(now: Date) {
   const h = now.getHours();
@@ -30,7 +25,7 @@ export default async function OverviewPage() {
   const now = new Date();
   const weekAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-  const [accountGroups, statusGroups, sentByPlatform, upcoming, recent, dueThisWeek] = await Promise.all([
+  const [accountGroups, statusGroups, sentByPlatform, channels, recent] = await Promise.all([
     prisma.socialAccount.groupBy({ by: ["platform"], _count: true }),
     prisma.post.groupBy({ by: ["status"], _count: true }),
     Promise.all(
@@ -38,20 +33,19 @@ export default async function OverviewPage() {
         prisma.postTarget.count({ where: { status: "PUBLISHED", account: { platform } } }),
       ),
     ),
-    prisma.post.findMany({
-      where: { status: "SCHEDULED", scheduledAt: { gte: now } },
-      orderBy: { scheduledAt: "asc" },
-      take: 4,
-      include: { targets: { include: { account: true } } },
-    }),
+    prisma.channel.findMany({ include: { advert: true } }),
     prisma.postTarget.findMany({
       where: { status: { not: "PENDING" } },
       orderBy: { post: { updatedAt: "desc" } },
       take: 5,
       include: { account: true, post: true },
     }),
-    prisma.post.count({ where: { status: "SCHEDULED", scheduledAt: { gte: now, lte: weekAhead } } }),
   ]);
+  const shown = platformOrder.filter((p) => channels.some((c) => c.platform === p));
+  const upcoming = channels
+    .filter((c) => c.enabled && c.nextRunAt)
+    .sort((a, b) => a.nextRunAt!.getTime() - b.nextRunAt!.getTime());
+  const dueThisWeek = upcoming.filter((c) => c.nextRunAt! <= weekAhead).length;
 
   const accountsFor = (p: Platform) => accountGroups.find((g) => g.platform === p)?._count ?? 0;
   const postsWith = (s: string) => statusGroups.find((g) => g.status === s)?._count ?? 0;
@@ -72,16 +66,30 @@ export default async function OverviewPage() {
         </h1>
         <p className="mt-3 max-w-prose text-lg text-ink-soft">
           {dueThisWeek > 0
-            ? `${plural(dueThisWeek, ["post goes", "posts go"])} out in the next 7 days.`
+            ? `${plural(dueThisWeek, ["channel posts", "channels post"])} in the next 7 days.`
             : "Nothing is scheduled for the next 7 days."}
         </p>
       </section>
 
       {/* Channels: the one place we let colour run loud */}
-      <section aria-label="Channels" className="grid gap-4 md:grid-cols-3">
-        {platformOrder.map((platform, i) => {
+      {shown.length === 0 && (
+        <section className="glass rounded-[28px] px-6 py-10 text-center">
+          <p className="text-lg font-medium">No channels yet</p>
+          <p className="mt-1 text-ink-soft">Add a platform on the Channels page to connect accounts and schedule adverts.</p>
+          <Link
+            href="/channels"
+            className="blend-meta mt-4 inline-block rounded-full px-5 py-2 text-sm font-medium text-white shadow-md shadow-fuchsia-500/25"
+          >
+            Go to Channels
+          </Link>
+        </section>
+      )}
+      <section aria-label="Channels" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {shown.map((platform) => {
+          const i = platformOrder.indexOf(platform);
           const p = platforms[platform];
           const count = accountsFor(platform);
+          const channel = channels.find((c) => c.platform === platform)!;
           return (
             <article key={platform} className="glass group relative overflow-hidden rounded-[28px] p-6">
               {/* channel colour glowing up from the corner */}
@@ -95,6 +103,11 @@ export default async function OverviewPage() {
                 <p className="mt-1 text-sm text-ink-soft">
                   {count > 0 ? `${plural(count, p.accountNoun)} connected` : `No ${p.accountNoun[0]} connected yet`}
                 </p>
+                <p className="mt-1 text-sm text-ink-soft">
+                  {channel.enabled && channel.nextRunAt
+                    ? `Next: ${formatInZone(channel.nextRunAt, channel.timezone)}`
+                    : "Schedule off"}
+                </p>
                 <div className="mt-6 flex items-end justify-between">
                   <div>
                     <div className="text-3xl font-semibold tabular-nums">{sentByPlatform[i]}</div>
@@ -103,7 +116,7 @@ export default async function OverviewPage() {
                     </div>
                   </div>
                   <Link
-                    href="/accounts"
+                    href="/channels"
                     className="rounded-full bg-white/55 px-4 py-2 text-sm font-medium backdrop-blur transition-colors hover:bg-white/80 dark:bg-white/10 dark:hover:bg-white/20"
                   >
                     {count > 0 ? "Manage" : "Connect"}
@@ -135,35 +148,34 @@ export default async function OverviewPage() {
         <section className="glass rounded-3xl p-6 lg:col-span-3">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Up next</h2>
-            <Link href="/posts" className="text-sm text-ink-soft hover:text-ink">
-              All posts
+            <Link href="/channels" className="text-sm text-ink-soft hover:text-ink">
+              Channels
             </Link>
           </div>
           {upcoming.length === 0 ? (
             <div className="mt-6 rounded-2xl border border-dashed border-line px-6 py-10 text-center">
               <p className="text-ink-soft">
-                Nothing scheduled. Write a post, pick a time, and it publishes on its own.
+                Nothing scheduled. Pick an advert and a time in a channel, and it posts on its own.
               </p>
               <Link
-                href="/create"
+                href="/channels"
                 className="blend-meta mt-4 inline-block rounded-full px-5 py-2 text-sm font-medium text-white shadow-md shadow-fuchsia-500/25"
               >
-                Write a post
+                Set up a schedule
               </Link>
             </div>
           ) : (
             <ul className="mt-4 divide-y divide-line">
-              {upcoming.map((post) => (
-                <li key={post.id} className="flex gap-4 py-4">
-                  <div className="w-28 shrink-0 text-sm text-ink-soft">
-                    {post.scheduledAt && when.format(post.scheduledAt)}
+              {upcoming.map((c) => (
+                <li key={c.id} className="flex items-center gap-4 py-4">
+                  <PlatformBadge platform={c.platform} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate">{c.advert?.content || "(image only)"}</p>
+                    <p className="text-xs text-ink-soft">
+                      {formatSupport[c.platform][c.format].label} · {describeSchedule(scheduleSpec(c))}
+                    </p>
                   </div>
-                  <p className="line-clamp-2 flex-1">{post.content}</p>
-                  <div className="flex -space-x-2">
-                    {[...new Set(post.targets.map((t) => t.account.platform))].map((pl) => (
-                      <PlatformBadge key={pl} platform={pl} />
-                    ))}
-                  </div>
+                  <div className="shrink-0 text-right text-sm text-ink-soft">{formatInZone(c.nextRunAt!, c.timezone)}</div>
                 </li>
               ))}
             </ul>

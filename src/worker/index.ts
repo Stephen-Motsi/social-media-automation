@@ -1,24 +1,79 @@
-// Background worker: publishes scheduled posts to each target account.
+// Background worker: runs channel schedules and publishes posts to each target account.
 // Run alongside the web app with `npm run worker`.
 import { Worker } from "bullmq";
+import type { Platform, PostFormat, SocialAccount } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { decrypt } from "@/lib/crypto";
 import { PUBLISH_QUEUE, redisConnection, type PublishJob } from "@/lib/queue";
-import { publishPagePost } from "@/lib/meta/facebook";
+import { publishPagePost, publishPageStory } from "@/lib/meta/facebook";
 import { publishImage } from "@/lib/meta/instagram";
-import { sendText } from "@/lib/meta/whatsapp";
+import { sendTemplate, sendText } from "@/lib/meta/whatsapp";
+import { xCreatePost, xUploadImage } from "@/lib/x";
+import { tiktokPublishPhoto } from "@/lib/tiktok";
 import { loadImage, type LoadedImage } from "@/lib/media";
-import { reviewContent } from "@/lib/policy/review";
+import { reviewContent, type Formats } from "@/lib/policy/review";
+import { accessTokenFor } from "@/lib/tokens";
+import { runDueChannels } from "@/lib/channels";
+
+type Job = {
+  account: SocialAccount;
+  format: PostFormat;
+  recipient: string | null;
+  content: string;
+  imageUrl?: string;
+  image: LoadedImage | null;
+  whatsappTemplate?: { name: string; lang: string } | null;
+};
+
+// Sends one target and returns the platform's ID for what was published.
+async function send({ account, format, recipient, content, imageUrl, image, whatsappTemplate }: Job): Promise<string> {
+  const token = await accessTokenFor(account);
+  switch (account.platform) {
+    case "FACEBOOK":
+      if (format === "STORY") {
+        return (await publishPageStory({ pageId: account.externalId, pageAccessToken: token, imageUrl: imageUrl! })).id;
+      }
+      return (await publishPagePost({ pageId: account.externalId, pageAccessToken: token, message: content, imageUrl })).id;
+    case "INSTAGRAM":
+      return (
+        await publishImage({
+          igUserId: account.externalId,
+          accessToken: token,
+          imageUrl: imageUrl!,
+          caption: content,
+          story: format === "STORY",
+        })
+      ).id;
+    case "WHATSAPP": {
+      if (!recipient) throw new Error("WhatsApp target has no recipient");
+      const res = whatsappTemplate
+        ? await sendTemplate({
+            phoneNumberId: account.externalId,
+            accessToken: token,
+            to: recipient,
+            templateName: whatsappTemplate.name,
+            languageCode: whatsappTemplate.lang,
+          })
+        : await sendText({ phoneNumberId: account.externalId, accessToken: token, to: recipient, body: content });
+      return res.messages[0].id;
+    }
+    case "X": {
+      const mediaIds = image ? [await xUploadImage(token, image.data, image.mimeType)] : [];
+      return (await xCreatePost(token, content, mediaIds)).id;
+    }
+    case "TIKTOK":
+      return (await tiktokPublishPhoto(token, { imageUrls: [imageUrl!], caption: content })).publish_id;
+  }
+}
 
 async function publish(postId: string) {
   const post = await prisma.post.findUniqueOrThrow({
     where: { id: postId },
-    include: { targets: { include: { account: true } } },
+    include: { targets: { include: { account: true } }, channel: true },
   });
 
   await prisma.post.update({ where: { id: postId }, data: { status: "PUBLISHING" } });
 
-  // Last line of defence: re-run every platform's rules right before publishing,
+  // Last line of defence: re-run every platform's rules for its format right before publishing,
   // even if the post passed when it was drafted (rules or content may have changed).
   let image: LoadedImage | null = null;
   let imageError: string | null = null;
@@ -29,62 +84,42 @@ async function publish(postId: string) {
       imageError = err instanceof Error ? err.message : String(err);
     }
   }
-  const platformsInPost = [...new Set(post.targets.map((t) => t.account.platform))];
-  const { verdicts } = await reviewContent({ caption: post.content, image }, platformsInPost);
+  const formats: Formats = {};
+  for (const t of post.targets) formats[t.account.platform] ??= t.format;
+  const platforms = Object.keys(formats) as Platform[];
+  const { verdicts } = await reviewContent({ caption: post.content, image }, platforms, formats);
   await prisma.post.update({ where: { id: postId }, data: { checks: verdicts } });
 
+  const whatsappTemplate = post.channel?.whatsappTemplate
+    ? { name: post.channel.whatsappTemplate, lang: post.channel.whatsappTemplateLang }
+    : null;
+
   for (const target of post.targets.filter((t) => t.status !== "PUBLISHED")) {
-    const { account } = target;
-    const verdict = verdicts.find((v) => v.platform === account.platform);
+    const verdict = verdicts.find((v) => v.platform === target.account.platform);
     const blockers = verdict?.issues.filter((i) => i.severity === "block") ?? [];
     if (imageError || blockers.length > 0) {
       await prisma.postTarget.update({
         where: { id: target.id },
         data: {
           status: "FAILED",
-          error: imageError ? `Image unavailable: ${imageError}` : `Blocked by policy check: ${blockers.map((b) => b.message).join(" ")}`,
+          error: imageError
+            ? `Image unavailable: ${imageError}`
+            : `Blocked by policy check: ${blockers.map((b) => b.message).join(" ")}`,
         },
       });
       continue;
     }
 
-    const token = decrypt(account.accessTokenEncrypted);
     try {
-      let externalPostId: string;
-      switch (account.platform) {
-        case "FACEBOOK":
-          externalPostId = (
-            await publishPagePost({
-              pageId: account.externalId,
-              pageAccessToken: token,
-              message: post.content,
-              imageUrl: post.mediaUrls[0],
-            })
-          ).id;
-          break;
-        case "INSTAGRAM":
-          if (!post.mediaUrls[0]) throw new Error("Instagram posts require an image");
-          externalPostId = (
-            await publishImage({
-              igUserId: account.externalId,
-              accessToken: token,
-              imageUrl: post.mediaUrls[0],
-              caption: post.content,
-            })
-          ).id;
-          break;
-        case "WHATSAPP":
-          if (!target.recipient) throw new Error("WhatsApp target has no recipient");
-          externalPostId = (
-            await sendText({
-              phoneNumberId: account.externalId,
-              accessToken: token,
-              to: target.recipient,
-              body: post.content,
-            })
-          ).messages[0].id;
-          break;
-      }
+      const externalPostId = await send({
+        account: target.account,
+        format: target.format,
+        recipient: target.recipient,
+        content: post.content,
+        imageUrl: post.mediaUrls[0],
+        image,
+        whatsappTemplate,
+      });
       await prisma.postTarget.update({
         where: { id: target.id },
         data: { status: "PUBLISHED", externalPostId, error: null },
@@ -98,7 +133,15 @@ async function publish(postId: string) {
   }
 
   const targets = await prisma.postTarget.findMany({ where: { postId } });
-  const allOk = targets.every((t) => t.status === "PUBLISHED");
+  const allOk = targets.length > 0 && targets.every((t) => t.status === "PUBLISHED");
+  // Show the outcome of this run (scheduled or "Post now") on its channel
+  if (post.channelId) {
+    const errors = [...new Set(targets.filter((t) => t.status === "FAILED").map((t) => t.error))].filter(Boolean);
+    await prisma.channel.update({
+      where: { id: post.channelId },
+      data: { lastRunAt: new Date(), lastError: errors.length ? errors.join(" ") : null },
+    });
+  }
   await prisma.post.update({
     where: { id: postId },
     data: { status: allOk ? "PUBLISHED" : "FAILED", publishedAt: allOk ? new Date() : null },
@@ -108,7 +151,20 @@ async function publish(postId: string) {
 const worker = new Worker<PublishJob>(PUBLISH_QUEUE, (job) => publish(job.data.postId), {
   connection: redisConnection(),
 });
-
 worker.on("completed", (job) => console.log(`Published post ${job.data.postId}`));
 worker.on("failed", (job, err) => console.error(`Post ${job?.data.postId} failed:`, err.message));
-console.log("Publish worker started");
+
+// Scheduler: check for due channel runs every 30 seconds.
+const TICK_MS = Number(process.env.SCHEDULER_TICK_MS ?? 30_000);
+async function tick() {
+  try {
+    const ran = await runDueChannels();
+    if (ran) console.log(`Scheduler: ${ran} channel run(s) started`);
+  } catch (err) {
+    console.error("Scheduler tick failed:", err);
+  }
+}
+setInterval(tick, TICK_MS);
+tick();
+
+console.log("Publish worker and scheduler started");

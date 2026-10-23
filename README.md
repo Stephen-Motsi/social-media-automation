@@ -2,7 +2,8 @@
 
 A web app for scheduling and publishing content to **Meta platforms**: **Facebook Pages**, **Instagram** (Business/Creator accounts), and **WhatsApp** (Cloud API). It has one dashboard and a background worker that publishes at the scheduled time.
 
-> **Status:** scaffold. Sign-in, the database schema, Meta API clients, the webhook endpoint and the publish worker are in place. The "connect account" OAuth flow and the post composer still need to be built. See [Next steps](#next-steps).
+> **Status:** working, tested against mock platform APIs; not yet run against live platform accounts.
+> In place: sign-in, AI image + caption creation with per-platform checks, **Channels** (one container per platform with account connection, post/story choice and recurring schedules), and a worker that publishes to Facebook, Instagram, WhatsApp, X and TikTok. See [Next steps](#next-steps).
 
 ---
 
@@ -11,10 +12,12 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 | Decision | Detail |
 | --- | --- |
 | **Sign-in only, no sign-up** | There is no registration page. Users are created by an admin with a CLI script (see [Managing users](#managing-users)). The first admin comes from `ADMIN_EMAIL` / `ADMIN_PASSWORD` via the seed. |
-| **Meta platforms only (for now)** | Facebook, Instagram and WhatsApp all go through the Meta Graph API, sharing one client (`src/lib/meta/graph.ts`). Other networks can be added later as new `Platform` enum values and clients. |
+| **Five platforms** | Facebook, Instagram and WhatsApp go through the Meta Graph API (`src/lib/meta/`). X (`src/lib/x.ts`) and TikTok (`src/lib/tiktok.ts`) have their own OAuth and posting clients. Adding a platform means a new `Platform` enum value, a client, rules in `rules.ts`, and a connect route. |
+| **One container per platform** | The Channels page has at most one container per platform (`Channel.platform` is unique). Each holds the platform's settings (connect/disconnect only) and its schedule (format, advert, timing). |
+| **Only what each API supports** | Stories exist only on Facebook and Instagram. WhatsApp's Business API can't post **Status**, and the X and TikTok APIs can't post stories, so those options are shown disabled with the reason (`formatSupport` in `rules.ts`). |
 | **WhatsApp is messaging, not a feed** | "Publishing" to WhatsApp means sending a message to recipients. Free-form text only works within 24h of the recipient's last message; otherwise a pre-approved **template** is required (`sendTemplate`). |
 | **Instagram needs media** | The Instagram API cannot post text-only. Images must be at a **public URL** that Meta can fetch. |
-| **Tokens encrypted at rest** | Meta access tokens are stored with AES-256-GCM (`src/lib/crypto.ts`). |
+| **Tokens encrypted at rest** | All platform access and refresh tokens are stored with AES-256-GCM (`src/lib/crypto.ts`). X and TikTok tokens are refreshed automatically before they expire (`src/lib/tokens.ts`). |
 | **AI images go through platform checks** | Images are generated with OpenAI's GPT image API. Every prompt, image and caption is checked against each platform's rules before it can be saved or published (see [Image generation & platform checks](#image-generation--platform-checks)). |
 
 ## Tech stack
@@ -24,6 +27,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 - **PostgreSQL** + **Prisma** ORM
 - **Redis** + **BullMQ** for scheduled publishing jobs
 - **Meta Graph API** (Facebook Pages API, Instagram Content Publishing API, WhatsApp Cloud API)
+- **X API v2** (OAuth 2.0 + PKCE, posts, media upload) and **TikTok** Login Kit + Content Posting API (photo posts)
 - **OpenAI** GPT image generation + `omni-moderation-latest` content moderation
 
 ## Project structure
@@ -31,24 +35,34 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 ```
 .devcontainer/            Codespaces / dev container (app + Postgres + Redis)
 prisma/
-  schema.prisma           Data model: User, SocialAccount, Post, PostTarget, WebhookEvent
+  schema.prisma           Data model: User, SocialAccount, Channel, Post, PostTarget, MediaAsset, WebhookEvent
   migrations/             SQL migrations (commit new ones)
   seed.ts                 Creates the first admin user
-scripts/create-user.ts    Admin CLI to add users (replaces sign-up)
+scripts/
+  create-user.ts          Admin CLI to add users (replaces sign-up)
+  set-env.sh              Save values into .env without showing them (e.g. app secrets)
+  check-meta.ts           `npm run meta:check`: verify Meta settings with Meta
 src/
   auth.ts / auth.config.ts  Auth.js setup (credentials provider)
   middleware.ts           Protects every page except /login, /api/auth, /api/webhooks
   app/
     login/                Sign-in page + server action
-    (dashboard)/          Signed-in area: Overview, Create, Posts, Accounts
-      create/             AI image + caption composer with per-platform checks
+    (dashboard)/          Signed-in area: Overview, Create, Channels, Posts
+      create/             AI image + caption composer with per-platform checks (saves adverts as drafts)
+      channels/           Platform containers: settings (connect/disconnect) + schedule
     api/auth/             Auth.js route handlers
     api/webhooks/meta/    Meta webhook (verification + signed event intake)
-    api/media/[id]/       Public image URLs Meta downloads from (blocked images return 404)
+    api/media/[id]/       Public image URLs platforms download from (blocked images return 404)
+    api/meta|x|tiktok/    OAuth "connect" + "callback" routes per platform
   lib/
     db.ts                 Prisma client
     crypto.ts             Token encryption
     queue.ts              BullMQ queue + schedulePost()
+    schedule.ts           Next-run calculation (once/daily/weekly/monthly, timezone-aware)
+    channels.ts           runChannel() and runDueChannels(): turn a channel's advert into a post
+    tokens.ts             Access token lookup with X/TikTok refresh
+    oauth-state.ts        CSRF state + PKCE cookies for OAuth flows
+    x.ts / tiktok.ts      X and TikTok clients
     media.ts              Image format/size detection, public URLs, loading
     ai/openai.ts          Image generation + moderation calls
     policy/
@@ -56,18 +70,20 @@ src/
       review.ts           Runs the checks and returns a verdict per platform
     meta/
       graph.ts            Shared Graph API fetch wrapper
-      facebook.ts         Page posts (text, photo)
-      instagram.ts        Image publish (container -> publish)
+      facebook.ts         Page posts (text, photo) and photo stories
+      instagram.ts        Image posts and stories (container -> publish)
+      oauth.ts            Facebook Login: token exchange, Pages + linked Instagram accounts
       whatsapp.ts         Text + template messages
       webhook.ts          X-Hub-Signature-256 verification
-  worker/index.ts         Worker that publishes posts to each target
+  worker/index.ts         Worker: runs due schedules every 30s and publishes each post per target
 ```
 
 ### Data model in short
 
-- **SocialAccount** is one connected Facebook Page, Instagram account or WhatsApp phone number, with an encrypted token.
+- **SocialAccount** is one connected Facebook Page, Instagram account, WhatsApp number, X account or TikTok account, with encrypted tokens.
+- **Channel** is one platform container: post format (`POST`/`STORY`), the advert (a draft `Post`), the schedule (`frequency`, `runAt`, `timeOfDay`, `weekdays`, `dayOfMonth`, `timezone`), `enabled`/`nextRunAt`, the last run's result, and WhatsApp recipients/template.
 - **Post** holds the content, media URLs, status and schedule time.
-- **PostTarget** links one post to one account (and, for WhatsApp, a recipient). Each target succeeds or fails on its own, so a failure on one platform doesn't block the others.
+- **PostTarget** links one post to one account, with its `format` (and, for WhatsApp, a recipient). Each target succeeds or fails on its own, so a failure on one platform doesn't block the others. Posts created by a schedule have `channelId` set.
 - **WebhookEvent** stores raw Meta webhook payloads for later processing.
 - **MediaAsset** stores an image (generated or uploaded), its moderation result, and a `blocked` flag.
 
@@ -113,24 +129,46 @@ The **Create** page (`/create`) generates an image from a description with OpenA
 
 ### Current platform limits (`src/lib/policy/rules.ts`)
 
-| | Instagram | Facebook | WhatsApp |
-| --- | --- | --- | --- |
-| Image required | Yes | No | No (sent as text for now) |
-| Formats | JPEG | JPEG, PNG, GIF, WebP | JPEG, PNG |
-| Max size | 8 MB | 4 MB | 5 MB |
-| Aspect ratio | 4:5 to 1.91:1 | Any | Any |
-| Text | 2,200 chars, 30 hashtags, 20 mentions | 63,206 chars | 4,096 chars, required |
-| Sexual content, hate, threats, graphic violence | Block | Block | Block |
-| Harassment, violence, illegal activity | Warn | Warn | Warn; illegal activity blocks |
-| Restricted goods | Warn | Warn | Block |
+| | Instagram | Facebook | WhatsApp | X | TikTok |
+| --- | --- | --- | --- | --- | --- |
+| Image required | Yes | No | No (sent as text for now) | No | Yes (photo post) |
+| Formats | JPEG | JPEG, PNG, GIF, WebP | JPEG, PNG | JPEG, PNG, GIF, WebP | JPEG, WebP |
+| Max size | 8 MB | 4 MB | 5 MB | 5 MB | 20 MB |
+| Aspect ratio | 4:5 to 1.91:1 | Any | Any | Any | Any |
+| Text | 2,200 chars, 30 hashtags, 20 mentions | 63,206 chars | 4,096 chars, required | 280 (links count 23, emoji 2) | 4,000 chars |
+| Stories | Yes (JPEG, 9:16 advised, no caption) | Yes (JPEG/PNG, 9:16 advised) | No Status via API | No | No |
+| Sexual content, hate, threats, graphic violence | Block | Block | Block | Block | Block |
+| Harassment, violence, illegal activity | Warn | Warn | Warn; illegal activity blocks | Warn | Warn; illegal activity blocks |
+| Restricted goods | Warn | Warn | Block | Warn | Block |
 
-These values come from Meta's developer docs and policies (links at the top of `rules.ts`). **They are a product starting point, not legal advice.** Have them reviewed, and re-check them when Meta updates its docs.
+These values come from each platform's developer docs and policies (links at the top of `rules.ts`). **They are a product starting point, not legal advice.** Have them reviewed, and re-check them when Meta updates its docs.
 
 ### Setup
 
 Set `OPENAI_API_KEY` in `.env`. GPT image models require a [verified OpenAI organization](https://platform.openai.com/settings/organization/general). Moderation calls are free; image generation is billed per image (quality is set by `OPENAI_IMAGE_QUALITY`). Without a key, the Create page shows a clear error and generates nothing.
 
 For local testing without a key, point `OPENAI_BASE_URL` at a mock server that implements `POST /images/generations` and `POST /moderations`.
+
+## Channels and scheduling
+
+The **Channels** page (`/channels`) is where adverts get posted automatically.
+
+- **Create new** adds a container for a platform. The dropdown lists only platforms without a container, since two containers for the same platform can't exist. **Delete** removes a container, stops its schedule and disconnects its accounts (after a confirmation).
+- **Settings** (left side of each container) is only for connecting and disconnecting accounts. **Add account** sends the admin to the platform's own login and consent screen; after approval the account shows as connected with a **Disconnect** button. WhatsApp numbers are added with a phone number ID and access token instead.
+- **The social container** (right side) holds:
+  - **Post as:** Post or Story (Facebook, Instagram); Message (WhatsApp; Status isn't available); Post (X, TikTok).
+  - **Advert:** a draft saved from the Create page.
+  - **Schedule:** Once (date and time), Daily, Weekly (chosen days) or Monthly (chosen date; shorter months use their last day), at a time in `APP_TIMEZONE` (default `Africa/Nairobi`).
+  - **WhatsApp only:** recipients (one per line, international format) and an approved template name and language.
+  - **Schedule on**, **Save** and **Post now**. Post now saves the form first.
+- **Turning a schedule on requires** an advert, a connected account, WhatsApp recipients where relevant, and a passing check for that platform **and format**. Otherwise it's saved switched off, with the reason.
+- **Each run** copies the advert into a new post targeting every connected account on that platform, and the worker publishes it after re-running the checks. The result (or the platform's error) shows on the container and under Posts.
+- **The scheduler** is in the worker (`runDueChannels`, every `SCHEDULER_TICK_MS`, default 30s). Each run is claimed atomically, so multiple workers don't double-post. If the worker was down, a missed run posts once, then continues from the next future time. **Nothing posts unless `npm run worker` is running.**
+
+Platform behaviour to know:
+- **X rejects a post identical to a recent one.** A repeating schedule with the same advert will fail from the second run with X's "duplicate content" error.
+- **TikTok:** until TikTok audits the app, posts are visible only to the account owner (`SELF_ONLY`). Photo URLs must be on a domain verified in the TikTok developer portal (`social.yet-kenya.com`).
+- **WhatsApp** only delivers free-form messages within 24 hours of the recipient's last message; scheduled messages should use an approved template.
 
 ## Shared preview (Cloudflare tunnel)
 
@@ -184,7 +222,7 @@ See [`.env.example`](.env.example) for the full list with comments. The main one
 
 ## Meta app setup (connecting real accounts)
 
-The **Accounts** page connects real Pages, Instagram accounts and WhatsApp numbers. Only admins can connect or disconnect. Tokens are stored encrypted (`SocialAccount.accessTokenEncrypted`).
+Accounts are connected from each container's **Settings** on the Channels page. Only admins can connect or disconnect. In the Facebook container, "Add account" saves Pages; in the Instagram container, it saves the Instagram professional accounts linked to those Pages. Run `npm run meta:check` to verify the app ID and secret with Meta.
 
 ### 1. Create the app
 1. At [developers.facebook.com/apps](https://developers.facebook.com/apps), choose **Create app**, then the **Other → Business** type (or the "Manage everything on your Page" and "Connect with customers through WhatsApp" use cases). Connect it to your Business portfolio.
@@ -192,26 +230,38 @@ The **Accounts** page connects real Pages, Instagram accounts and WhatsApp numbe
 
 ### 2. Facebook Login (Pages + Instagram)
 1. Add the **Facebook Login for Business** product.
-2. In its **Settings**, add the redirect URI shown on the Accounts page, e.g. `https://social.yet-kenya.com/api/meta/callback`, under **Valid OAuth Redirect URIs**. It must match exactly, and it must be HTTPS.
+2. In its **Settings**, add the redirect URI shown in the Facebook container's Settings (Channels page), e.g. `https://social.yet-kenya.com/api/meta/callback`, under **Valid OAuth Redirect URIs**. It must match exactly, and it must be HTTPS.
 3. Permissions requested: `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `instagram_basic`, `instagram_content_publish`, `business_management`. Optionally create a Login configuration with these and set `META_LOGIN_CONFIG_ID`.
 4. Instagram must be a **professional (Business or Creator) account linked to a Facebook Page**. It's connected through that Page.
-5. Then go to Accounts → **Connect with Facebook**, sign in, and select the Pages to share.
+5. Then on Channels, add a Facebook (or Instagram) container and press **Add account** in its Settings, sign in, and select the Pages to share.
 
 **Development mode:** without App Review, only people with a role on the Meta app (admin, developer or tester) can connect, and only Pages they manage. That's enough to connect your own accounts. To let other businesses connect, submit those permissions for **App Review** (Advanced Access) and complete **Business Verification**.
 
 ### 3. WhatsApp
 1. Add the **WhatsApp** product. Under **API Setup**, note the **Phone number ID** and **WhatsApp Business Account ID**. Add and verify your real business number to replace the test number.
 2. For a permanent token, go to **Business settings → System users**, create a system user, assign it the app and the WhatsApp account, and generate a token with `whatsapp_business_messaging` and `whatsapp_business_management`. The temporary token on API Setup expires in 24 hours.
-3. On Accounts, enter the phone number ID and token. The app checks them with Meta before saving. Alternatively, set `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` in `.env` and use "Connect the number from server settings", so the token never goes through a browser.
+3. In the WhatsApp container's Settings, enter the phone number ID and token. The app checks them with Meta before saving. Alternatively, set `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` in `.env` and use "Add number from server settings", so the token never goes through a browser.
 
 ### 4. Webhooks (optional for now)
 Callback URL `https://social.yet-kenya.com/api/webhooks/meta`, verify token = `META_WEBHOOK_VERIFY_TOKEN` from `.env`. Subscribe to `page`, `instagram` and `whatsapp_business_account` fields as needed.
 
 ### How connection works (for developers)
 - `GET /api/meta/connect` (admin): sets a CSRF `state` cookie and redirects to Facebook's OAuth dialog (`src/lib/meta/oauth.ts`).
-- `GET /api/meta/callback`: verifies `state`, exchanges the code for a long-lived user token, lists `/me/accounts` with linked `instagram_business_account`, and upserts one `SocialAccount` per Page and per Instagram account. Page tokens obtained this way don't expire; Instagram uses its Page's token.
+- `GET /api/meta/callback`: verifies `state`, exchanges the code for a long-lived user token, lists `/me/accounts` with linked `instagram_business_account`, and upserts a `SocialAccount` per Page (Facebook container) or per linked Instagram account (Instagram container). Page tokens obtained this way don't expire; Instagram uses its Page's token.
 - All Graph calls send `appsecret_proof`, so you can enable **Require App Secret** in the Meta app.
 - Testing without Meta: set `META_GRAPH_BASE_URL` and `META_DIALOG_BASE_URL` to a mock server.
+
+## X app setup
+1. In the [X developer portal](https://developer.x.com), create a project and app on a plan that allows posting.
+2. Under **User authentication settings**, enable OAuth 2.0 with type **Web App (confidential client)**, permissions **Read and write**, callback URL `https://social.yet-kenya.com/api/x/callback`, and website `https://social.yet-kenya.com`.
+3. Put the OAuth 2.0 **Client ID** and **Client Secret** in `.env` as `X_CLIENT_ID` and `X_CLIENT_SECRET` (`bash scripts/set-env.sh X_CLIENT_ID X_CLIENT_SECRET`).
+4. Scopes requested: `tweet.read tweet.write users.read media.write offline.access`. Access tokens last about 2 hours and are refreshed automatically.
+
+## TikTok app setup
+1. In the [TikTok developer portal](https://developers.tiktok.com), create an app and add **Login Kit** and **Content Posting API** (with Direct Post).
+2. Set the redirect URI `https://social.yet-kenya.com/api/tiktok/callback`, and verify the domain/URL prefix `https://social.yet-kenya.com/api/media/` so TikTok can pull photos.
+3. Put the **Client key** and **Client secret** in `.env` as `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET`.
+4. Scopes requested: `user.info.basic,video.publish`. Until TikTok audits the app, posts are private (`SELF_ONLY`). After approval, set `TIKTOK_PRIVACY_LEVEL` (e.g. `PUBLIC_TO_EVERYONE`).
 
 ## Scripts
 
@@ -226,8 +276,13 @@ Callback URL `https://social.yet-kenya.com/api/webhooks/meta`, verify token = `M
 | `npm run db:seed` | Create the admin user |
 | `npm run db:studio` | Prisma Studio |
 | `npm run user:create` | Add a user (see above) |
+| `npm run meta:check` | Check Meta app and WhatsApp settings with Meta |
+| `npm test` | Policy rule and schedule tests |
+| `bash scripts/set-env.sh NAME…` | Save `.env` values without showing them |
 
-CI (`.github/workflows/ci.yml`) runs typecheck and build on every push and PR.
+CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and PR.
+
+**After any schema change** (`npm run db:migrate`), restart `npm run dev` and `npm run worker`. A running process keeps the old Prisma client and fails on new tables or enum values.
 
 ---
 
@@ -236,20 +291,26 @@ CI (`.github/workflows/ci.yml`) runs typecheck and build on every push and PR.
 Suggested order:
 
 1. ~~Connect accounts~~ Done: see [Meta app setup](#meta-app-setup-connecting-real-accounts).
-2. **Finish the composer** on `/create`: add target accounts and a schedule time to the draft (create `PostTarget` rows, then call `schedulePost(post.id, scheduledAt)` from `src/lib/queue.ts`), plus image upload (`MediaAsset` with `source: UPLOADED`, run through the same review).
-3. **Media storage.** Images are stored in Postgres and served from `/api/media/<id>`. Move them to S3, R2 or Cloudinary before real traffic.
-4. **WhatsApp audiences.** Add a contacts/recipients model, template management, and use `sendTemplate` for recipients outside the 24h window.
-5. **Webhook processing.** Handle stored `WebhookEvent`s, e.g. WhatsApp delivery statuses and inbound messages, and comments.
-6. **Token refresh.** Refresh or alert before `tokenExpiresAt`. Page tokens derived from long-lived user tokens don't expire, but user tokens do.
-7. **Admin UI for users**, to replace the CLI with an admin-only page. Consider an admin override or approval step for posts with warnings.
-8. **Tests** (e.g. Vitest for `lib/`, Playwright for login and the posting flow).
-9. **Deployment.** The web app runs on Vercel or any Node host. The worker needs a long-running process (Railway, Render, Fly.io, a VM) plus managed Postgres and Redis. Vercel also gives preview deployments for every PR.
+2. ~~Scheduling~~ Done: see [Channels and scheduling](#channels-and-scheduling).
+3. **Connect live accounts and do a first real post on each platform.** Everything is tested against mock APIs only; real APIs may differ in details (especially X media upload and TikTok photo posting).
+4. **Image upload** on `/create` (`MediaAsset` with `source: UPLOADED`, run through the same review), and **9:16 images for stories** (GPT image sizes are 1:1, 3:2 and 2:3).
+5. **Advert rotation** per channel, so repeating schedules don't post identical content (required for X).
+6. **Instagram publishing limit** check (`content_publishing_limit`) before posting.
+7. **Media storage.** Images are stored in Postgres and served from `/api/media/<id>`. Move them to S3, R2 or Cloudinary before real traffic.
+8. **WhatsApp audiences.** A contacts model and template management with variables (today: a recipient list per channel and a static template).
+9. **Webhook processing.** Handle stored `WebhookEvent`s, e.g. WhatsApp delivery statuses and inbound messages, and comments.
+10. **Token health.** Alert when a refresh fails (X/TikTok) so an admin can reconnect.
+11. **Admin UI for users**, to replace the CLI with an admin-only page. Consider an admin override or approval step for posts with warnings.
+12. **Automated end-to-end tests** (Playwright with mock platform APIs) in CI.
+13. **Deployment.** The web app runs on Vercel or any Node host. The worker needs a long-running process (Railway, Render, Fly.io, a VM) plus managed Postgres and Redis. Vercel also gives preview deployments for every PR.
 
 ## Useful links
 
 - Facebook Pages API: https://developers.facebook.com/docs/pages-api
 - Instagram content publishing: https://developers.facebook.com/docs/instagram-platform/content-publishing
 - WhatsApp Cloud API: https://developers.facebook.com/docs/whatsapp/cloud-api
+- X API: https://docs.x.com/x-api
+- TikTok Content Posting API: https://developers.tiktok.com/doc/content-posting-api-get-started
 - Meta webhooks: https://developers.facebook.com/docs/graph-api/webhooks
 - Auth.js: https://authjs.dev
 - BullMQ: https://docs.bullmq.io

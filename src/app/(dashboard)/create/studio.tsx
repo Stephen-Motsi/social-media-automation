@@ -221,7 +221,10 @@ export function Studio() {
                 <li key={v.platform}>
                   <div className="flex items-center gap-3">
                     <PlatformBadge platform={v.platform} />
-                    <span className="font-medium">{platforms[v.platform].name}</span>
+                    <span className="font-medium">
+                      {platforms[v.platform].name}
+                      {v.format === "STORY" && <span className="font-normal text-ink-soft"> story</span>}
+                    </span>
                     <span className={`ml-auto rounded-full px-3 py-1 text-xs font-medium ${statusCopy[v.status].className}`}>
                       {statusCopy[v.status].label}
                     </span>

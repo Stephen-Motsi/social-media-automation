@@ -17,6 +17,7 @@ export const META_SCOPES = [
 ];
 
 export const STATE_COOKIE = "meta_oauth_state";
+export const PLATFORM_COOKIE = "meta_oauth_platform";
 
 export function metaConfigured() {
   return Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET);

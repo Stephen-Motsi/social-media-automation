@@ -16,6 +16,21 @@ enum Platform {
   FACEBOOK
   INSTAGRAM
   WHATSAPP
+  X
+  TIKTOK
+}
+
+// POST = feed post (or a WhatsApp message); STORY = Facebook/Instagram story
+enum PostFormat {
+  POST
+  STORY
+}
+
+enum Frequency {
+  ONCE
+  DAILY
+  WEEKLY
+  MONTHLY
 }
 
 enum PostStatus {
@@ -51,16 +66,18 @@ model User {
   media MediaAsset[]
 }
 
-// A connected Facebook Page, Instagram Business account, or WhatsApp phone number.
+// A connected Facebook Page, Instagram account, WhatsApp number, X account or TikTok account.
 model SocialAccount {
-  id                   String    @id @default(cuid())
-  platform             Platform
-  externalId           String // Page ID, IG user ID, or WhatsApp phone number ID
-  displayName          String
-  accessTokenEncrypted String // AES-256-GCM, see src/lib/crypto.ts
-  tokenExpiresAt       DateTime?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  id                    String    @id @default(cuid())
+  platform              Platform
+  externalId            String // Page ID, IG user ID, WhatsApp phone number ID, X user ID, TikTok open_id
+  displayName           String
+  accessTokenEncrypted  String // AES-256-GCM, see src/lib/crypto.ts
+  // X and TikTok issue short-lived access tokens plus a refresh token
+  refreshTokenEncrypted String?
+  tokenExpiresAt        DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   targets PostTarget[]
 
@@ -82,6 +99,13 @@ model Post {
   authorId String
   author   User   @relation(fields: [authorId], references: [id])
 
+  // Set when this post was created by a channel's schedule
+  channelId String?
+  channel   Channel? @relation("ChannelRuns", fields: [channelId], references: [id], onDelete: SetNull)
+
+  // Channels using this post as their advert
+  advertFor Channel[] @relation("ChannelAdvert")
+
   targets PostTarget[]
 }
 
@@ -91,6 +115,7 @@ model PostTarget {
   status         TargetStatus @default(PENDING)
   externalPostId String?
   error          String?
+  format         PostFormat   @default(POST)
   // WhatsApp only: recipient phone number in international format
   recipient      String?
 
@@ -132,4 +157,42 @@ model MediaAsset {
   createdBy   User   @relation(fields: [createdById], references: [id])
 
   @@index([createdById, createdAt])
+}
+
+// One container per platform: which advert to post, as a post or story, and when.
+model Channel {
+  id       String     @id @default(cuid())
+  platform Platform   @unique
+  format   PostFormat @default(POST)
+
+  advertId String?
+  advert   Post?   @relation("ChannelAdvert", fields: [advertId], references: [id], onDelete: SetNull)
+
+  frequency  Frequency @default(DAILY)
+  // ONCE: exact time to post
+  runAt      DateTime?
+  // DAILY/WEEKLY/MONTHLY: local time of day "HH:MM" in `timezone`
+  timeOfDay  String    @default("09:00")
+  // WEEKLY: 0 = Sunday ... 6 = Saturday
+  weekdays   Int[]
+  // MONTHLY: 1-31 (falls back to the month's last day)
+  dayOfMonth Int?
+  timezone   String    @default("Africa/Nairobi")
+
+  enabled   Boolean   @default(false)
+  nextRunAt DateTime?
+  lastRunAt DateTime?
+  lastError String?
+
+  // WhatsApp only
+  whatsappRecipients   String[]
+  whatsappTemplate     String?
+  whatsappTemplateLang String   @default("en_US")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runs Post[] @relation("ChannelRuns")
+
+  @@index([enabled, nextRunAt])
 }

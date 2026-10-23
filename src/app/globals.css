@@ -118,6 +118,12 @@ body::before {
 @utility blend-whatsapp {
   background: linear-gradient(135deg, var(--wa-1), var(--wa-2));
 }
+@utility blend-x {
+  background: linear-gradient(135deg, #0f1419, #536471);
+}
+@utility blend-tiktok {
+  background: linear-gradient(135deg, #25f4ee, #0f0f14 48%, #fe2c55);
+}
 /* All three channels in one sweep, used for the active nav item and primary actions */
 @utility blend-meta {
   background: linear-gradient(110deg, var(--fb-1), var(--ig-3) 45%, var(--ig-2) 70%, var(--ig-1));

@@ -6,7 +6,9 @@ import { prisma } from "@/lib/db";
 import { generateImage, OpenAIError, IMAGE_SIZES, type ImageShape } from "@/lib/ai/openai";
 import { imageInfo, publicMediaUrl } from "@/lib/media";
 import { blockedEverywhere, reviewContent, reviewPrompt } from "@/lib/policy/review";
-import type { Issue, PlatformVerdict } from "@/lib/policy/rules";
+import { platformOrder, type Issue, type PlatformVerdict } from "@/lib/policy/rules";
+import type { Formats } from "@/lib/policy/review";
+import type { Platform } from "@prisma/client";
 
 export type GeneratedMedia = { id: string; url: string; width: number; height: number; blocked: boolean };
 export type ActionResult<T> = ({ ok: true } & T) | { ok: false; error: string; issues?: Issue[] };
@@ -14,6 +16,16 @@ export type ActionResult<T> = ({ ok: true } & T) | { ok: false; error: string; i
 const dailyLimit = () => Number(process.env.IMAGE_DAILY_LIMIT ?? 20);
 
 const NOT_CONFIGURED = "Image generation isn't set up yet. Add OPENAI_API_KEY to the .env file.";
+
+// Check against the platforms (and post/story formats) of existing channels; all platforms if none yet.
+async function reviewTargets(): Promise<{ platforms: Platform[]; formats: Formats }> {
+  const channels = await prisma.channel.findMany({ select: { platform: true, format: true } });
+  if (channels.length === 0) return { platforms: platformOrder, formats: {} };
+  return {
+    platforms: platformOrder.filter((p) => channels.some((c) => c.platform === p)),
+    formats: Object.fromEntries(channels.map((c) => [c.platform, c.format])),
+  };
+}
 
 async function requireUser() {
   const session = await auth();
@@ -76,7 +88,8 @@ export async function generateAction(input: {
 
   // 4. Check the generated image against every platform's rules
   const image = { ...info, data: new Uint8Array(bytes), sizeBytes: bytes.byteLength };
-  const { verdicts, moderation } = await reviewContent({ caption: "", image, prompt });
+  const { platforms, formats } = await reviewTargets();
+  const { verdicts, moderation } = await reviewContent({ caption: "", image, prompt }, platforms, formats);
 
   const asset = await prisma.mediaAsset.create({
     data: {
@@ -110,11 +123,12 @@ export async function checkAction(input: {
 }): Promise<ActionResult<{ verdicts: PlatformVerdict[] }>> {
   const userId = await requireUser();
   const asset = input.mediaId ? await loadOwnAsset(userId, input.mediaId) : null;
-  const { verdicts } = await reviewContent({
-    caption: input.caption,
-    image: asset,
-    prompt: asset?.prompt ?? undefined,
-  });
+  const { platforms, formats } = await reviewTargets();
+  const { verdicts } = await reviewContent(
+    { caption: input.caption, image: asset, prompt: asset?.prompt ?? undefined },
+    platforms,
+    formats,
+  );
   return { ok: true, verdicts };
 }
 
@@ -126,11 +140,12 @@ export async function saveDraftAction(input: {
   const asset = input.mediaId ? await loadOwnAsset(userId, input.mediaId) : null;
 
   // Never trust the client's last check: review again on save.
-  const { verdicts } = await reviewContent({
-    caption: input.caption,
-    image: asset,
-    prompt: asset?.prompt ?? undefined,
-  });
+  const { platforms, formats } = await reviewTargets();
+  const { verdicts } = await reviewContent(
+    { caption: input.caption, image: asset, prompt: asset?.prompt ?? undefined },
+    platforms,
+    formats,
+  );
   if (verdicts.every((v) => v.status === "block")) {
     return { ok: false, error: "This post can't go on any platform yet. Fix the issues below and try again." };
   }

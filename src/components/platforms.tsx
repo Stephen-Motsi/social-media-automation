@@ -29,6 +29,22 @@ function WhatsAppIcon({ className }: IconProps) {
   );
 }
 
+function XIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden className={className} fill="currentColor">
+      <path d="M17.8 3.5h3l-6.6 7.5 7.8 9.5h-6.1l-4.8-5.9-5.5 5.9H2.6l7.1-8L2.2 3.5h6.2l4.3 5.4 5.1-5.4zm-1.1 15.3h1.7L7.4 5.1H5.6l11.1 13.7z" />
+    </svg>
+  );
+}
+
+function TikTokIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden className={className} fill="currentColor">
+      <path d="M16.6 3c.3 2.2 1.6 3.6 3.9 3.8v2.6c-1.4.1-2.6-.3-3.9-1.1v5.6c0 3.6-2.6 6.1-6 6.1-3.3 0-5.9-2.6-5.6-6 .3-3 2.9-5.2 6.2-4.9v2.8c-1.6-.3-3.2.6-3.4 2.2-.2 1.6 1 2.9 2.6 2.9 1.5 0 2.6-1.1 2.6-3.1V3h3.6z" />
+    </svg>
+  );
+}
+
 export const platforms: Record<
   Platform,
   { name: string; accountNoun: [string, string]; blend: string; glow: string; Icon: (p: IconProps) => React.ReactElement }
@@ -53,6 +69,20 @@ export const platforms: Record<
     blend: "blend-whatsapp",
     glow: "var(--wa-1)",
     Icon: WhatsAppIcon,
+  },
+  X: {
+    name: "X",
+    accountNoun: ["account", "accounts"],
+    blend: "blend-x",
+    glow: "#536471",
+    Icon: XIcon,
+  },
+  TIKTOK: {
+    name: "TikTok",
+    accountNoun: ["account", "accounts"],
+    blend: "blend-tiktok",
+    glow: "#fe2c55",
+    Icon: TikTokIcon,
   },
 };
 
