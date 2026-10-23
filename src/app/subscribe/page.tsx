@@ -34,6 +34,12 @@ export default async function SubscribePage() {
             />
           )}
         </div>
+        <p className="mt-8 text-center text-xs text-ink-soft">
+          Already subscribed? Message <strong>MANAGE</strong> to us on WhatsApp to change topics.{" "}
+          <a href="/login" className="underline-offset-2 hover:underline">
+            Staff sign in
+          </a>
+        </p>
       </div>
     </main>
   );

@@ -9,6 +9,8 @@ export const authConfig = {
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = !!auth?.user;
       const isOnLogin = nextUrl.pathname.startsWith("/login");
+      // The public (user) side: signed-out visitors to the home page go to the subscribe page.
+      if (!isLoggedIn && nextUrl.pathname === "/") return Response.redirect(new URL("/subscribe", nextUrl));
       if (isOnLogin) {
         return isLoggedIn ? Response.redirect(new URL("/", nextUrl)) : true;
       }

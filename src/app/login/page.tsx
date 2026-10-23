@@ -6,9 +6,15 @@ export default function LoginPage() {
       <div className="glass w-full max-w-sm rounded-[28px] p-8">
         <h1 className="text-xl font-semibold">Sign in</h1>
         <p className="mt-1 mb-6 text-sm text-ink-soft">
-          Access is by invitation. Ask an admin for an account.
+          For staff. Access is by invitation; ask an admin for an account.
         </p>
         <LoginForm />
+        <p className="mt-6 text-center text-sm text-ink-soft">
+          Looking for offers?{" "}
+          <a href="/subscribe" className="font-medium text-ink underline-offset-2 hover:underline">
+            Subscribe on WhatsApp
+          </a>
+        </p>
       </div>
     </main>
   );

@@ -12,7 +12,8 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 | Decision | Detail |
 | --- | --- |
 | **Sign-in only, no sign-up (staff)** | There is no registration page for staff. Users are created by an admin with a CLI script (see [Managing users](#managing-users)). The first admin comes from `ADMIN_EMAIL` / `ADMIN_PASSWORD` via the seed. |
-| **Subscribers are the audience** | Members of the public subscribe at `/subscribe` (no account, no password) to receive adverts on WhatsApp about topics they choose. Adverts are matched to them automatically; **an admin approves every send**. WhatsApp is the only channel that can deliver to an individual; the other platforms only allow public posts (Channels). |
+| **Subscribers are the audience (user side)** | The public home page is `/subscribe` (signed-out visitors to `/` land there). People subscribe to adverts on WhatsApp about topics they choose, with no account or password, or an admin adds them. Adverts are matched to them automatically; **an admin approves every send**. WhatsApp is the only channel that can deliver to an individual; the other platforms only allow public posts (Channels). |
+| **Subscriptions are approved automatically** | Each subscription runs through checks based on WhatsApp's policies (`src/lib/policy/subscriptions.ts`). Passing ones are accepted with no admin action; only flagged ones wait on Approvals. |
 | **Five platforms** | Facebook, Instagram and WhatsApp go through the Meta Graph API (`src/lib/meta/`). X (`src/lib/x.ts`) and TikTok (`src/lib/tiktok.ts`) have their own OAuth and posting clients. Adding a platform means a new `Platform` enum value, a client, rules in `rules.ts`, and a connect route. |
 | **Meta, X and TikTok containers** | The Channels page has one parent container per provider (`ChannelGroup.kind` is unique): **Meta** (holding any of Facebook, Instagram, WhatsApp), **X** and **TikTok**. Each has Settings (connect/disconnect only) and one social container per platform (`Channel`, unique per platform) with format, advert and schedule. |
 | **Handles decide which real account is used** | Admins enter the handle for each platform (Page username, @handle, WhatsApp number). Connecting only links the account the platform reports for that handle, and posts only go to accounts matching it (`src/lib/handles.ts`). A handle alone can't grant posting rights: the account owner still signs in and approves. |
@@ -67,7 +68,8 @@ src/
     channels.ts           runChannel() and runDueChannels(): turn a channel's advert into a post
     tokens.ts             Access token lookup with X/TikTok refresh
     handles.ts            Container groups, handle cleanup/matching, profile links
-    audience.ts           Phone/town cleanup, matching adverts to subscribers, proposing campaigns
+    audience.ts           Phone/town cleanup, confirmation codes, matching adverts to subscribers, proposing campaigns
+    consent.ts            Consent options for admin-added people (safe for client components)
     campaigns.ts          Sending approved campaigns over WhatsApp; STOP and delivery-status webhooks
     oauth-state.ts        CSRF state + PKCE cookies for OAuth flows
     x.ts / tiktok.ts      X and TikTok clients
@@ -76,6 +78,7 @@ src/
     policy/
       rules.ts            Per-platform limits, content policy, restricted topics (edit here)
       review.ts           Runs the checks and returns a verdict per platform
+      subscriptions.ts    Automatic subscription approval rules (WhatsApp policy) and decisions
     meta/
       graph.ts            Shared Graph API fetch wrapper
       facebook.ts         Page posts (text, photo) and photo stories
@@ -95,7 +98,7 @@ src/
 - **PostTarget** links one post to one account, with its `format` (and, for WhatsApp, a recipient). Each target succeeds or fails on its own, so a failure on one platform doesn't block the others. Posts created by a schedule have `channelId` set.
 - **WebhookEvent** stores raw Meta webhook payloads; WhatsApp STOP replies and delivery statuses are processed.
 - **Interest** is a topic subscribers choose and adverts are tagged with (`Post.interests`, plus optional `Post.targetLocations`).
-- **Subscriber** is a person who opted in: name, WhatsApp number, town, topics, consent record (text, time, IP), status, and a secret `manageToken` for their own manage link.
+- **Subscriber** is a person who opted in: name, WhatsApp number, town, topics, consent record (text, time, IP, `source`: self sign-up or admin with how consent was collected), `confirmCode`/`confirmedAt` (number ownership), status (`PENDING` → `ACTIVE`, or `NEEDS_REVIEW` / `REJECTED` / `UNSUBSCRIBED`), the automatic `checks` and who decided (`decidedBy`: `auto` or an admin), and a secret `manageToken` for their own manage link.
 - **Campaign** is one proposed send of an advert to its matched subscribers (`PENDING_APPROVAL` → `APPROVED` → `SENDING` → `SENT`, or `REJECTED`/`FAILED`). **Delivery** is one message to one subscriber, with its WhatsApp message ID and status (`SENT`, `DELIVERED`, `READ`, `FAILED`, `SKIPPED`).
 - **Setting** holds small admin settings, e.g. the WhatsApp template for audience adverts.
 - **MediaAsset** stores an image (generated or uploaded), its moderation result, and a `blocked` flag.
@@ -164,12 +167,31 @@ For local testing without a key, point `OPENAI_BASE_URL` at a mock server that i
 
 ## Audience, subscribers and approvals
 
-**The user side.** `/subscribe` is public. People enter their name, WhatsApp number (Kenyan `07…`/`01…` numbers become `2547…`/`2541…`), an optional town, the topics they want, and tick a consent box. The consent text, time and IP are stored, as WhatsApp requires an opt-in before businesses message people. Re-subscribing with the same number updates the record. After subscribing, each person gets a **manage link** (`/subscribe/manage/<token>`) to change topics or unsubscribe. Replying **STOP** (or UNSUBSCRIBE, CANCEL, END, QUIT) to any message also unsubscribes them, via the WhatsApp webhook. Spam protection: a hidden trap field and a per-IP limit (10 sign-ups per hour).
+**The user side.** `/subscribe` is the public home page (signed-out visitors to `/` are sent there; staff sign in at `/login`).
+1. People enter their name, WhatsApp number (Kenyan `07…`/`01…` numbers become `2547…`/`2541…`), an optional town and the topics they want, and tick the consent box. The consent text, time and IP are stored.
+2. **Confirm on WhatsApp:** the next screen shows `JOIN <code>` and a button that opens WhatsApp to the business number (the Meta container's WhatsApp handle) with that message filled in. Sending it from the number that signed up proves they own it; a code sent from a different number is refused. Unconfirmed sign-ups are removed after 7 days.
+3. Once confirmed and approved, they get a WhatsApp reply with their **manage link** (`/subscribe/manage/<token>`) to change topics or unsubscribe. Messaging **MANAGE** any time sends the link again; **STOP** (or UNSUBSCRIBE, CANCEL, END, QUIT) unsubscribes. These replies are free-form messages, allowed because the person messaged first.
+
+Entering a number that's already subscribed changes nothing and reveals nothing: the page tells the owner to message MANAGE from that phone. Spam protection: a hidden trap field, and a per-IP limit (10 sign-ups an hour, with more than 3 flagged for review).
+
+**Automatic approval** (`src/lib/policy/subscriptions.ts`, listed on the Audience page). Every subscription, self sign-up or admin-added, is checked:
+
+| Check | Based on | If it fails |
+| --- | --- | --- |
+| Opt-in consent recorded | WhatsApp Business Messaging Policy: opt-in required | Rejected |
+| Valid phone number | Messages only reach real numbers | Rejected |
+| Country WhatsApp Business can message (not Cuba, Iran, North Korea, Syria; extend with `BLOCKED_COUNTRY_CODES`; optionally restrict with `ALLOWED_COUNTRY_CODES`) | Meta sanctions rules | Rejected (or review outside allowed countries) |
+| Number ownership: self sign-ups send JOIN; admin-added people rely on the admin's consent record | Opt-in must come from the number's owner | Waits for confirmation |
+| Name passes the content check (OpenAI moderation; links/only digits flagged) | No abusive entries | Admin review |
+| Not one of many sign-ups from the same network in an hour | Spam protection | Admin review |
+| Not re-added by an admin after they unsubscribed | Opt-outs must be honoured | Admin review |
+
+All pass → **accepted automatically** (`decidedBy: "auto"`), and they're immediately matched to existing adverts. Any review → **Approvals → Subscriptions to review** (Approve, Reject or Check again). Any fail → rejected automatically, with the reason shown to the person.
 
 **The admin side.**
-- **Audience** (`/audience`): totals; the subscribe link to share; **topics** (add/remove, with subscriber counts; 6 starter topics come from the seed); the **WhatsApp template** setting; and the subscriber list with search and filters by topic and status. Admins can unsubscribe someone, or delete their data on request. Re-subscribing needs the person's own consent.
+- **Audience** (`/audience`): totals (subscribed, joined this week, waiting to confirm, needs review, unsubscribed); **Add people**, either one person or many at once (one per line: `Name, phone, town, Topic; Topic`), each with how consent was collected and a confirmation that they agreed, then run through the same automatic checks; the automatic approval rules; the subscribe link to share; **topics** (add/remove, with subscriber counts; 6 starter topics come from the seed); the **WhatsApp template** setting; and the subscriber list with search and filters by topic and status. Admins can unsubscribe someone, or delete their data on request. Re-subscribing needs the person's own consent.
 - **Create:** when saving an advert, tick the topics it's for and, optionally, towns. Saving immediately matches subscribers and proposes a send.
-- **Approvals** (`/approvals`, with a count badge in the nav): each proposal shows the advert, who it reaches (count, by topic, by town, sample names), why it was proposed, and its WhatsApp check. **Approve & send** or **Reject** is the only manual step. History shows each send's results.
+- **Approvals** (`/approvals`, with a count badge in the nav): **Subscriptions to review** (flagged by the checks), then advert sends. Each send proposal shows the advert, who it reaches (count, by topic, by town, sample names), why it was proposed, and its WhatsApp check. **Approve & send** or **Reject** is the only manual step. History shows each send's results.
 
 **What's automatic.**
 - **Matching:** active subscribers with any of the advert's topics, in its towns if set (case-insensitive), who haven't already received or been queued for it.
@@ -321,7 +343,7 @@ Callback URL `https://social.yet-kenya.com/api/webhooks/meta`, verify token = `M
 | `npm run db:studio` | Prisma Studio |
 | `npm run user:create` | Add a user (see above) |
 | `npm run meta:check` | Check Meta app and WhatsApp settings with Meta |
-| `npm test` | Policy rule, schedule, handle and audience tests |
+| `npm test` | Policy rule, schedule, handle, audience and subscription-approval tests |
 | `bash scripts/set-env.sh NAME…` | Save `.env` values without showing them |
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and PR.
@@ -341,7 +363,7 @@ Suggested order:
 5. **Advert rotation** per channel, so repeating schedules don't post identical content (required for X).
 6. **Instagram publishing limit** check (`content_publishing_limit`) before posting.
 7. **Media storage.** Images are stored in Postgres and served from `/api/media/<id>`. Move them to S3, R2 or Cloudinary before real traffic.
-8. **Audience extras:** CSV import of existing opted-in contacts (with their consent records), a WhatsApp number check at sign-up (OTP via an authentication template), per-subscriber message history, and an approval step for scheduled Channel posts if wanted.
+8. **Audience extras:** CSV file upload (today: paste lines), per-subscriber message history, opt-in via WhatsApp click-to-chat ads, and an approval step for scheduled Channel posts if wanted.
 9. **Webhook processing.** Handle stored `WebhookEvent`s, e.g. WhatsApp delivery statuses and inbound messages, and comments.
 10. **Token health.** Alert when a refresh fails (X/TikTok) so an admin can reconnect.
 11. **Admin UI for users**, to replace the CLI with an admin-only page. Consider an admin override or approval step for posts with warnings.

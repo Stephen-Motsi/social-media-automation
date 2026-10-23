@@ -38,21 +38,61 @@ function Locations({ locations }: { locations: string[] }) {
 export function SubscribeForm({ interests, locations, consentText }: { interests: Interest[]; locations: string[]; consentText: string }) {
   const [state, action, pending] = useActionState(subscribe, undefined);
 
-  if (state?.ok) {
+  if (state?.rejected) {
     return (
       <div className="space-y-3 text-center" role="status">
-        <p className="text-2xl font-semibold">You&rsquo;re subscribed</p>
-        <p className="text-ink-soft">Adverts about the topics you chose will arrive on WhatsApp. Reply STOP to any of them to unsubscribe.</p>
-        {state.manageUrl && (
-          <p className="text-sm text-ink-soft">
-            Keep this link to change your topics or unsubscribe later:{" "}
-            <a href={state.manageUrl} className="break-all font-medium text-ink underline underline-offset-2">
-              {state.manageUrl}
-            </a>
-          </p>
+        <p className="text-2xl font-semibold">We can&rsquo;t subscribe this number</p>
+        <p className="text-ink-soft">{state.rejected}</p>
+      </div>
+    );
+  }
+
+  if (state?.existing) {
+    return (
+      <div className="space-y-4 text-center" role="status">
+        <p className="text-2xl font-semibold">This number is already on our list</p>
+        <p className="text-ink-soft">
+          To change your topics or unsubscribe, message <strong className="text-ink">MANAGE</strong> to us on WhatsApp
+          from that number. We&rsquo;ll reply with your personal link.
+        </p>
+        {state.existing.manageLink && (
+          <a href={state.existing.manageLink} className="blend-whatsapp inline-block rounded-full px-5 py-2.5 font-medium text-white">
+            Message MANAGE on WhatsApp
+          </a>
         )}
       </div>
     );
+  }
+
+  if (state?.confirm) {
+    return (
+      <div className="space-y-4 text-center" role="status">
+        <p className="text-sm font-medium text-ink-soft">Step 2 of 2</p>
+        <p className="text-2xl font-semibold">Confirm on WhatsApp</p>
+        <p className="text-ink-soft">
+          Send us the message below from the number you entered. It proves the number is yours, and your subscription
+          starts straight away.
+        </p>
+        <p className="rounded-2xl border border-line bg-white/50 py-3 font-mono text-2xl tracking-widest dark:bg-white/5">
+          JOIN {state.confirm.code}
+        </p>
+        {state.confirm.link ? (
+          <a
+            href={state.confirm.link}
+            className="blend-whatsapp inline-block w-full rounded-full px-5 py-3 font-medium text-white shadow-md shadow-emerald-500/25"
+          >
+            Open WhatsApp and send
+          </a>
+        ) : (
+          <p className="text-sm text-ink-soft">WhatsApp confirmation isn&rsquo;t available yet. We&rsquo;ll be in touch.</p>
+        )}
+        <p className="text-xs text-ink-soft">Not confirmed within 7 days? The sign-up is removed.</p>
+      </div>
+    );
+  }
+
+  if (state?.ok) {
+    return <p className="text-center text-ink-soft" role="status">{state.message ?? "Thanks!"}</p>;
   }
 
   return (

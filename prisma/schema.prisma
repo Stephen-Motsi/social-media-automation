@@ -73,6 +73,7 @@ model User {
   media MediaAsset[]
 
   approvedCampaigns Campaign[]
+  addedSubscribers  Subscriber[] @relation("AddedSubscribers")
 }
 
 // A connected Facebook Page, Instagram account, WhatsApp number, X account or TikTok account.
@@ -230,8 +231,14 @@ model Channel {
 
 // ---- Audience: people who subscribed to receive adverts ----------------------------
 
+// PENDING: waiting for the person to confirm their number on WhatsApp
+// NEEDS_REVIEW: an automatic check flagged it for an admin
+// ACTIVE: accepted (automatically or by an admin) and receiving adverts
 enum SubscriberStatus {
+  PENDING
+  NEEDS_REVIEW
   ACTIVE
+  REJECTED
   UNSUBSCRIBED
 }
 
@@ -268,14 +275,26 @@ model Subscriber {
   // WhatsApp number, digits only in international format (e.g. 254712345678)
   phone     String           @unique
   location  String?
-  status    SubscriberStatus @default(ACTIVE)
+  status    SubscriberStatus @default(PENDING)
   interests Interest[]
 
   // Opt-in record (WhatsApp requires businesses to have it before messaging)
   consentText String
   consentAt   DateTime
   consentIp   String?
+  // "subscribe_page", or "admin" / "import" with the admin's description of how consent was collected
   source      String   @default("subscribe_page")
+  addedById   String?
+  addedBy     User?    @relation("AddedSubscribers", fields: [addedById], references: [id], onDelete: SetNull)
+
+  // Number ownership: the person sends "JOIN <code>" to the business on WhatsApp
+  confirmCode String?   @unique
+  confirmedAt DateTime?
+
+  // Automatic approval: each policy check and its result, and who decided ("auto" or an admin's email)
+  checks    Json?
+  decidedAt DateTime?
+  decidedBy String?
 
   // Secret for the subscriber's own "manage / unsubscribe" link
   manageToken    String    @unique

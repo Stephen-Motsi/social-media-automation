@@ -1,8 +1,16 @@
 import { prisma } from "@/lib/db";
-import { getAudienceTemplate, MIN_HOURS_BETWEEN_MESSAGES, templateText } from "@/lib/audience";
+import {
+  getAudienceTemplate,
+  manageUrl,
+  MIN_HOURS_BETWEEN_MESSAGES,
+  proposeForSubscriber,
+  subscribePageUrl,
+  templateText,
+} from "@/lib/audience";
+import { evaluateSubscription } from "@/lib/policy/subscriptions";
 import { handleMatches } from "@/lib/handles";
 import { loadImage } from "@/lib/media";
-import { sendTemplate } from "@/lib/meta/whatsapp";
+import { sendTemplate, sendText } from "@/lib/meta/whatsapp";
 import { reviewContent } from "@/lib/policy/review";
 import { accessTokenFor } from "@/lib/tokens";
 
@@ -84,26 +92,101 @@ export async function sendCampaign(campaignId: string) {
   await prisma.campaign.update({ where: { id: campaignId }, data: { status: "SENT" } });
 }
 
-// WhatsApp webhooks: "STOP" unsubscribes; message statuses update deliveries.
+// WhatsApp webhooks from subscribers:
+// - "JOIN <code>" from the number that signed up confirms ownership, then the automatic checks decide
+// - "MANAGE" / "MENU" replies with their manage link
+// - "STOP" (and similar) unsubscribes
+// - message statuses update deliveries
+// Replies are free-form text, allowed because the person just messaged us (24-hour window).
 type WhatsAppChange = {
+  metadata?: { phone_number_id?: string };
   messages?: { from: string; type: string; text?: { body: string }; button?: { text: string } }[];
   statuses?: { id: string; status: string; errors?: { title?: string; message?: string }[] }[];
 };
 const STOP_WORDS = /^\s*(stop|unsubscribe|stop all|cancel|end|quit)\s*$/i;
+const JOIN = /^\s*join\s*([a-z0-9]{6})?\s*$/i;
+const MANAGE = /^\s*(manage|menu|settings|my subscription)\s*$/i;
+
+async function replier() {
+  const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
+  const account = (await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP" } })).find((a) =>
+    handleMatches("WHATSAPP", channel?.handle, a),
+  );
+  if (!account) return async () => {};
+  const token = await accessTokenFor(account);
+  return async (to: string, body: string) => {
+    await sendText({ phoneNumberId: account.externalId, accessToken: token, to, body }).catch((err) =>
+      console.error("WhatsApp reply failed:", err instanceof Error ? err.message : err),
+    );
+  };
+}
+
+async function handleIncoming(from: string, text: string, reply: (to: string, body: string) => Promise<void>) {
+  const phone = from.replace(/\D/g, "");
+  if (STOP_WORDS.test(text)) {
+    const res = await prisma.subscriber.updateMany({
+      where: { phone, status: { in: ["ACTIVE", "PENDING", "NEEDS_REVIEW"] } },
+      data: { status: "UNSUBSCRIBED", unsubscribedAt: new Date() },
+    });
+    if (res.count) await reply(phone, "You've been unsubscribed and won't receive any more adverts from us.");
+    return;
+  }
+
+  const join = JOIN.exec(text);
+  if (join) {
+    const code = join[1]?.toUpperCase();
+    const sub = code
+      ? await prisma.subscriber.findUnique({ where: { confirmCode: code } })
+      : await prisma.subscriber.findFirst({ where: { phone, status: "PENDING", source: "subscribe_page" } });
+    if (!sub) {
+      await reply(phone, `We couldn't find that sign-up. You can subscribe at ${subscribePageUrl()}`);
+      return;
+    }
+    // The code only confirms the number it was issued to; that's what proves ownership.
+    if (sub.phone !== phone) {
+      await reply(phone, `That code was for a different number. To subscribe this number, sign up at ${subscribePageUrl()}`);
+      return;
+    }
+    if (!sub.confirmedAt) await prisma.subscriber.update({ where: { id: sub.id }, data: { confirmedAt: new Date() } });
+    const status = sub.status === "ACTIVE" ? "ACTIVE" : await evaluateSubscription(sub.id);
+    const first = sub.name.split(" ")[0];
+    if (status === "ACTIVE") {
+      await proposeForSubscriber(sub.id).catch(() => null);
+      const topics = (await prisma.subscriber.findUnique({ where: { id: sub.id }, include: { interests: true } }))?.interests
+        .map((i) => i.name)
+        .join(", ");
+      await reply(
+        phone,
+        `Welcome, ${first}! You're subscribed to adverts about: ${topics}. Change your topics any time: ${manageUrl(sub.manageToken)} . Reply STOP to unsubscribe.`,
+      );
+    } else if (status === "NEEDS_REVIEW") {
+      // Flagged entries may have an abusive name, so don't repeat it back.
+      await reply(phone, "Thanks. We're reviewing your subscription and will start sending adverts once it's approved.");
+    } else if (status === "REJECTED") {
+      await reply(phone, "Sorry, we can't subscribe this number.");
+    }
+    return;
+  }
+
+  if (MANAGE.test(text)) {
+    const sub = await prisma.subscriber.findUnique({ where: { phone } });
+    await reply(
+      phone,
+      sub ? `Here's your personal link to change topics or unsubscribe: ${manageUrl(sub.manageToken)}` : `You're not subscribed yet. Sign up at ${subscribePageUrl()}`,
+    );
+  }
+}
 
 export async function processWhatsAppWebhook(payload: { object?: string; entry?: { changes?: { value?: WhatsAppChange }[] }[] }) {
   if (payload.object !== "whatsapp_business_account") return;
+  let reply: ((to: string, body: string) => Promise<void>) | null = null;
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const value = change.value ?? {};
       for (const m of value.messages ?? []) {
         const text = m.text?.body ?? m.button?.text ?? "";
-        if (STOP_WORDS.test(text)) {
-          await prisma.subscriber.updateMany({
-            where: { phone: m.from.replace(/\D/g, ""), status: "ACTIVE" },
-            data: { status: "UNSUBSCRIBED", unsubscribedAt: new Date() },
-          });
-        }
+        reply ??= await replier();
+        await handleIncoming(m.from, text, reply);
       }
       for (const s of value.statuses ?? []) {
         const status = s.status === "delivered" ? "DELIVERED" : s.status === "read" ? "READ" : s.status === "failed" ? "FAILED" : null;

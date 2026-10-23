@@ -10,7 +10,7 @@
     "start": "next start",
     "worker": "tsx --env-file-if-exists=.env src/worker/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx src/lib/policy/review.test.ts && tsx src/lib/schedule.test.ts && tsx src/lib/handles.test.ts && tsx src/lib/audience.test.ts",
+    "test": "tsx src/lib/policy/review.test.ts && tsx src/lib/schedule.test.ts && tsx src/lib/handles.test.ts && tsx src/lib/audience.test.ts && tsx src/lib/policy/subscriptions.test.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",

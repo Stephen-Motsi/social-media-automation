@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db";
 import { CAMPAIGN_QUEUE, PUBLISH_QUEUE, redisConnection, type CampaignJob, type PublishJob } from "@/lib/queue";
 import { sendCampaign } from "@/lib/campaigns";
 import { proposeAll } from "@/lib/audience";
+import { expireUnconfirmed } from "@/lib/policy/subscriptions";
 import { publishPagePost, publishPageStory } from "@/lib/meta/facebook";
 import { publishImage } from "@/lib/meta/instagram";
 import { sendTemplate, sendText } from "@/lib/meta/whatsapp";
@@ -175,6 +176,8 @@ async function tick() {
     if (ticks++ % 20 === 0) {
       const proposed = await proposeAll();
       if (proposed) console.log(`Audience: ${proposed} campaign(s) proposed for approval`);
+      const expired = await expireUnconfirmed();
+      if (expired) console.log(`Audience: ${expired} unconfirmed sign-up(s) expired`);
     }
   } catch (err) {
     console.error("Scheduler tick failed:", err);

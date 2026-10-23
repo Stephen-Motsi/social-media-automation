@@ -7,6 +7,8 @@ import { prisma } from "@/lib/db";
 export const CONSENT_TEXT =
   "I agree to receive adverts on WhatsApp about the topics I chose. I can unsubscribe at any time by replying STOP or using my manage link.";
 
+export { CONSENT_METHODS } from "@/lib/consent";
+
 // Suggested towns on the subscribe page (subscribers can type any).
 export const COMMON_LOCATIONS = ["Nairobi", "Mombasa", "Kisumu", "Nakuru", "Eldoret", "Thika", "Machakos", "Nyeri"];
 
@@ -24,6 +26,23 @@ export function normalizePhone(input: string, countryCode = DEFAULT_COUNTRY_CODE
 }
 
 export const newManageToken = () => randomBytes(24).toString("base64url");
+
+// Short code people send as "JOIN ABC123" to prove they own the number. No look-alike characters.
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export function newConfirmCode() {
+  const bytes = randomBytes(6);
+  return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+}
+
+// The business's WhatsApp number people confirm with: the Meta container's WhatsApp handle.
+export async function businessWhatsAppNumber(): Promise<string | null> {
+  const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
+  return channel?.handle || process.env.WHATSAPP_BUSINESS_NUMBER?.replace(/\D/g, "") || null;
+}
+
+export const whatsappLink = (number: string, text: string) => `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
+
+export const subscribePageUrl = () => `${(process.env.AUTH_URL ?? "http://localhost:3000").replace(/\/$/, "")}/subscribe`;
 
 export function manageUrl(token: string) {
   return `${(process.env.AUTH_URL ?? "http://localhost:3000").replace(/\/$/, "")}/subscribe/manage/${token}`;

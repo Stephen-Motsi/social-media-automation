@@ -2,7 +2,17 @@ import type { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { getAudienceTemplate } from "@/lib/audience";
+import { SUBSCRIPTION_RULES } from "@/lib/policy/subscriptions";
 import { CopyLink, SubscriberActions, TemplateForm, Topics } from "./widgets";
+import { AddPeople } from "./add-people";
+
+const STATUSES = {
+  ACTIVE: { label: "Subscribed", className: "bg-wa/15 text-emerald-700 dark:text-emerald-300" },
+  PENDING: { label: "Waiting to confirm", className: "bg-blue-500/15 text-blue-700 dark:text-blue-300" },
+  NEEDS_REVIEW: { label: "Needs review", className: "bg-amber-400/20 text-amber-800 dark:text-amber-200" },
+  REJECTED: { label: "Rejected", className: "bg-danger/15 text-danger" },
+  UNSUBSCRIBED: { label: "Unsubscribed", className: "bg-ink/10 text-ink-soft" },
+} as const;
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +25,7 @@ export default async function AudiencePage({
 }) {
   const { q = "", topic = "", status = "ACTIVE" } = await searchParams;
   const where: Prisma.SubscriberWhereInput = {
-    ...(status === "ACTIVE" || status === "UNSUBSCRIBED" ? { status } : {}),
+    ...(status in STATUSES ? { status: status as keyof typeof STATUSES } : {}),
     ...(topic ? { interests: { some: { id: topic } } } : {}),
     ...(q
       ? {
@@ -28,9 +38,9 @@ export default async function AudiencePage({
       : {}),
   };
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const [session, subscribers, total, active, unsubscribed, newThisWeek, interests, template] = await Promise.all([
+  const [session, subscribers, total, active, unsubscribed, newThisWeek, interests, template, waiting, review] = await Promise.all([
     auth(),
-    prisma.subscriber.findMany({ where, include: { interests: true }, orderBy: { createdAt: "desc" }, take: 200 }),
+    prisma.subscriber.findMany({ where, include: { interests: true, addedBy: true }, orderBy: { createdAt: "desc" }, take: 200 }),
     prisma.subscriber.count({ where }),
     prisma.subscriber.count({ where: { status: "ACTIVE" } }),
     prisma.subscriber.count({ where: { status: "UNSUBSCRIBED" } }),
@@ -40,12 +50,16 @@ export default async function AudiencePage({
       include: { _count: { select: { subscribers: { where: { status: "ACTIVE" } } } } },
     }),
     getAudienceTemplate(),
+    prisma.subscriber.count({ where: { status: "PENDING" } }),
+    prisma.subscriber.count({ where: { status: "NEEDS_REVIEW" } }),
   ]);
   const admin = session?.user?.role === "ADMIN";
   const subscribeUrl = `${(process.env.AUTH_URL ?? "").replace(/\/$/, "")}/subscribe`;
   const stats = [
     { label: "Subscribed", value: active },
     { label: "Joined this week", value: newThisWeek },
+    { label: "Waiting to confirm", value: waiting },
+    { label: "Needs review", value: review },
     { label: "Unsubscribed", value: unsubscribed },
   ];
 
@@ -59,7 +73,7 @@ export default async function AudiencePage({
         </p>
       </div>
 
-      <section aria-label="Audience totals" className="glass grid grid-cols-3 divide-x divide-line rounded-3xl">
+      <section aria-label="Audience totals" className="glass grid grid-cols-2 divide-line rounded-3xl sm:grid-cols-5 sm:divide-x">
         {stats.map((s) => (
           <div key={s.label} className="px-5 py-4">
             <div className="text-sm text-ink-soft">{s.label}</div>
@@ -67,6 +81,36 @@ export default async function AudiencePage({
           </div>
         ))}
       </section>
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        {admin && (
+          <section className="glass rounded-3xl p-6">
+            <h2 className="text-lg font-semibold">Add people</h2>
+            <p className="mt-1 text-sm text-ink-soft">
+              People you add go through the same automatic checks as sign-ups. Record how they agreed to hear from you.
+            </p>
+            <div className="mt-4">
+              <AddPeople topics={interests.map((i) => ({ id: i.id, name: i.name }))} />
+            </div>
+          </section>
+        )}
+        <section className="glass rounded-3xl p-6">
+          <h2 className="text-lg font-semibold">Automatic approval</h2>
+          <p className="mt-1 text-sm text-ink-soft">
+            Every subscription is checked against WhatsApp&rsquo;s rules and accepted automatically when it passes. Only
+            flagged ones wait for you on Approvals.
+          </p>
+          <ul className="mt-3 space-y-2 text-sm">
+            {SUBSCRIPTION_RULES.map((r) => (
+              <li key={r.label}>
+                <span className="font-medium">{r.label}</span>
+                <span className="text-ink-soft"> · {r.policy}</span>
+                <span className="block text-xs text-ink-soft">If not: {r.onFail}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <section className="glass space-y-5 rounded-3xl p-6">
@@ -122,8 +166,11 @@ export default async function AudiencePage({
               ))}
             </select>
             <select name="status" defaultValue={status} aria-label="Status" className="rounded-xl border border-line bg-white/55 px-3 py-2 text-sm dark:bg-white/5">
-              <option value="ACTIVE">Subscribed</option>
-              <option value="UNSUBSCRIBED">Unsubscribed</option>
+              {Object.entries(STATUSES).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v.label}
+                </option>
+              ))}
               <option value="ALL">Everyone</option>
             </select>
             <button type="submit" className="rounded-full bg-ink px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-ink">
@@ -133,7 +180,7 @@ export default async function AudiencePage({
         </div>
 
         {subscribers.length === 0 ? (
-          <p className="mt-6 text-ink-soft">{q || topic ? "No subscribers match these filters." : "No subscribers yet. Share the subscribe link to get started."}</p>
+          <p className="mt-6 text-ink-soft">{q || topic || status !== "ACTIVE" ? "No subscribers match these filters." : "No subscribers yet. Share the subscribe link or add people above."}</p>
         ) : (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[720px] text-left text-sm">
@@ -143,6 +190,7 @@ export default async function AudiencePage({
                   <th className="py-2 pr-3 font-medium">WhatsApp</th>
                   <th className="py-2 pr-3 font-medium">Town</th>
                   <th className="py-2 pr-3 font-medium">Topics</th>
+                  <th className="py-2 pr-3 font-medium">Status</th>
                   <th className="py-2 pr-3 font-medium">Joined</th>
                   <th className="py-2 pr-3 font-medium">Last advert</th>
                   {admin && <th className="py-2 font-medium"><span className="sr-only">Actions</span></th>}
@@ -150,15 +198,33 @@ export default async function AudiencePage({
               </thead>
               <tbody className="divide-y divide-line">
                 {subscribers.map((s) => (
-                  <tr key={s.id} className={s.status === "UNSUBSCRIBED" ? "text-ink-soft" : ""}>
-                    <td className="py-2.5 pr-3 font-medium">
-                      {s.name}
-                      {s.status === "UNSUBSCRIBED" && <span className="ml-2 text-xs font-normal">(unsubscribed)</span>}
-                    </td>
+                  <tr key={s.id} className={s.status === "ACTIVE" ? "" : "text-ink-soft"}>
+                    <td className="py-2.5 pr-3 font-medium">{s.name}</td>
                     <td className="py-2.5 pr-3 tabular-nums">+{s.phone}</td>
                     <td className="py-2.5 pr-3">{s.location ?? "—"}</td>
                     <td className="py-2.5 pr-3">{s.interests.map((i) => i.name).join(", ")}</td>
-                    <td className="py-2.5 pr-3" title={`Consent recorded ${s.consentAt.toISOString()}`}>{day.format(s.createdAt)}</td>
+                    <td className="py-2.5 pr-3">
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap ${STATUSES[s.status].className}`}>
+                        {STATUSES[s.status].label}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-ink-soft">
+                        {s.decidedBy?.startsWith("auto")
+                          ? s.status === "ACTIVE"
+                            ? "Accepted automatically"
+                            : s.status === "NEEDS_REVIEW"
+                              ? "Flagged automatically"
+                              : s.status === "REJECTED"
+                                ? "Rejected automatically"
+                                : ""
+                          : s.decidedBy
+                            ? `By ${s.decidedBy}`
+                            : ""}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-3" title={s.consentText}>
+                      {day.format(s.createdAt)}
+                      <span className="block text-xs text-ink-soft">{s.addedBy ? `Added by ${s.addedBy.email}` : "Signed up"}</span>
+                    </td>
                     <td className="py-2.5 pr-3">{s.lastSentAt ? day.format(s.lastSentAt) : "—"}</td>
                     {admin && (
                       <td className="py-2.5">

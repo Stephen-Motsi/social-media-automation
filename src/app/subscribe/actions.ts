@@ -4,9 +4,30 @@ import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { CONSENT_TEXT, manageUrl, newManageToken, normalizeLocation, normalizePhone, proposeForSubscriber } from "@/lib/audience";
+import {
+  businessWhatsAppNumber,
+  CONSENT_TEXT,
+  newConfirmCode,
+  newManageToken,
+  normalizeLocation,
+  normalizePhone,
+  proposeForSubscriber,
+  whatsappLink,
+} from "@/lib/audience";
+import { evaluateSubscription } from "@/lib/policy/subscriptions";
 
-export type SubscribeState = { ok?: boolean; error?: string; manageUrl?: string; message?: string } | undefined;
+export type SubscribeState =
+  | {
+      ok?: boolean;
+      error?: string;
+      message?: string;
+      // Self sign-ups confirm by sending this on WhatsApp
+      confirm?: { code: string; link: string | null };
+      // Number already on the list: we never reveal or change someone else's subscription here
+      existing?: { manageLink: string | null };
+      rejected?: string;
+    }
+  | undefined;
 
 const MAX_SIGNUPS_PER_IP_PER_HOUR = 10;
 
@@ -53,38 +74,45 @@ export async function subscribe(_prev: SubscribeState, formData: FormData): Prom
 
   const interestIds = await validInterestIds(parsed.data.interests);
   if (interestIds.length === 0) return { error: "Choose at least one topic." };
+  const business = await businessWhatsAppNumber();
 
-  const consent = { consentText: CONSENT_TEXT, consentAt: new Date(), consentIp: ip };
-  const location = normalizeLocation(parsed.data.location);
   const existing = await prisma.subscriber.findUnique({ where: { phone } });
-  const subscriber = existing
-    ? await prisma.subscriber.update({
+  // Someone entering a number that's already subscribed (maybe not theirs): change nothing, reveal nothing.
+  // The owner can get their manage link by messaging MANAGE from that phone.
+  if (existing && ["ACTIVE", "PENDING", "NEEDS_REVIEW"].includes(existing.status)) {
+    return { ok: true, existing: { manageLink: business ? whatsappLink(business, "MANAGE") : null } };
+  }
+
+  const fields = {
+    name: parsed.data.name,
+    location: normalizeLocation(parsed.data.location),
+    consentText: CONSENT_TEXT,
+    consentAt: new Date(),
+    consentIp: ip,
+    source: "subscribe_page",
+    confirmCode: newConfirmCode(),
+    confirmedAt: null,
+    status: "PENDING" as const,
+  };
+  const sub = existing
+    ? // Previously unsubscribed or rejected: a fresh opt-in, confirmed again from the phone itself
+      await prisma.subscriber.update({
         where: { id: existing.id },
-        data: {
-          name: parsed.data.name,
-          location,
-          interests: { set: interestIds.map((id) => ({ id })) },
-          status: "ACTIVE",
-          unsubscribedAt: null,
-          ...consent,
-        },
+        data: { ...fields, interests: { set: interestIds.map((id) => ({ id })) } },
       })
     : await prisma.subscriber.create({
-        data: {
-          name: parsed.data.name,
-          phone,
-          location,
-          interests: { connect: interestIds.map((id) => ({ id })) },
-          manageToken: newManageToken(),
-          ...consent,
-        },
+        data: { ...fields, phone, manageToken: newManageToken(), interests: { connect: interestIds.map((id) => ({ id })) } },
       });
 
-  // Automatic: queue any advert that matches this person for admin approval.
-  await proposeForSubscriber(subscriber.id).catch((err) => console.error("Proposing for subscriber failed:", err));
+  // Automatic approval: the checks run now; ownership is confirmed when they send JOIN.
+  const status = await evaluateSubscription(sub.id);
   revalidatePath("/audience");
   revalidatePath("/approvals");
-  return { ok: true, manageUrl: manageUrl(subscriber.manageToken) };
+  if (status === "REJECTED") {
+    const checks = (await prisma.subscriber.findUnique({ where: { id: sub.id } }))?.checks as { result: string; detail: string }[];
+    return { rejected: checks.find((c) => c.result === "fail")?.detail ?? "This number can't be subscribed." };
+  }
+  return { ok: true, confirm: { code: sub.confirmCode!, link: business ? whatsappLink(business, `JOIN ${sub.confirmCode}`) : null } };
 }
 
 export async function updatePreferences(token: string, _prev: SubscribeState, formData: FormData): Promise<SubscribeState> {
@@ -103,16 +131,20 @@ export async function updatePreferences(token: string, _prev: SubscribeState, fo
   return { ok: true, message: "Saved your preferences." };
 }
 
+// The manage link is only ever sent to the subscriber's own WhatsApp, so it proves ownership.
 export async function setSubscribed(token: string, subscribed: boolean): Promise<SubscribeState> {
   const sub = await prisma.subscriber.findUnique({ where: { manageToken: token } });
   if (!sub) return { error: "This link isn't valid any more." };
-  await prisma.subscriber.update({
-    where: { id: sub.id },
-    data: subscribed
-      ? { status: "ACTIVE", unsubscribedAt: null, consentText: CONSENT_TEXT, consentAt: new Date(), consentIp: await clientIp() }
-      : { status: "UNSUBSCRIBED", unsubscribedAt: new Date() },
-  });
-  if (subscribed) await proposeForSubscriber(sub.id).catch(() => null);
+  if (subscribed) {
+    await prisma.subscriber.update({
+      where: { id: sub.id },
+      data: { consentText: CONSENT_TEXT, consentAt: new Date(), consentIp: await clientIp(), confirmedAt: sub.confirmedAt ?? new Date() },
+    });
+    const status = await evaluateSubscription(sub.id);
+    if (status === "ACTIVE") await proposeForSubscriber(sub.id).catch(() => null);
+  } else {
+    await prisma.subscriber.update({ where: { id: sub.id }, data: { status: "UNSUBSCRIBED", unsubscribedAt: new Date() } });
+  }
   revalidatePath(`/subscribe/manage/${token}`);
   revalidatePath("/audience");
   return { ok: true, message: subscribed ? "You're subscribed again." : "You've been unsubscribed. You won't get any more adverts." };

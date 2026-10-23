@@ -14,10 +14,12 @@ function BrandMark() {
 }
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const [session, pendingApprovals] = await Promise.all([
+  const [session, pendingSends, flaggedSubscriptions] = await Promise.all([
     auth(),
     prisma.campaign.count({ where: { status: "PENDING_APPROVAL" } }),
+    prisma.subscriber.count({ where: { status: "NEEDS_REVIEW" } }),
   ]);
+  const pendingApprovals = pendingSends + flaggedSubscriptions;
 
   return (
     <div className="min-h-screen pb-16">

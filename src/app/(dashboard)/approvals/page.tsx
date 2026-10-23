@@ -2,6 +2,8 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import type { PlatformVerdict } from "@/lib/policy/rules";
 import { Decision } from "./decision";
+import { ReviewDecision } from "../audience/add-people";
+import type { SubscriptionCheck } from "@/lib/policy/subscriptions";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +36,7 @@ function tally<T extends string>(values: T[]) {
 }
 
 export default async function ApprovalsPage() {
-  const [session, pending, history] = await Promise.all([
+  const [session, pending, history, toReview, waiting] = await Promise.all([
     auth(),
     prisma.campaign.findMany({
       where: { status: "PENDING_APPROVAL" },
@@ -50,6 +52,8 @@ export default async function ApprovalsPage() {
       take: 20,
       include: { advert: true, approvedBy: true, deliveries: { select: { status: true } } },
     }),
+    prisma.subscriber.findMany({ where: { status: "NEEDS_REVIEW" }, orderBy: { createdAt: "asc" }, include: { interests: true, addedBy: true } }),
+    prisma.subscriber.count({ where: { status: "PENDING" } }),
   ]);
   const admin = session?.user?.role === "ADMIN";
 
@@ -58,13 +62,49 @@ export default async function ApprovalsPage() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Approvals</h1>
         <p className="mt-2 max-w-prose text-ink-soft">
-          Adverts are matched to subscribers automatically. Nothing is sent to anyone until you approve it here.
+          Subscriptions that pass WhatsApp&rsquo;s rules are accepted automatically, and adverts are matched to
+          subscribers automatically. You only decide on flagged subscriptions and approve each send.
         </p>
       </div>
 
+      <section className="glass rounded-[32px] p-6">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-lg font-semibold">Subscriptions to review</h2>
+          <p className="text-sm text-ink-soft">{waiting} waiting for people to confirm on WhatsApp (accepted automatically when they do)</p>
+        </div>
+        {toReview.length === 0 ? (
+          <p className="mt-3 text-ink-soft">None. Everything else was accepted or rejected automatically.</p>
+        ) : (
+          <ul className="mt-4 divide-y divide-line">
+            {toReview.map((s) => {
+              const flagged = ((s.checks as SubscriptionCheck[] | null) ?? []).filter((c) => c.result === "review");
+              return (
+                <li key={s.id} className="space-y-2 py-4">
+                  <div className="flex flex-wrap items-baseline gap-x-3">
+                    <span className="font-medium">{s.name}</span>
+                    <span className="text-sm text-ink-soft tabular-nums">+{s.phone}</span>
+                    <span className="text-sm text-ink-soft">
+                      {s.location ?? "No town"} · {s.interests.map((i) => i.name).join(", ")} · {s.addedBy ? `added by ${s.addedBy.email}` : "signed up"}
+                    </span>
+                  </div>
+                  <ul className="text-sm">
+                    {flagged.map((c) => (
+                      <li key={c.code} className="text-amber-800 dark:text-amber-200">
+                        {c.label}: {c.detail}
+                      </li>
+                    ))}
+                  </ul>
+                  {admin && <ReviewDecision id={s.id} />}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
       {pending.length === 0 ? (
         <div className="glass rounded-[32px] px-6 py-12 text-center">
-          <p className="text-lg font-medium">Nothing waiting</p>
+          <p className="text-lg font-medium">No adverts waiting</p>
           <p className="mx-auto mt-2 max-w-md text-ink-soft">
             When an advert tagged with topics matches subscribers, it appears here for approval.
           </p>
