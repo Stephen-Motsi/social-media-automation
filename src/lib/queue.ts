@@ -27,3 +27,14 @@ export async function schedulePost(postId: string, scheduledAt?: Date | null) {
     { jobId: postId, delay, attempts: 3, backoff: { type: "exponential", delay: 60_000 } },
   );
 }
+
+// Audience campaigns: one job per approved campaign.
+export const CAMPAIGN_QUEUE = "send-campaign";
+export type CampaignJob = { campaignId: string };
+
+let campaignQueue: Queue<CampaignJob> | undefined;
+
+export async function queueCampaign(campaignId: string) {
+  campaignQueue ??= new Queue<CampaignJob>(CAMPAIGN_QUEUE, { connection: redisConnection() });
+  await campaignQueue.add("send", { campaignId }, { jobId: `campaign-${campaignId}`, attempts: 3, backoff: { type: "exponential", delay: 60_000 } });
+}

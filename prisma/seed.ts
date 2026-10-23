@@ -22,6 +22,13 @@ async function main() {
     },
   });
   console.log(`Admin user ready: ${user.email}`);
+
+  // Starter topics for the public subscribe page; admins can change them on the Audience page.
+  if ((await prisma.interest.count()) === 0) {
+    const topics = ["Electronics", "Fashion", "Food & groceries", "Health & beauty", "Home & living", "Events"];
+    await prisma.interest.createMany({ data: topics.map((name) => ({ name })) });
+    console.log(`Added ${topics.length} starter topics`);
+  }
 }
 
 main()

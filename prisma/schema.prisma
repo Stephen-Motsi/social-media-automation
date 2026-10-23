@@ -71,6 +71,8 @@ model User {
 
   posts Post[]
   media MediaAsset[]
+
+  approvedCampaigns Campaign[]
 }
 
 // A connected Facebook Page, Instagram account, WhatsApp number, X account or TikTok account.
@@ -115,6 +117,11 @@ model Post {
 
   // Channels using this post as their advert
   advertFor Channel[] @relation("ChannelAdvert")
+
+  // Audience targeting: subscribers interested in any of these topics (and in these locations, if set)
+  interests       Interest[]
+  targetLocations String[]
+  campaigns       Campaign[]
 
   targets PostTarget[]
 }
@@ -219,4 +226,112 @@ model Channel {
   runs Post[] @relation("ChannelRuns")
 
   @@index([enabled, nextRunAt])
+}
+
+// ---- Audience: people who subscribed to receive adverts ----------------------------
+
+enum SubscriberStatus {
+  ACTIVE
+  UNSUBSCRIBED
+}
+
+enum CampaignStatus {
+  PENDING_APPROVAL
+  APPROVED
+  SENDING
+  SENT
+  REJECTED
+  FAILED
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  SKIPPED
+}
+
+// Topics subscribers choose and adverts are tagged with. Managed by admins.
+model Interest {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  createdAt   DateTime     @default(now())
+  subscribers Subscriber[]
+  adverts     Post[]
+}
+
+model Subscriber {
+  id        String           @id @default(cuid())
+  name      String
+  // WhatsApp number, digits only in international format (e.g. 254712345678)
+  phone     String           @unique
+  location  String?
+  status    SubscriberStatus @default(ACTIVE)
+  interests Interest[]
+
+  // Opt-in record (WhatsApp requires businesses to have it before messaging)
+  consentText String
+  consentAt   DateTime
+  consentIp   String?
+  source      String   @default("subscribe_page")
+
+  // Secret for the subscriber's own "manage / unsubscribe" link
+  manageToken    String    @unique
+  unsubscribedAt DateTime?
+  lastSentAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  deliveries Delivery[]
+
+  @@index([status])
+}
+
+// A proposed send of one advert to its matched subscribers. Created automatically; an admin approves it.
+model Campaign {
+  id        String         @id @default(cuid())
+  status    CampaignStatus @default(PENDING_APPROVAL)
+  // Why it was proposed, e.g. "New advert" or "3 new subscribers match"
+  reason    String
+  createdAt DateTime       @default(now())
+
+  advertId String
+  advert   Post   @relation(fields: [advertId], references: [id], onDelete: Cascade)
+
+  approvedAt   DateTime?
+  approvedById String?
+  approvedBy   User?     @relation(fields: [approvedById], references: [id])
+  rejectedAt   DateTime?
+  error        String?
+  // Platform check result for WhatsApp at proposal / send time
+  checks       Json?
+
+  deliveries Delivery[]
+
+  @@index([status])
+}
+
+model Delivery {
+  id         String         @id @default(cuid())
+  status     DeliveryStatus @default(PENDING)
+  externalId String?        @unique // WhatsApp message ID, for status webhooks
+  error      String?
+  sentAt     DateTime?
+  createdAt  DateTime       @default(now())
+
+  campaignId   String
+  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  subscriberId String
+  subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, subscriberId])
+}
+
+// Small admin-editable settings (e.g. the WhatsApp template used for audience adverts).
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
 }

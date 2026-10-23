@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db";
 import { generateImage, OpenAIError, IMAGE_SIZES, type ImageShape } from "@/lib/ai/openai";
 import { imageInfo, publicMediaUrl } from "@/lib/media";
 import { blockedEverywhere, reviewContent, reviewPrompt } from "@/lib/policy/review";
+import { normalizeLocation, proposeCampaign } from "@/lib/audience";
 import { platformOrder, type Issue, type PlatformVerdict } from "@/lib/policy/rules";
 import type { Formats } from "@/lib/policy/review";
 import type { Platform } from "@prisma/client";
@@ -135,12 +136,20 @@ export async function checkAction(input: {
 export async function saveDraftAction(input: {
   mediaId?: string;
   caption: string;
-}): Promise<ActionResult<{ postId: string; verdicts: PlatformVerdict[] }>> {
+  interestIds?: string[];
+  locations?: string[];
+}): Promise<ActionResult<{ postId: string; verdicts: PlatformVerdict[]; proposed: boolean }>> {
   const userId = await requireUser();
   const asset = input.mediaId ? await loadOwnAsset(userId, input.mediaId) : null;
+  const interestIds = input.interestIds?.length
+    ? (await prisma.interest.findMany({ where: { id: { in: input.interestIds } }, select: { id: true } })).map((i) => i.id)
+    : [];
+  const locations = [...new Set((input.locations ?? []).map((l) => normalizeLocation(l)).filter((l): l is string => Boolean(l)))].slice(0, 20);
 
-  // Never trust the client's last check: review again on save.
-  const { platforms, formats } = await reviewTargets();
+  // Never trust the client's last check: review again on save. Adverts for subscribers go out on WhatsApp.
+  const targets = await reviewTargets();
+  const platforms = interestIds.length && !targets.platforms.includes("WHATSAPP") ? [...targets.platforms, "WHATSAPP" as const] : targets.platforms;
+  const formats = targets.formats;
   const { verdicts } = await reviewContent(
     { caption: input.caption, image: asset, prompt: asset?.prompt ?? undefined },
     platforms,
@@ -157,7 +166,11 @@ export async function saveDraftAction(input: {
       status: "DRAFT",
       checks: verdicts,
       authorId: userId,
+      interests: { connect: interestIds.map((id) => ({ id })) },
+      targetLocations: locations,
     },
   });
-  return { ok: true, postId: post.id, verdicts };
+  // Automatic: match subscribers now and queue the send for admin approval.
+  const proposed = interestIds.length ? Boolean(await proposeCampaign(post.id, "New advert").catch(() => null)) : false;
+  return { ok: true, postId: post.id, verdicts, proposed };
 }

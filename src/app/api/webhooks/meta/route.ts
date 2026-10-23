@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { verifySignature } from "@/lib/meta/webhook";
+import { processWhatsAppWebhook } from "@/lib/campaigns";
 
 // One endpoint for Facebook Page, Instagram and WhatsApp webhooks.
 // Configure in the Meta app dashboard: Callback URL = <APP_URL>/api/webhooks/meta
@@ -25,11 +26,17 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = JSON.parse(rawBody);
-  await prisma.webhookEvent.create({
+  const event = await prisma.webhookEvent.create({
     data: { object: String(payload.object ?? "unknown"), payload },
   });
 
-  // TODO: process events (WhatsApp message statuses / inbound messages, comments, mentions).
-  // Respond fast; Meta retries on non-200 responses.
+  // WhatsApp: "STOP" replies unsubscribe; delivery/read/failed statuses update audience deliveries.
+  try {
+    await processWhatsAppWebhook(payload);
+    await prisma.webhookEvent.update({ where: { id: event.id }, data: { processedAt: new Date() } });
+  } catch (err) {
+    console.error("Webhook processing failed:", err);
+  }
+  // TODO: Page/Instagram events (comments, mentions). Respond fast; Meta retries on non-200 responses.
   return NextResponse.json({ received: true });
 }

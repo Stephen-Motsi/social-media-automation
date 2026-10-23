@@ -3,7 +3,9 @@
 import { Worker } from "bullmq";
 import type { Platform, PostFormat, SocialAccount } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { PUBLISH_QUEUE, redisConnection, type PublishJob } from "@/lib/queue";
+import { CAMPAIGN_QUEUE, PUBLISH_QUEUE, redisConnection, type CampaignJob, type PublishJob } from "@/lib/queue";
+import { sendCampaign } from "@/lib/campaigns";
+import { proposeAll } from "@/lib/audience";
 import { publishPagePost, publishPageStory } from "@/lib/meta/facebook";
 import { publishImage } from "@/lib/meta/instagram";
 import { sendTemplate, sendText } from "@/lib/meta/whatsapp";
@@ -154,12 +156,26 @@ const worker = new Worker<PublishJob>(PUBLISH_QUEUE, (job) => publish(job.data.p
 worker.on("completed", (job) => console.log(`Published post ${job.data.postId}`));
 worker.on("failed", (job, err) => console.error(`Post ${job?.data.postId} failed:`, err.message));
 
+// Audience campaigns: sent only after an admin approves them.
+const campaignWorker = new Worker<CampaignJob>(CAMPAIGN_QUEUE, (job) => sendCampaign(job.data.campaignId), {
+  connection: redisConnection(),
+});
+campaignWorker.on("completed", (job) => console.log(`Campaign ${job.data.campaignId} sent`));
+campaignWorker.on("failed", (job, err) => console.error(`Campaign ${job?.data.campaignId} failed:`, err.message));
+
 // Scheduler: check for due channel runs every 30 seconds.
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS ?? 30_000);
+let ticks = 0;
 async function tick() {
   try {
     const ran = await runDueChannels();
     if (ran) console.log(`Scheduler: ${ran} channel run(s) started`);
+    // Every ~10 minutes, propose any adverts that newly match subscribers (safety net; most
+    // proposals happen immediately when an advert is saved or someone subscribes).
+    if (ticks++ % 20 === 0) {
+      const proposed = await proposeAll();
+      if (proposed) console.log(`Audience: ${proposed} campaign(s) proposed for approval`);
+    }
   } catch (err) {
     console.error("Scheduler tick failed:", err);
   }

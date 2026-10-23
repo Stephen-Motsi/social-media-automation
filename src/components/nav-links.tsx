@@ -7,10 +7,12 @@ const nav = [
   { href: "/", label: "Overview" },
   { href: "/create", label: "Create" },
   { href: "/channels", label: "Channels" },
+  { href: "/audience", label: "Audience" },
+  { href: "/approvals", label: "Approvals" },
   { href: "/posts", label: "Posts" },
 ];
 
-export function NavLinks() {
+export function NavLinks({ pendingApprovals = 0 }: { pendingApprovals?: number }) {
   const pathname = usePathname();
 
   return (
@@ -29,6 +31,12 @@ export function NavLinks() {
             }
           >
             {item.label}
+            {item.href === "/approvals" && pendingApprovals > 0 && (
+              <span className="ml-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-xs font-semibold text-white tabular-nums">
+                {pendingApprovals}
+                <span className="sr-only"> waiting</span>
+              </span>
+            )}
           </Link>
         );
       })}

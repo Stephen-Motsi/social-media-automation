@@ -22,7 +22,7 @@ const statusCopy: Record<PlatformVerdict["status"], { label: string; className: 
 const field =
   "w-full rounded-2xl border border-line bg-white/50 px-4 py-3 placeholder:text-ink-soft/70 dark:bg-white/5";
 
-export function Studio() {
+export function Studio({ interests }: { interests: { id: string; name: string }[] }) {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
   const [shape, setShape] = useState<ImageShape>("square");
@@ -32,6 +32,8 @@ export function Studio() {
   const [checkedCaption, setCheckedCaption] = useState("");
   const [error, setError] = useState<{ message: string; issues?: Issue[] } | null>(null);
   const [busy, setBusy] = useState<"generate" | "check" | "save" | null>(null);
+  const [topics, setTopics] = useState<string[]>([]);
+  const [towns, setTowns] = useState("");
   const [, startTransition] = useTransition();
 
   const stale = verdicts !== null && caption !== checkedCaption;
@@ -71,13 +73,19 @@ export function Studio() {
 
   const save = () =>
     run("save", async () => {
-      const res = await saveDraftAction({ mediaId: media?.id, caption });
+      const res = await saveDraftAction({
+        mediaId: media?.id,
+        caption,
+        interestIds: topics,
+        locations: towns.split(","),
+      });
       if (!res.ok) {
         setError({ message: res.error });
         return;
       }
       setVerdicts(res.verdicts);
-      router.push("/posts");
+      // Adverts for subscribers go to Approvals; others are used in Channels.
+      router.push(res.proposed ? "/approvals" : "/channels");
     });
 
   return (
@@ -145,6 +153,35 @@ export function Studio() {
             className={`mt-2 ${field}`}
           />
           <div className="mt-1 text-right text-xs text-ink-soft tabular-nums">{caption.length.toLocaleString()} characters</div>
+          {interests.length > 0 && (
+            <fieldset className="mt-5">
+              <legend className="font-medium">Send to subscribers on WhatsApp</legend>
+              <p className="mt-0.5 text-sm text-ink-soft">
+                Subscribers interested in these topics are matched automatically. You approve before anything is sent.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {interests.map((i) => (
+                  <label key={i.id} className="cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={topics.includes(i.id)}
+                      onChange={(e) => setTopics((t) => (e.target.checked ? [...t, i.id] : t.filter((x) => x !== i.id)))}
+                      className="peer sr-only"
+                    />
+                    <span className="inline-block rounded-full border border-line px-3 py-1.5 text-sm transition-colors peer-checked:border-transparent peer-checked:bg-ink peer-checked:text-white peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--ig-3)] dark:peer-checked:bg-white dark:peer-checked:text-ink">
+                      {i.name}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {topics.length > 0 && (
+                <label className="mt-3 block text-sm">
+                  <span className="text-xs font-medium">Only these towns (optional, comma-separated)</span>
+                  <input value={towns} onChange={(e) => setTowns(e.target.value)} placeholder="Nairobi, Thika" className={`mt-1 ${field}`} />
+                </label>
+              )}
+            </fieldset>
+          )}
           <div className="mt-3 flex flex-wrap gap-3">
             <button
               type="button"

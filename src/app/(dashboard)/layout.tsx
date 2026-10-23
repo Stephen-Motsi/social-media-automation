@@ -1,4 +1,5 @@
 import { auth, signOut } from "@/auth";
+import { prisma } from "@/lib/db";
 import { NavLinks } from "@/components/nav-links";
 
 // Three overlapping dots, one per channel.
@@ -13,7 +14,10 @@ function BrandMark() {
 }
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const session = await auth();
+  const [session, pendingApprovals] = await Promise.all([
+    auth(),
+    prisma.campaign.count({ where: { status: "PENDING_APPROVAL" } }),
+  ]);
 
   return (
     <div className="min-h-screen pb-16">
@@ -23,7 +27,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
             <BrandMark />
             <span className="hidden sm:inline">Social Automation</span>
           </span>
-          <NavLinks />
+          <NavLinks pendingApprovals={pendingApprovals} />
           <form
             className="ml-auto flex shrink-0 items-center gap-3 text-sm"
             action={async () => {
