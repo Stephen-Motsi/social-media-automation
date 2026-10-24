@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import { QueueUnavailable, withTimeout } from "@/lib/errors";
 
 export const PUBLISH_QUEUE = "publish-post";
 
@@ -18,14 +19,28 @@ export function publishQueue() {
   return queue;
 }
 
+const QUEUE_TIMEOUT_MS = 5_000;
+
+// Adds a job, replacing a finished one with the same ID (so a missed send can be queued again).
+// Throws QueueUnavailable rather than waiting forever when Redis is down.
+async function addJob<T>(queue: Queue<T>, name: string, data: T, jobId: string, at?: Date | null) {
+  const delay = at ? Math.max(0, at.getTime() - Date.now()) : 0;
+  const add = async () => {
+    const old = await queue.getJob(jobId);
+    if (old) {
+      const state = await old.getState();
+      if (state !== "completed" && state !== "failed") return; // already waiting or running
+      await old.remove();
+    }
+    // @ts-expect-error BullMQ's generic name typing
+    await queue.add(name, data, { jobId, delay, attempts: 3, backoff: { type: "exponential", delay: 60_000 } });
+  };
+  await withTimeout(add(), QUEUE_TIMEOUT_MS, () => new QueueUnavailable());
+}
+
 // Enqueue a post to publish at `scheduledAt` (or immediately if omitted/past).
 export async function schedulePost(postId: string, scheduledAt?: Date | null) {
-  const delay = scheduledAt ? Math.max(0, scheduledAt.getTime() - Date.now()) : 0;
-  await publishQueue().add(
-    "publish",
-    { postId },
-    { jobId: postId, delay, attempts: 3, backoff: { type: "exponential", delay: 60_000 } },
-  );
+  await addJob(publishQueue(), "publish", { postId }, postId, scheduledAt);
 }
 
 // Audience campaigns: one job per approved campaign.
@@ -34,7 +49,8 @@ export type CampaignJob = { campaignId: string };
 
 let campaignQueue: Queue<CampaignJob> | undefined;
 
-export async function queueCampaign(campaignId: string) {
+// Sends at `sendAt` (or straight away if omitted/past).
+export async function queueCampaign(campaignId: string, sendAt?: Date | null) {
   campaignQueue ??= new Queue<CampaignJob>(CAMPAIGN_QUEUE, { connection: redisConnection() });
-  await campaignQueue.add("send", { campaignId }, { jobId: `campaign-${campaignId}`, attempts: 3, backoff: { type: "exponential", delay: 60_000 } });
+  await addJob(campaignQueue, "send", { campaignId }, `campaign-${campaignId}`, sendAt);
 }

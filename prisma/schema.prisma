@@ -145,6 +145,10 @@ model Post {
   about           String?
   targetPlatforms Platform[]
   listedAt        DateTime?
+  // When a published advert goes out (posted on its platforms, sent to WhatsApp subscribers)
+  sendAt          DateTime?
+  // Publishing counts as approval: WhatsApp subscribers get it automatically (false = approve each send)
+  autoSend        Boolean              @default(true)
   subscriptions   AdvertSubscription[]
 
   // Posts made from this advert on social platforms (shown in subscribers' feeds)
@@ -351,6 +355,8 @@ model Campaign {
   advertId String
   advert   Post   @relation(fields: [advertId], references: [id], onDelete: Cascade)
 
+  // When the approved send goes out (null = straight away)
+  sendAt       DateTime?
   approvedAt   DateTime?
   approvedById String?
   approvedBy   User?     @relation(fields: [approvedById], references: [id])

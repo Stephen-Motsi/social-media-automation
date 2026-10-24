@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { listedAdverts } from "@/lib/adverts";
+import { advertStatus, listedAdverts } from "@/lib/adverts";
+import { formatWhen } from "@/lib/errors";
 import { getViewer, isStaff } from "@/lib/session";
 import { PlatformBadge, platforms } from "@/components/platforms";
 
@@ -9,9 +10,12 @@ export const dynamic = "force-dynamic";
 const BRAND = process.env.BRAND_NAME ?? "Social Automation";
 export const metadata: Metadata = { title: BRAND, description: `Subscribe to ${BRAND} adverts on the platforms you use.` };
 
-export default async function LandingPage() {
-  const [adverts, viewer] = await Promise.all([listedAdverts(), getViewer()]);
+export default async function LandingPage({ searchParams }: { searchParams: Promise<{ published?: string }> }) {
+  const [adverts, viewer, { published }] = await Promise.all([listedAdverts(), getViewer(), searchParams]);
   const dashboard = viewer ? (isStaff(viewer.role) ? "/admin" : "/me") : null;
+  // Just published by an admin: show how it's going out on each platform.
+  const justPublished = published && viewer && isStaff(viewer.role) ? adverts.find((a) => a.id === published) : undefined;
+  const status = justPublished ? await advertStatus(justPublished.id) : [];
 
   return (
     <div className="min-h-screen pb-16">
@@ -29,6 +33,25 @@ export default async function LandingPage() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4">
+        {justPublished && (
+          <section id="published" role="status" className="glass mt-6 scroll-mt-6 rounded-[28px] border border-wa/40 p-5">
+            <p className="font-semibold">
+              Published: &ldquo;{justPublished.title}&rdquo; is live on the home page{justPublished.sendAt && justPublished.sendAt > new Date() ? ` and goes out ${formatWhen(justPublished.sendAt)}` : ""}.
+            </p>
+            <ul className="mt-2 space-y-1 text-sm">
+              {status.map((o) => (
+                <li key={o.platform} className="flex gap-2">
+                  <span aria-hidden className={`mt-1.5 size-2 shrink-0 rounded-full ${o.ok ? "bg-wa" : "bg-danger"}`} />
+                  <span className={o.ok ? "" : "text-danger"}>{o.message}</span>
+                </li>
+              ))}
+            </ul>
+            <Link href="/admin/adverts" className="mt-3 inline-block text-sm font-medium underline underline-offset-2">
+              Back to Adverts
+            </Link>
+          </section>
+        )}
+
         <section className="pt-14 pb-10">
           <h1 className="max-w-3xl text-4xl font-semibold tracking-tight sm:text-6xl">Pick the adverts you want, where you want them</h1>
           <p className="mt-4 max-w-2xl text-lg text-ink-soft">
@@ -53,8 +76,8 @@ export default async function LandingPage() {
         ) : (
           <ul className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {adverts.map((a) => (
-              <li key={a.id} id={a.id}>
-                <article className="glass flex h-full flex-col overflow-hidden rounded-[28px]">
+              <li key={a.id} id={a.id} className="scroll-mt-6">
+                <article className={`glass flex h-full flex-col overflow-hidden rounded-[28px] ${a.id === justPublished?.id ? "ring-2 ring-[var(--ig-3)]" : ""}`}>
                   {a.mediaUrls[0] && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={a.mediaUrls[0]} alt="" className="aspect-square w-full object-cover" />
@@ -62,6 +85,9 @@ export default async function LandingPage() {
                   <div className="flex flex-1 flex-col p-5">
                     <h2 className="text-lg font-semibold">{a.title ?? "Advert"}</h2>
                     {a.about && <p className="mt-1 text-sm text-ink-soft">{a.about}</p>}
+                    {a.sendAt && a.sendAt > new Date() && (
+                      <p className="mt-2 text-xs font-medium text-[var(--ig-3)]">Goes out {formatWhen(a.sendAt)}. Subscribe before then.</p>
+                    )}
                     {a.interests.length > 0 && (
                       <p className="mt-2 text-xs text-ink-soft">{a.interests.map((i) => i.name).join(" · ")}</p>
                     )}

@@ -201,12 +201,24 @@ The public home page (`/`) lists the adverts and links to sign-in; `/subscribe` 
    - **Caption.**
 2. **Save as draft** at any time. Drafts save even when a check fails, are **never sent to anyone**, and reopen from **Adverts → Edit draft** (`/create?id=…`) with everything restored.
 3. **Preview** shows exactly what users will see: the card on the website, and each target platform's post (Facebook Page post, Instagram post with the "… more" cut, the WhatsApp template message with a sample name, X with its 280 counter, TikTok, stories full-screen), each with its platform check.
-4. **Publish** from the preview: lists it on `/` and users' dashboards, and optionally posts it on the social platforms now. Publishing requires a title, a target platform, and that it can go on at least one of them. (Adverts can also be published or unlisted from **Adverts**.)
+4. **Publish** from the preview, choosing **when it goes out**: **Now** or **At a set time**. It's listed on `/` and users' dashboards straight away (showing "Goes out …"), so users can subscribe before the send time. At that time it's posted on the social platforms and sent to WhatsApp subscribers. **Send to WhatsApp subscribers automatically** (on by default) makes publishing the approval; untick it to approve each send on Approvals.
+   - Every step says what happened: **Saved** / **Not saved: reason**, then **Not published: reason** (no title, no platform, time in the past, fails every platform's checks, database or job queue down) or a per-platform result. A platform that can't be posted says why (not connected, fails its checks, needs a photo, WhatsApp template missing) while the others still go out.
+   - When everything is scheduled, you're taken to the **home page** with a summary of how it goes out on each platform. **Adverts** shows the same per-platform status for every published advert (scheduled, posted, sent to N, failed with the reason). **Unlist** cancels anything that hasn't gone out yet. Adverts can also be published from **Adverts** (**Publish now** or **Schedule…**).
 5. **Users subscribe per platform** on `/me` (`AdvertSubscription`). WhatsApp requires a linked, confirmed number: the user enters it, then sends `JOIN <code>` from that phone (a code sent from another number links nothing). The same automatic approval checks as other subscribers apply.
 6. **What's sent to whom:**
-   - **WhatsApp:** users subscribed to that advert on WhatsApp (plus topic subscribers) are matched automatically, and the send waits on **Approvals**. After approval it goes to their own numbers.
-   - **Facebook, Instagram, X, TikTok** (which don't allow messaging individuals): the advert is posted on the business's handle ("List & post now", "Post to platforms now", or a Channels schedule). Subscribers see it in their feed with a link.
+   - **WhatsApp:** users subscribed to that advert on WhatsApp (plus topic subscribers) are matched automatically and get it on their own number at the send time. Anyone who subscribes after that gets it straight away. If WhatsApp isn't ready (no template, number not connected), the send waits on **Approvals** with the reason, and goes out by itself once it's fixed. A person who failed 3 times isn't retried, and one advert per person per 24 hours (`AUDIENCE_MIN_HOURS_BETWEEN_MESSAGES`); later ones follow after the gap.
+   - **Facebook, Instagram, X, TikTok** (which don't allow businesses to message individuals with adverts): the advert is posted on the business's handle at the send time (or "Post to platforms again now", or a Channels schedule). Subscribers see it there and in their feed with a link. The subscribe button tells the user when it arrives.
 7. Each user's **"What you've received"** feed shows their WhatsApp deliveries and the posts of the adverts they subscribed to on each platform.
+
+## Posts and stories for followers
+
+**Posts** (`/posts`) schedules ordinary posts and stories on your own accounts, for your followers (not tied to an advert or subscriptions):
+- **Type:** Post (feed) or Story (24 hours). **Where:** any connected platform; unavailable ones are disabled with the reason. **Photo:** create with AI or upload. **Caption.** **When:** now or a set time.
+- Each platform's rules for that format are checked first, and again by the worker before publishing. The result says, per platform, scheduled or not posted and why.
+- Stories: Facebook and Instagram only. X and TikTok's APIs have no stories, and **WhatsApp Status can't be posted by any business tool** (Meta's API doesn't offer it). To reach people on WhatsApp, publish an advert.
+- The list below shows everything that has gone out or is waiting (posts, adverts, channel schedules), with each account's result and a link, and **Cancel** for scheduled posts.
+
+**Never missed:** jobs wait in Redis until their time. If Redis was down or restarted, the worker finds anything due that isn't queued (every tick) and sends it, without sending twice.
 
 ## Audience, subscribers and approvals
 
@@ -239,7 +251,7 @@ All pass → **accepted automatically** (`decidedBy: "auto"`), and they're immed
 **What's automatic.**
 - **Matching:** active subscribers with any of the advert's topics, in its towns if set (case-insensitive), who haven't already received or been queued for it.
 - **Proposals:** only **published** adverts are proposed (drafts never are): when an advert is published, when someone subscribes (or subscribes to it on WhatsApp) or changes topics, and every ~10 minutes by the worker (safety net). New matches top up a proposal that's still waiting. Rejected adverts are never proposed again.
-- **Sending** (worker, after approval): checks the advert against WhatsApp's rules again; sends through the WhatsApp number connected in the **Meta container** (matching its handle); skips people who unsubscribed or got an advert within `AUDIENCE_MIN_HOURS_BETWEEN_MESSAGES` (default 24). Skipped and failed people are proposed again later.
+- **Sending** (worker, at the send time, once approved by publishing with auto-send or on Approvals): checks the advert against WhatsApp's rules again; sends through the WhatsApp number connected in the **Meta container** (matching its handle); skips people who unsubscribed or got an advert within `AUDIENCE_MIN_HOURS_BETWEEN_MESSAGES` (default 24). Skipped and failed people are proposed again later.
 - **Receipts:** WhatsApp `delivered` / `read` / `failed` statuses update each delivery (requires the webhook below).
 
 **WhatsApp setup for audience adverts.**

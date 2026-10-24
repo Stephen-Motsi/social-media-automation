@@ -5,7 +5,9 @@ import type { Platform } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { logActivity, requireViewer } from "@/lib/session";
 import { advertPlatforms } from "@/lib/adverts";
-import { businessWhatsAppNumber, newConfirmCode, normalizePhone, proposeCampaign, whatsappLink } from "@/lib/audience";
+import { formatWhen, reasonFor } from "@/lib/errors";
+import { platformRules } from "@/lib/policy/rules";
+import { businessWhatsAppNumber, MIN_HOURS_BETWEEN_MESSAGES, newConfirmCode, normalizePhone, proposeCampaign, whatsappLink } from "@/lib/audience";
 
 // Every action here acts only on the signed-in user's own records (viewer.id from the
 // database-checked session), never on IDs of other users sent from the browser.
@@ -26,20 +28,33 @@ export async function setAdvertSubscription(advertId: string, platform: Platform
     if (sub?.status !== "ACTIVE") return { error: "Link and confirm your WhatsApp number first." };
   }
 
-  if (on) {
-    await prisma.advertSubscription.upsert({
-      where: { userId_advertId_platform: { userId: viewer.id, advertId, platform } },
-      update: {},
-      create: { userId: viewer.id, advertId, platform },
-    });
-    // Automatic: a WhatsApp subscription queues the send for admin approval straight away.
-    if (platform === "WHATSAPP") await proposeCampaign(advertId, "New subscription").catch(() => null);
-  } else {
-    await prisma.advertSubscription.deleteMany({ where: { userId: viewer.id, advertId, platform } });
+  try {
+    if (on) {
+      await prisma.advertSubscription.upsert({
+        where: { userId_advertId_platform: { userId: viewer.id, advertId, platform } },
+        update: {},
+        create: { userId: viewer.id, advertId, platform },
+      });
+      // Automatic: a WhatsApp subscription joins the send (at the advert's time, or now if that has passed).
+      if (platform === "WHATSAPP") await proposeCampaign(advertId, "New subscription").catch((err) => console.error("proposeCampaign:", err));
+    } else {
+      await prisma.advertSubscription.deleteMany({ where: { userId: viewer.id, advertId, platform } });
+    }
+    await logActivity(viewer.id, on ? "SUBSCRIBE" : "UNSUBSCRIBE", { advert: advert.title ?? advert.id, platform });
+  } catch (err) {
+    return { error: `Not saved: ${reasonFor(err)}` };
   }
-  await logActivity(viewer.id, on ? "SUBSCRIBE" : "UNSUBSCRIBE", { advert: advert.title ?? advert.id, platform });
   refresh();
-  return { ok: true };
+  if (!on) return { ok: true, message: "Unsubscribed." };
+  let later = advert.sendAt && advert.sendAt > new Date() ? formatWhen(advert.sendAt) : null;
+  if (platform === "WHATSAPP") {
+    // One advert per person per day: if they just got one, this one follows after the gap.
+    const last = (await prisma.subscriber.findUnique({ where: { userId: viewer.id } }))?.lastSentAt;
+    const free = last ? new Date(last.getTime() + MIN_HOURS_BETWEEN_MESSAGES * 3600_000) : null;
+    if (free && free > new Date() && (!advert.sendAt || advert.sendAt < free)) later = `after ${formatWhen(free)} (one advert a day on WhatsApp)`;
+  }
+  const where = platform === "WHATSAPP" ? "on your WhatsApp" : `on ${platformRules[platform].name}`;
+  return { ok: true, message: later ? `Subscribed. It arrives ${where} ${later}.` : platform === "WHATSAPP" ? "Subscribed. It's on its way to your WhatsApp." : `Subscribed. See it ${where} below once it's posted.` };
 }
 
 export async function linkWhatsApp(_prev: MeState, fd: FormData): Promise<MeState> {

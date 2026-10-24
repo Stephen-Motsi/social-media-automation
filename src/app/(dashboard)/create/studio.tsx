@@ -8,7 +8,8 @@ import type { Issue, PlatformVerdict } from "@/lib/policy/rules";
 import { advertImagePrompt, shapeFor } from "@/lib/advert-prompt";
 import { PlatformBadge, platforms } from "@/components/platforms";
 import { checkAction, generateAction, saveDraftAction, type GeneratedMedia } from "./actions";
-import { setListed } from "../admin/actions";
+import { publish as publishAdvert } from "../admin/actions";
+import type { PlatformOutcome } from "@/lib/adverts";
 import { AdvertPreview } from "./preview";
 
 export type ChannelOption = { platform: Platform; label: string; handle: string; format: PostFormat };
@@ -37,6 +38,12 @@ const statusCopy: Record<PlatformVerdict["status"], { label: string; className: 
   block: { label: "Can't post", className: "bg-danger/15 text-danger" },
 };
 
+// "2026-10-24T09:30" in the browser's time zone, for the datetime input's minimum
+function localNow() {
+  const d = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
+  return d.toISOString().slice(0, 16);
+}
+
 const field = "w-full rounded-2xl border border-line bg-white/50 px-4 py-3 placeholder:text-ink-soft/70 dark:bg-white/5";
 const chip =
   "inline-block rounded-full border border-line px-3 py-1.5 text-sm peer-checked:border-transparent peer-checked:bg-ink peer-checked:text-white peer-focus-visible:outline-2 peer-focus-visible:outline-[var(--ig-3)] dark:peer-checked:bg-white dark:peer-checked:text-ink";
@@ -45,11 +52,14 @@ export function Studio({
   interests,
   channels,
   draft,
+  scheduleFirst = false,
 }: {
   interests: { id: string; name: string }[];
   // Platforms with a social container (and handle) the advert can target
   channels: ChannelOption[];
   draft?: DraftInput;
+  // Opened from "Schedule…": start with a send time
+  scheduleFirst?: boolean;
 }) {
   const router = useRouter();
   const [draftId, setDraftId] = useState(draft?.id);
@@ -67,7 +77,10 @@ export function Studio({
   const [media, setMedia] = useState<GeneratedMedia | null>(draft?.media ?? null);
   const [verdicts, setVerdicts] = useState<PlatformVerdict[] | null>(null);
   const [mode, setMode] = useState<"edit" | "preview">("edit");
-  const [postNow, setPostNow] = useState(true);
+  const [when, setWhen] = useState<"now" | "later">(scheduleFirst ? "later" : "now");
+  const [sendAt, setSendAt] = useState("");
+  const [autoSend, setAutoSend] = useState(true);
+  const [report, setReport] = useState<PlatformOutcome[] | null>(null);
   const [error, setError] = useState<{ message: string; issues?: Issue[] } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<"photo" | "check" | "save" | "publish" | null>(null);
@@ -81,11 +94,13 @@ export function Studio({
     setBusy(kind);
     setError(null);
     setNotice(null);
+    setReport(null);
     startTransition(async () => {
       try {
         await task();
       } catch {
-        setError({ message: "Something went wrong. Try again." });
+        const what = kind === "save" ? "Not saved" : kind === "publish" ? "Not published" : "That didn't work";
+        setError({ message: `${what}: the server didn't respond. Check your connection and try again.` });
       } finally {
         setBusy(null);
       }
@@ -127,25 +142,28 @@ export function Studio({
   const saveDraft = () =>
     run("save", async () => {
       const res = await saveDraftAction(draftPayload());
-      if (!res.ok) return setError({ message: res.error });
+      if (!res.ok) return setError({ message: `Not saved: ${res.error}` });
       setVerdicts(res.verdicts);
       if (!draftId) router.replace(`/create?id=${res.postId}`, { scroll: false });
       setDraftId(res.postId);
-      setNotice(listed ? "Saved. Users see the updated advert." : "Draft saved. You can come back to it from Adverts.");
+      setNotice(listed ? "Saved. Users see the updated advert." : "Saved as a draft. You can come back to it from Adverts.");
     });
 
   const publish = () =>
     run("publish", async () => {
+      if (when === "later" && !sendAt) return setError({ message: "Not published: pick the date and time it goes out, or choose Now." });
       const saved = await saveDraftAction(draftPayload());
-      if (!saved.ok) return setError({ message: saved.error });
+      if (!saved.ok) return setError({ message: `Not saved: ${saved.error}` });
       setDraftId(saved.postId);
       setVerdicts(saved.verdicts);
-      const res = await setListed(saved.postId, true, postNow);
-      if (res?.error) {
-        if (!draftId) router.replace(`/create?id=${saved.postId}`, { scroll: false });
-        return setError({ message: `Saved as a draft, but not published: ${res.error}` });
-      }
-      router.push("/admin/adverts");
+      if (!draftId) router.replace(`/create?id=${saved.postId}`, { scroll: false });
+      // The browser's local time, sent as an exact moment
+      const res = await publishAdvert(saved.postId, { sendAt: when === "later" ? new Date(sendAt).toISOString() : null, autoSend });
+      if (!res.ok) return setError({ message: `Saved as a draft, but not published: ${res.error}` });
+      // All good: show it on the home page, as users see it. Otherwise stay and show what didn't go out.
+      if (res.outcomes.every((o) => o.ok)) return router.push(`/?published=${saved.postId}#published`);
+      setNotice("Saved and published, but not everywhere:");
+      setReport(res.outcomes);
     });
 
   const socialTargets = targets.filter((t) => t.platform !== "WHATSAPP").map((t) => platforms[t.platform].name);
@@ -180,7 +198,7 @@ export function Studio({
               disabled={busy !== null || !!publishProblem}
               className="blend-meta rounded-full px-6 py-2.5 font-medium text-white shadow-md shadow-fuchsia-500/25 disabled:opacity-50"
             >
-              {busy === "publish" ? "Publishing…" : "Publish"}
+              {busy === "publish" ? "Publishing…" : when === "now" ? "Publish now" : "Publish and schedule"}
             </button>
           )}
         </>
@@ -191,6 +209,21 @@ export function Studio({
   const feedback = (
     <>
       {notice && <p className="text-sm text-emerald-700 dark:text-emerald-300" role="status">{notice}</p>}
+      {report && (
+        <div className="space-y-2 text-sm">
+          <ul className="space-y-1">
+            {report.map((o, i) => (
+              <li key={i} className="flex gap-2">
+                <span aria-hidden className={`mt-1.5 size-2 shrink-0 rounded-full ${o.ok ? "bg-wa" : "bg-danger"}`} />
+                <span className={o.ok ? "" : "text-danger"}>{o.message}</span>
+              </li>
+            ))}
+          </ul>
+          <a href={`/?published=${draftId}#published`} className="inline-block font-medium underline underline-offset-2">
+            See it on the home page
+          </a>
+        </div>
+      )}
       {error && (
         <div role="alert" className="rounded-2xl border border-danger/30 bg-danger/10 p-4 text-sm">
           <p className="font-medium text-danger">{error.message}</p>
@@ -222,12 +255,40 @@ export function Studio({
               <h2 className="font-semibold">Publish</h2>
               <ul className="list-disc space-y-1 pl-5 text-sm text-ink-soft">
                 <li>It&rsquo;s listed on the home page and in users&rsquo; dashboards, where they subscribe per platform.</li>
-                {targets.some((t) => t.platform === "WHATSAPP") && <li>WhatsApp subscribers get it on their number after you approve the send.</li>}
+                {targets.some((t) => t.platform === "WHATSAPP") && <li>WhatsApp subscribers get it on their own number.</li>}
               </ul>
-              {socialTargets.length > 0 && (
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={postNow} onChange={(e) => setPostNow(e.target.checked)} className="size-4 accent-[var(--ig-3)]" />
-                  Also post it on {socialTargets.join(", ")} now
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium">When it goes out</legend>
+                <div className="flex flex-wrap items-center gap-2">
+                  {(["now", "later"] as const).map((w) => (
+                    <label key={w} className="cursor-pointer">
+                      <input type="radio" name="when" checked={when === w} onChange={() => setWhen(w)} className="peer sr-only" />
+                      <span className={chip}>{w === "now" ? "Now" : "At a set time"}</span>
+                    </label>
+                  ))}
+                  {when === "later" && (
+                    <input
+                      type="datetime-local"
+                      value={sendAt}
+                      min={localNow()}
+                      onChange={(e) => setSendAt(e.target.value)}
+                      aria-label="Date and time it goes out"
+                      className="rounded-full border border-line bg-white/50 px-3 py-1.5 text-sm dark:bg-white/5"
+                    />
+                  )}
+                </div>
+                <p className="text-xs text-ink-soft">
+                  {socialTargets.length > 0 && `Posted on ${socialTargets.join(", ")} ${when === "now" ? "straight away" : "at that time"}. `}
+                  Users can subscribe as soon as it&rsquo;s published.
+                </p>
+              </fieldset>
+              {(targets.some((t) => t.platform === "WHATSAPP") || topics.length > 0) && (
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" checked={autoSend} onChange={(e) => setAutoSend(e.target.checked)} className="mt-0.5 size-4 accent-[var(--ig-3)]" />
+                  <span>
+                    Send to WhatsApp subscribers automatically {when === "now" ? "" : "at that time "}
+                    <span className="block text-xs text-ink-soft">Publishing counts as your approval. People who subscribe later get it as soon as they do. Untick to approve each send on Approvals.</span>
+                  </span>
                 </label>
               )}
               {publishProblem && <p className="text-sm text-danger">Can&rsquo;t publish yet: {publishProblem}</p>}
@@ -283,7 +344,7 @@ export function Studio({
               <legend className="font-medium">
                 Topics <span className="font-normal text-ink-soft">(optional)</span>
               </legend>
-              <p className="text-sm text-ink-soft">Also sends it on WhatsApp to people who chose these topics, after your approval.</p>
+              <p className="text-sm text-ink-soft">Also sends it on WhatsApp to people who chose these topics.</p>
               <div className="mt-2 flex flex-wrap gap-2">
                 {interests.map((i) => (
                   <label key={i.id} className="cursor-pointer">

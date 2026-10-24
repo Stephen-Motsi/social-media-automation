@@ -25,6 +25,7 @@ export function PlatformToggle({
   const [on, setOn] = useOptimistic(subscribed);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
+  const [message, setMessage] = useState<string>();
   return (
     <li className="flex items-center gap-2">
       <PlatformBadge platform={platform} />
@@ -41,6 +42,7 @@ export function PlatformToggle({
           {disabledReason && !on ? ` · ${disabledReason}` : ""}
         </p>
         {error && <p role="alert" className="text-xs text-danger">{error}</p>}
+        {message && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{message}</p>}
       </div>
       <button
         type="button"
@@ -51,9 +53,15 @@ export function PlatformToggle({
         onClick={() =>
           start(async () => {
             setError(undefined);
+            setMessage(undefined);
             setOn(!on);
-            const res = await setAdvertSubscription(advertId, platform, !on);
-            if (res?.error) setError(res.error);
+            try {
+              const res = await setAdvertSubscription(advertId, platform, !on);
+              if (res?.error) setError(res.error);
+              else setMessage(res?.message);
+            } catch {
+              setError("Not saved: the server didn't respond. Try again.");
+            }
           })
         }
         className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${

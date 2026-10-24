@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { formatWhen } from "@/lib/errors";
 import { signOut } from "@/auth";
 import { prisma } from "@/lib/db";
 import { isStaff, pageViewer } from "@/lib/session";
@@ -153,6 +154,7 @@ export default async function MePage() {
                     <div className="min-w-0 flex-1">
                       <h3 className="font-semibold">{a.title ?? "Advert"}</h3>
                       {a.about && <p className="mt-0.5 text-sm text-ink-soft">{a.about}</p>}
+                      {a.sendAt && a.sendAt > new Date() && <p className="mt-1 text-xs font-medium text-[var(--ig-3)]">Goes out {formatWhen(a.sendAt)}</p>}
                       <ul className="mt-3 space-y-2">
                         {a.platforms.map((p) => (
                           <PlatformToggle

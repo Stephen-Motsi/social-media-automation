@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { postNow, setListed, setRole, signOutEverywhere, type AdminState } from "./actions";
+import { useRouter } from "next/navigation";
+import { postNow, publish, unlist, setRole, signOutEverywhere, type AdminState } from "./actions";
 
 function useAction() {
   const [state, setState] = useState<AdminState>();
@@ -19,6 +20,14 @@ const ghost = "rounded-full border border-line bg-white/50 px-3 py-1.5 text-xs f
 
 export function AdvertButtons({ id, listed }: { id: string; listed: boolean }) {
   const { state, pending, run } = useAction();
+  const router = useRouter();
+  const publishNow = () =>
+    run(async () => {
+      const res = await publish(id);
+      if (!res.ok) return { error: `Not published: ${res.error}` };
+      router.push(`/?published=${id}#published`);
+      return { ok: true, message: "Published." };
+    });
   return (
     <div className="flex flex-wrap items-center gap-2">
       <a href={`/create?id=${id}`} className={ghost}>
@@ -27,25 +36,20 @@ export function AdvertButtons({ id, listed }: { id: string; listed: boolean }) {
       {listed ? (
         <>
           <button type="button" disabled={pending} onClick={() => run(() => postNow(id))} className={ghost}>
-            Post to platforms now
+            Post to platforms again now
           </button>
-          <button type="button" disabled={pending} onClick={() => run(() => setListed(id, false))} className="rounded-full px-3 py-1.5 text-xs text-ink-soft hover:text-danger">
+          <button type="button" disabled={pending} onClick={() => confirm("Unlist this advert? Anything scheduled that hasn't gone out is cancelled.") && run(() => unlist(id))} className="rounded-full px-3 py-1.5 text-xs text-ink-soft hover:text-danger">
             Unlist
           </button>
         </>
       ) : (
         <>
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => run(() => setListed(id, true, true))}
-            className="blend-meta rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-          >
-            Publish &amp; post now
+          <button type="button" disabled={pending} onClick={publishNow} className="blend-meta rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-50">
+            {pending ? "Publishing…" : "Publish now"}
           </button>
-          <button type="button" disabled={pending} onClick={() => run(() => setListed(id, true, false))} className={ghost}>
-            Publish only
-          </button>
+          <a href={`/create?id=${id}&schedule=1`} className={ghost}>
+            Schedule…
+          </a>
         </>
       )}
       <Feedback state={state} />

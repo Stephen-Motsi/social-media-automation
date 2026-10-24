@@ -3,8 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { requireStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
-import { getAudienceTemplate } from "@/lib/audience";
-import { handleMatches } from "@/lib/handles";
+import { whatsappNotReady } from "@/lib/audience";
+import { formatWhen, reasonFor } from "@/lib/errors";
 import { queueCampaign } from "@/lib/queue";
 
 export type ApprovalState = { ok?: boolean; error?: string; message?: string } | undefined;
@@ -28,17 +28,20 @@ export async function approveCampaign(id: string): Promise<ApprovalState> {
   if (checks.find((c) => c.platform === "WHATSAPP")?.status === "block") {
     return { error: "This advert can't be sent on WhatsApp. See the check below." };
   }
-  if (!(await getAudienceTemplate())) return { error: "Set the WhatsApp message template on the Audience page first." };
-  const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
-  const accounts = await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP" } });
-  if (!accounts.some((a) => handleMatches("WHATSAPP", channel?.handle, a))) {
-    return { error: "Connect your WhatsApp number in the Meta container on Channels first." };
-  }
+  const notReady = await whatsappNotReady();
+  if (notReady) return { error: `Can't send yet: ${notReady}` };
 
-  await prisma.campaign.update({ where: { id }, data: { status: "APPROVED", approvedAt: new Date(), approvedById: userId } });
-  await queueCampaign(id);
+  // Goes out at the advert's send time, or now if that has passed.
+  const sendAt = campaign.advert.sendAt && campaign.advert.sendAt > new Date() ? campaign.advert.sendAt : null;
+  await prisma.campaign.update({ where: { id }, data: { status: "APPROVED", approvedAt: new Date(), approvedById: userId, sendAt } });
+  try {
+    await queueCampaign(id, sendAt);
+  } catch (err) {
+    refresh();
+    return { error: `Approved, but ${reasonFor(err)}` };
+  }
   refresh();
-  return { ok: true, message: "Approved. Sending now." };
+  return { ok: true, message: sendAt ? `Approved. It goes out ${formatWhen(sendAt)}.` : "Approved. Sending now." };
 }
 
 export async function rejectCampaign(id: string): Promise<ApprovalState> {

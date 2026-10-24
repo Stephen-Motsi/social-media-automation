@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { logActivity, requireStaff, requireSuperAdmin } from "@/lib/session";
-import { listAdvert, postAdvertToPlatforms } from "@/lib/adverts";
+import { cancelPendingSends, postAdvertToPlatforms, publishAdvert, type PlatformOutcome } from "@/lib/adverts";
+import { reasonFor } from "@/lib/errors";
 
 export type AdminState = { ok?: boolean; error?: string; message?: string } | undefined;
 
@@ -15,35 +16,46 @@ const refresh = () => {
 
 // ---- Adverts -------------------------------------------------------------------------
 
-export async function setListed(advertId: string, listed: boolean, postNow = false): Promise<AdminState> {
-  await requireStaff();
-  const advert = await prisma.post.findFirst({ where: { id: advertId, status: "DRAFT", channelId: null } });
-  if (!advert) return { error: "Advert not found." };
-  if (listed) {
-    if (!advert.title) return { error: "Give the advert a title before listing it." };
-    if (advert.targetPlatforms.length === 0) return { error: "Choose at least one target platform before listing it." };
-    const checks = (advert.checks as { platform: string; status: string }[] | null) ?? [];
-    const blocked = checks.filter((c) => c.status === "block" && advert.targetPlatforms.includes(c.platform as never)).map((c) => c.platform);
-    if (blocked.length === advert.targetPlatforms.length) return { error: "This advert can't be posted on any of its platforms. See its checks." };
-    const r = await listAdvert(advertId, postNow);
-    refresh();
-    return {
-      ok: true,
-      message: `Listed for users.${r.posted.length ? ` Posting on ${r.posted.join(", ")}.` : ""}${r.skipped.length ? ` Not posted: ${r.skipped.join("; ")}.` : ""}`,
-    };
-  }
-  await prisma.post.update({ where: { id: advertId }, data: { listedAt: null } });
+export type PublishState = { ok: true; outcomes: PlatformOutcome[] } | { ok: false; error: string };
+
+// sendAt: ISO time from the browser (empty = now). autoSend: WhatsApp subscribers get it without
+// a separate approval (publishing is the approval).
+export async function publish(advertId: string, opts: { sendAt?: string | null; autoSend?: boolean } = {}): Promise<PublishState> {
+  const viewer = await requireStaff();
+  const sendAt = opts.sendAt ? new Date(opts.sendAt) : null;
+  if (sendAt && Number.isNaN(sendAt.getTime())) return { ok: false, error: "that send time isn't a valid date." };
+  const report = await publishAdvert(advertId, { sendAt, autoSend: opts.autoSend ?? true });
+  if (!report.ok) return report;
+  await logActivity(viewer.id, "ADVERT_PUBLISHED", { advert: advertId, sendAt: sendAt?.toISOString() ?? "now" }).catch(() => null);
   refresh();
-  return { ok: true, message: "Unlisted. Users can't subscribe to it any more." };
+  return { ok: true, outcomes: report.outcomes };
+}
+
+export async function unlist(advertId: string): Promise<AdminState> {
+  await requireStaff();
+  try {
+    const advert = await prisma.post.findFirst({ where: { id: advertId, status: "DRAFT", channelId: null } });
+    if (!advert) return { error: "Advert not found." };
+    await prisma.post.update({ where: { id: advertId }, data: { listedAt: null } });
+    const cancelled = await cancelPendingSends(advertId, "Cancelled: the advert was unlisted.");
+    refresh();
+    return { ok: true, message: `Unlisted. Users can't subscribe to it any more.${cancelled ? " Scheduled posts were cancelled." : ""}` };
+  } catch (err) {
+    return { error: `Not unlisted: ${reasonFor(err)}` };
+  }
 }
 
 export async function postNow(advertId: string): Promise<AdminState> {
   await requireStaff();
-  const r = await postAdvertToPlatforms(advertId);
-  refresh();
-  return r.posted.length
-    ? { ok: true, message: `Posting on ${r.posted.join(", ")}.${r.skipped.length ? ` Not posted: ${r.skipped.join("; ")}.` : ""}` }
-    : { error: r.skipped.join("; ") || "No social platforms to post to." };
+  try {
+    const outcomes = (await postAdvertToPlatforms(advertId)).filter(Boolean);
+    refresh();
+    if (outcomes.length === 0) return { error: "No social platforms to post to (WhatsApp goes to subscribers' numbers)." };
+    const ok = outcomes.filter((o) => o.ok);
+    return ok.length ? { ok: true, message: outcomes.map((o) => o.message).join(" ") } : { error: outcomes.map((o) => o.message).join(" ") };
+  } catch (err) {
+    return { error: `Not posted: ${reasonFor(err)}` };
+  }
 }
 
 // ---- Users ---------------------------------------------------------------------------

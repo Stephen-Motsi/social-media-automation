@@ -8,6 +8,7 @@ import { imageInfo, publicMediaUrl } from "@/lib/media";
 import { blockedEverywhere, reviewContent, reviewPrompt } from "@/lib/policy/review";
 import { normalizeLocation } from "@/lib/audience";
 import { revalidatePath } from "next/cache";
+import { reasonFor } from "@/lib/errors";
 import { platformOrder, type Issue, type PlatformVerdict } from "@/lib/policy/rules";
 import type { Formats } from "@/lib/policy/review";
 import type { Platform } from "@prisma/client";
@@ -158,9 +159,21 @@ export async function saveDraftAction(input: {
   targetPlatforms?: Platform[];
 }): Promise<ActionResult<{ postId: string; verdicts: PlatformVerdict[] }>> {
   const userId = await requireUser();
+  try {
+    return await saveDraft(userId, input);
+  } catch (err) {
+    return { ok: false, error: reasonFor(err) };
+  }
+}
+
+async function saveDraft(
+  userId: string,
+  input: Parameters<typeof saveDraftAction>[0],
+): Promise<ActionResult<{ postId: string; verdicts: PlatformVerdict[] }>> {
+  if (!input.title?.trim() && !input.caption.trim() && !input.mediaId) return { ok: false, error: "add a title, caption or photo first." };
   if (input.id) {
     const existing = await prisma.post.findFirst({ where: { id: input.id, status: "DRAFT", channelId: null } });
-    if (!existing) return { ok: false, error: "This draft no longer exists." };
+    if (!existing) return { ok: false, error: "this draft no longer exists (it may have been deleted)." };
   }
   const asset = input.mediaId ? await loadAsset(input.mediaId) : null;
   const interestIds = input.interestIds?.length

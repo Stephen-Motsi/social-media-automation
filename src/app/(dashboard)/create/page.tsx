@@ -9,9 +9,9 @@ import { Studio, type ChannelOption, type DraftInput } from "./studio";
 export const dynamic = "force-dynamic";
 
 // Create a new advert, or edit a saved draft with ?id=
-export default async function CreatePage({ searchParams }: { searchParams: Promise<{ id?: string }> }) {
+export default async function CreatePage({ searchParams }: { searchParams: Promise<{ id?: string; schedule?: string }> }) {
   await pageViewer("staff");
-  const { id } = await searchParams;
+  const { id, schedule } = await searchParams;
   const [interests, channelRows, advert] = await Promise.all([
     prisma.interest.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
     prisma.channel.findMany({ where: { handle: { not: null } } }),
@@ -55,7 +55,7 @@ export default async function CreatePage({ searchParams }: { searchParams: Promi
         Save it as a draft any time.
       </p>
       {id && !advert && <p className="mt-4 text-danger">That draft wasn&rsquo;t found. You can start a new advert below.</p>}
-      <Studio key={draft?.id ?? "new"} interests={interests} channels={channels} draft={draft} />
+      <Studio key={draft?.id ?? "new"} interests={interests} channels={channels} draft={draft} scheduleFirst={schedule === "1"} />
     </div>
   );
 }

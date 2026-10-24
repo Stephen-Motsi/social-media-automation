@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { handleMatches } from "@/lib/handles";
+import { queueCampaign } from "@/lib/queue";
 
 // Subscribers, matching adverts to them, and proposing campaigns for admin approval.
 
@@ -54,6 +56,8 @@ export const sameLocation = (a: string, b: string) => a.trim().toLowerCase() ===
 export const normalizeLocation = (input: string | null | undefined) =>
   (input ?? "").trim().replace(/\s+/g, " ").toLowerCase().replace(/(^|[\s-])(\p{L})/gu, (_, sep, c) => sep + c.toUpperCase()) || null;
 
+const MAX_SEND_ATTEMPTS = 3;
+
 // Deliveries that count as "this person already has / will get this advert".
 const REACHED: Prisma.DeliveryWhereInput = {
   OR: [
@@ -88,11 +92,41 @@ export async function matchSubscribers(advertId: string) {
         (s) => !advert.targetLocations.length || (s.location && advert.targetLocations.some((l) => sameLocation(l, s.location!))),
       )
     : [];
-  const seen = new Set<string>();
-  return [...bySubscription, ...byTopic].filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)));
+  // Stop retrying someone this advert has already failed to reach a few times (e.g. not on WhatsApp).
+  const failed = await prisma.delivery.groupBy({
+    by: ["subscriberId"],
+    where: { status: "FAILED", campaign: { advertId } },
+    _count: true,
+  });
+  const givenUp = new Set(failed.filter((f) => f._count >= MAX_SEND_ATTEMPTS).map((f) => f.subscriberId));
+  const seen = new Set<string>(givenUp);
+  // Messaged recently: matched again once the gap has passed (the worker re-checks every ~10 minutes).
+  const cutoff = new Date(Date.now() - MIN_HOURS_BETWEEN_MESSAGES * 60 * 60 * 1000);
+  return [...bySubscription, ...byTopic].filter((s) =>
+    seen.has(s.id) || (s.lastSentAt && s.lastSentAt > cutoff) ? false : (seen.add(s.id), true),
+  );
 }
 
+// Why WhatsApp sends can't go out right now (null = ready): what an admin has to fix.
+export async function whatsappNotReady(): Promise<string | null> {
+  if (!(await getAudienceTemplate())) return "no WhatsApp message template is set (Audience page).";
+  const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
+  const accounts = await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP" } });
+  if (!accounts.some((a) => handleMatches("WHATSAPP", channel?.handle, a))) {
+    return "your WhatsApp number isn't connected (Settings in the Meta container on Channels).";
+  }
+  return null;
+}
+
+// When an approved send goes out: the advert's send time, or now if that has passed.
+const sendTimeFor = (advert: { sendAt: Date | null }) => (advert.sendAt && advert.sendAt > new Date() ? advert.sendAt : null);
+
+const blockedOnWhatsApp = (checks: unknown) =>
+  ((checks as { platform: string; status: string }[] | null) ?? []).some((c) => c.platform === "WHATSAPP" && c.status === "block");
+
 // Proposes (or tops up) a campaign for an advert. Adverts whose campaign was rejected aren't proposed again.
+// Adverts published with auto-send are approved straight away (publishing was the approval) and go out
+// at the advert's send time; people who subscribe after that get it immediately.
 export async function proposeCampaign(advertId: string, reason: string) {
   const advert = await prisma.post.findUnique({ where: { id: advertId }, include: { campaigns: true } });
   // Only published (listed) adverts are sent; drafts never are.
@@ -100,20 +134,40 @@ export async function proposeCampaign(advertId: string, reason: string) {
   if (advert.campaigns.some((c) => c.status === "REJECTED")) return null;
 
   const matched = await matchSubscribers(advertId);
-  if (matched.length === 0) return null;
+  const notReady = advert.autoSend ? ((blockedOnWhatsApp(advert.checks) && "it fails WhatsApp's checks.") || (await whatsappNotReady())) : null;
+  const auto = advert.autoSend && !notReady;
+  const sendAt = sendTimeFor(advert);
+  const addTo = (campaignId: string) =>
+    prisma.delivery.createMany({ data: matched.map((s) => ({ campaignId, subscriberId: s.id })), skipDuplicates: true });
+
+  // An automatic send that hasn't gone out yet takes the new subscribers along.
+  const upcoming = auto && advert.campaigns.find((c) => c.status === "APPROVED" && c.sendAt && c.sendAt > new Date());
+  if (upcoming) {
+    if (matched.length) await addTo(upcoming.id);
+    return matched.length ? upcoming.id : null;
+  }
 
   const pending = advert.campaigns.find((c) => c.status === "PENDING_APPROVAL");
   if (pending) {
-    await prisma.delivery.createMany({
-      data: matched.map((s) => ({ campaignId: pending.id, subscriberId: s.id })),
-      skipDuplicates: true,
-    });
-    await prisma.campaign.update({ where: { id: pending.id }, data: { reason } });
+    if (matched.length) await addTo(pending.id);
+    if (auto) {
+      await prisma.campaign.update({ where: { id: pending.id }, data: { status: "APPROVED", approvedAt: new Date(), sendAt, reason: "Sent automatically" } });
+      await queueCampaign(pending.id, sendAt);
+    } else {
+      await prisma.campaign.update({ where: { id: pending.id }, data: { reason: notReady ? `Waiting: ${notReady}` : reason } });
+    }
     return pending.id;
   }
+  if (matched.length === 0) return null;
   const campaign = await prisma.campaign.create({
-    data: { advertId, reason, deliveries: { create: matched.map((s) => ({ subscriberId: s.id })) } },
+    data: {
+      advertId,
+      reason: auto ? "Sent automatically" : notReady ? `Waiting: ${notReady}` : reason,
+      ...(auto ? { status: "APPROVED" as const, approvedAt: new Date(), sendAt } : {}),
+      deliveries: { create: matched.map((s) => ({ subscriberId: s.id })) },
+    },
   });
+  if (auto) await queueCampaign(campaign.id, sendAt);
   return campaign.id;
 }
 

@@ -4,6 +4,7 @@ import { Worker } from "bullmq";
 import type { Platform, PostFormat, SocialAccount } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { CAMPAIGN_QUEUE, PUBLISH_QUEUE, redisConnection, type CampaignJob, type PublishJob } from "@/lib/queue";
+import { requeueMissed } from "@/lib/dispatch";
 import { sendCampaign } from "@/lib/campaigns";
 import { proposeAll } from "@/lib/audience";
 import { expireUnconfirmed } from "@/lib/policy/subscriptions";
@@ -75,6 +76,11 @@ async function publish(postId: string) {
     where: { id: postId },
     include: { targets: { include: { account: true } }, channel: true },
   });
+
+  // Cancelled (advert unlisted) or already done: nothing to send.
+  if (post.status !== "SCHEDULED" && post.status !== "PUBLISHING") return;
+  // Never early (the scheduler's safety net queues it again when it's due).
+  if (post.scheduledAt && post.scheduledAt.getTime() > Date.now() + 5_000) return;
 
   await prisma.post.update({ where: { id: postId }, data: { status: "PUBLISHING" } });
 
@@ -159,7 +165,7 @@ const worker = new Worker<PublishJob>(PUBLISH_QUEUE, (job) => publish(job.data.p
 worker.on("completed", (job) => console.log(`Published post ${job.data.postId}`));
 worker.on("failed", (job, err) => console.error(`Post ${job?.data.postId} failed:`, err.message));
 
-// Audience campaigns: sent only after an admin approves them.
+// Audience campaigns: sent once approved (by an admin, or by publishing with auto-send), at their send time.
 const campaignWorker = new Worker<CampaignJob>(CAMPAIGN_QUEUE, (job) => sendCampaign(job.data.campaignId), {
   connection: redisConnection(),
 });
@@ -173,6 +179,8 @@ async function tick() {
   try {
     const ran = await runDueChannels();
     if (ran) console.log(`Scheduler: ${ran} channel run(s) started`);
+    const requeued = await requeueMissed();
+    if (requeued) console.log(`Scheduler: ${requeued} missed send(s) queued again`);
     // Every ~10 minutes, propose any adverts that newly match subscribers (safety net; most
     // proposals happen immediately when an advert is saved or someone subscribes).
     if (ticks++ % 20 === 0) {

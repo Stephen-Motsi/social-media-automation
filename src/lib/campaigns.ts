@@ -25,6 +25,8 @@ export async function sendCampaign(campaignId: string) {
     include: { advert: true, deliveries: { where: { status: "PENDING" }, include: { subscriber: true } } },
   });
   if (!campaign || !["APPROVED", "SENDING"].includes(campaign.status)) return;
+  // Never early (the scheduler's safety net queues it again when it's due).
+  if (campaign.sendAt && campaign.sendAt.getTime() > Date.now() + 5_000) return;
   const fail = (error: string) => prisma.campaign.update({ where: { id: campaignId }, data: { status: "FAILED", error } });
 
   const template = await getAudienceTemplate();

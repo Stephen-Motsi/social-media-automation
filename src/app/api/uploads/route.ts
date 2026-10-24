@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getViewer, isStaff } from "@/lib/session";
+import type { Platform, PostFormat } from "@prisma/client";
 import { MAX_UPLOAD_BYTES, uploadAdvertImage } from "@/lib/advert-images";
+import { platformOrder } from "@/lib/policy/rules";
 
 // Staff upload a photo for a social container's advert. It's checked against that
 // platform's rules (format, size, shape) and the content rules before it can be used.
@@ -14,9 +16,21 @@ export async function POST(req: Request) {
   const channelId = String(form?.get("channelId") ?? "");
   if (!(file instanceof File)) return NextResponse.json({ ok: false, error: "Choose a photo to upload." }, { status: 400 });
   if (file.size > MAX_UPLOAD_BYTES) return NextResponse.json({ ok: false, error: "Photos can be up to 20 MB." }, { status: 400 });
-  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
-  if (!channel) return NextResponse.json({ ok: false, error: "This container no longer exists." }, { status: 404 });
+  // A social container's photo, or (from Posts) a photo for a platform and format
+  let target: { platform: Platform; format: PostFormat };
+  if (channelId) {
+    const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+    if (!channel) return NextResponse.json({ ok: false, error: "This container no longer exists." }, { status: 404 });
+    target = channel;
+  } else {
+    const platform = String(form?.get("platform") ?? "") as Platform;
+    const format = String(form?.get("format") ?? "POST") as PostFormat;
+    if (!platformOrder.includes(platform) || !["POST", "STORY"].includes(format)) {
+      return NextResponse.json({ ok: false, error: "Choose a platform first." }, { status: 400 });
+    }
+    target = { platform, format };
+  }
 
-  const result = await uploadAdvertImage(viewer.id, new Uint8Array(await file.arrayBuffer()), channel.platform, channel.format, String(form?.get("caption") ?? ""));
+  const result = await uploadAdvertImage(viewer.id, new Uint8Array(await file.arrayBuffer()), target.platform, target.format, String(form?.get("caption") ?? ""));
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }
