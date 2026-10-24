@@ -14,6 +14,8 @@ expect("X twitter.com link", normalizeHandle("X", "twitter.com/MangoMarket"), "m
 expect("TikTok link with @", normalizeHandle("TIKTOK", "https://www.tiktok.com/@mangomarket?lang=en"), "mangomarket");
 expect("FB m. link", normalizeHandle("FACEBOOK", "https://m.facebook.com/MangoMarketKE/"), "mangomarketke");
 expect("WA spaced number", normalizeHandle("WHATSAPP", "+254 700-000 000"), "254700000000");
+expect("WA local Kenyan number", normalizeHandle("WHATSAPP", "0711 222 333"), "254711222333");
+expect("WA wa.me link", normalizeHandle("WHATSAPP", "https://wa.me/254799888777"), "254799888777");
 
 expect("validate: bad IG handle", validateHandle("INSTAGRAM", "mango market!") !== null, true);
 expect("validate: short WA number", validateHandle("WHATSAPP", "12345") !== null, true);

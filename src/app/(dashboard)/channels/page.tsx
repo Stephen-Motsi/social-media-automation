@@ -44,13 +44,13 @@ function errorNotice(p: Params): string | null {
     case "no_code":
       return "The platform didn't return an authorisation code. Try again.";
     case "no_meta_channels":
-      return "Add Facebook or Instagram to the Meta container before connecting.";
+      return "Add Facebook, Instagram or WhatsApp to the Meta container before connecting.";
     case "no_pages":
       return "Facebook didn't share any Pages. Try again and select the Page you manage.";
     case "handle_not_found":
-      return `Facebook didn't share the ${p.missing ?? "account"} named in this container${
+      return `Facebook didn't share the ${p.missing ?? "account"} entered in Settings${
         p.shared ? `. It shared: ${p.shared}` : ""
-      }. Connect again and select that Page (Instagram accounts come with the Page they're linked to), or edit the handle.`;
+      }. Connect again and select it when Facebook asks which Pages and WhatsApp accounts to share (Instagram accounts come with their Page), or change the entry in Settings.`;
     case "handle_mismatch":
       return `You signed in as ${p.got}, but this container posts to ${p.expected}. Nothing was linked. Sign out of ${
         p.platform === "TIKTOK" ? "TikTok" : "X"
@@ -181,6 +181,7 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
                       connectedText: day.format(a.createdAt),
                       profileUrl: a.profileUrl,
                       matches: handleMatches(platform, c.handle, a),
+                      expiresText: a.tokenExpiresAt && !a.refreshTokenEncrypted ? day.format(a.tokenExpiresAt) : null,
                     })),
                   channel: {
                     id: c.id,
@@ -216,7 +217,7 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
                 items={items}
                 admin={admin}
                 connect={connectFor(g.kind)}
-                whatsappEnvReady={Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_ACCESS_TOKEN)}
+                whatsappEnvReady={Boolean(process.env.WHATSAPP_ACCESS_TOKEN)}
               />
             );
           })}

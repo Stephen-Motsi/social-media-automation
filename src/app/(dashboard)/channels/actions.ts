@@ -10,7 +10,7 @@ import { proposeCampaign } from "@/lib/audience";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { GraphApiError } from "@/lib/meta/graph";
-import { getWhatsAppNumber } from "@/lib/meta/oauth";
+import { findWhatsAppNumber, getWhatsAppNumber, inspectToken, subscribeAppToWaba } from "@/lib/meta/oauth";
 import { computeNextRun, runChannel } from "@/lib/channels";
 import { loadImage } from "@/lib/media";
 import { reviewContent } from "@/lib/policy/review";
@@ -178,13 +178,56 @@ export async function connectWhatsApp(_prev: ActionState, formData: FormData): P
   return saveWhatsApp(parsed.data.phoneNumberId, parsed.data.accessToken);
 }
 
-// Uses WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_ACCESS_TOKEN from .env, so the token never touches the browser.
+// Uses the permanent (system-user) token in .env. The backend looks up the phone number ID of the
+// number typed in this container, so nothing else needs copying from Meta.
 export async function connectWhatsAppFromEnv(): Promise<ActionState> {
   await requireAdmin();
-  const id = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!id || !token) return { error: "WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN aren't set in .env." };
-  return saveWhatsApp(id, token);
+  if (!token) return { error: "WHATSAPP_ACCESS_TOKEN isn't set in .env." };
+  let phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  if (!phoneNumberId) {
+    const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
+    if (!channel?.handle) return { error: "Enter the WhatsApp number in Settings first." };
+    try {
+      const wabaIds = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID
+        ? [process.env.WHATSAPP_BUSINESS_ACCOUNT_ID]
+        : (await inspectToken(token)).wabaIds;
+      const found = await findWhatsAppNumber(wabaIds, token, channel.handle);
+      if (!found.number || !found.waba) {
+        return {
+          error: `That token doesn't include ${displayHandle("WHATSAPP", channel.handle)}.${found.shared.length ? ` It has: ${found.shared.map((n) => n.display_phone_number).join(", ")}.` : ""} Check the number, or give the system user access to it in Meta Business settings.`,
+        };
+      }
+      phoneNumberId = found.number.id;
+      await subscribeAppToWaba(found.waba, token);
+    } catch (err) {
+      if (err instanceof GraphApiError) return { error: `Meta didn't accept the token: ${err.message}` };
+      throw err;
+    }
+  }
+  return saveWhatsApp(phoneNumberId, token);
+}
+
+// Change one platform's handle from Settings: a phone number, @handle or profile link.
+export async function setHandle(channelId: string, value: string): Promise<ActionState> {
+  await requireAdmin();
+  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+  if (!channel) return { error: "This container no longer exists." };
+  const problem = validateHandle(channel.platform, value);
+  if (problem) return { error: problem };
+  const handle = normalizeHandle(channel.platform, value);
+  if (handle === channel.handle) return { ok: true, message: "No change." };
+  await prisma.channel.update({ where: { id: channel.id }, data: { handle } });
+  // Accounts that don't belong to the new handle are unlinked, so nothing posts to the wrong account.
+  const stale = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } }))
+    .filter((a) => !handleMatches(channel.platform, handle, a))
+    .map((a) => a.id);
+  if (stale.length) await prisma.socialAccount.deleteMany({ where: { id: { in: stale } } });
+  refresh();
+  return {
+    ok: true,
+    message: `Saved ${displayHandle(channel.platform, handle)}.${stale.length ? " The previously connected account didn't match, so it was disconnected." : ""} Now connect it below.`,
+  };
 }
 
 // ---- Social container: format, advert, schedule ------------------------------------

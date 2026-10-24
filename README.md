@@ -352,7 +352,14 @@ Accounts are connected from each container's **Settings** on the Channels page. 
 
 **Development mode:** without App Review, only people with a role on the Meta app (admin, developer or tester) can connect, and only Pages they manage. That's enough to connect your own accounts. To let other businesses connect, submit those permissions for **App Review** (Advanced Access) and complete **Business Verification**.
 
-### 3. WhatsApp
+### 3. WhatsApp (connected automatically)
+In the Meta container's **Settings**, type the WhatsApp number (any format: `0748 493 651`, `+254 748 493 651`, or a `wa.me` link) and press **Connect**. One Facebook sign-in also requests `whatsapp_business_management` and `whatsapp_business_messaging`; the backend then reads which WhatsApp Business Accounts were shared (`debug_token` granular scopes), finds the typed number in them (`/{waba}/phone_numbers`), stores its **phone number ID** with the sign-in's token, and subscribes the app to that account's messages (`/{waba}/subscribed_apps`). Settings shows when that token expires ("reconnect before …"; Facebook user tokens last about 60 days; use a Login for Business configuration with a system-user token, `META_LOGIN_CONFIG_ID`, for one that doesn't expire).
+
+Alternatively, put a permanent **system-user token** in `.env` as `WHATSAPP_ACCESS_TOKEN` (optionally `WHATSAPP_BUSINESS_ACCOUNT_ID`) and press **Connect using the server's WhatsApp token**: the backend looks up the typed number's phone number ID itself. `WHATSAPP_PHONE_NUMBER_ID` is only needed to skip that lookup. The manual "phone number ID and token" form remains under **Advanced**.
+
+Every handle (number, @handle or link) can be changed directly in Settings with **Change**; accounts that don't match the new entry are disconnected.
+
+#### Manual setup (if you prefer)
 1. Add the **WhatsApp** product. Under **API Setup**, note the **Phone number ID** and **WhatsApp Business Account ID**. Add and verify your real business number to replace the test number.
 2. For a permanent token, go to **Business settings → System users**, create a system user, assign it the app and the WhatsApp account, and generate a token with `whatsapp_business_messaging` and `whatsapp_business_management`. The temporary token on API Setup expires in 24 hours.
 3. In the Meta container's Settings (with WhatsApp ticked and its number as the handle), enter the phone number ID and token. The app checks them with Meta before saving. Alternatively, set `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` in `.env` and use "Add number from server settings", so the token never goes through a browser.

@@ -24,7 +24,15 @@ export const handleLabels: Record<Platform, { label: string; placeholder: string
 export function normalizeHandle(platform: Platform, input: string | null | undefined): string {
   let v = (input ?? "").trim();
   if (!v) return "";
-  if (platform === "WHATSAPP") return v.replace(/\D/g, "");
+  if (platform === "WHATSAPP") {
+    // Same rules as subscriber numbers: "0712 345 678" -> "254712345678" (DEFAULT_COUNTRY_CODE, Kenya by default)
+    const cc = process.env.DEFAULT_COUNTRY_CODE ?? "254";
+    let d = v.replace(/\D/g, "");
+    if (d.startsWith("00")) d = d.slice(2);
+    if (d.startsWith("0") && d.length >= 9 && d.length <= 11) d = cc + d.slice(1);
+    else if (d.length === 9 && /^[17]/.test(d) && cc === "254") d = cc + d;
+    return d;
+  }
   v = v.replace(/^https?:\/\//i, "").replace(/^(www\.|m\.|mobile\.)/i, "");
   v = v.replace(/^(facebook\.com|fb\.com|instagram\.com|x\.com|twitter\.com|tiktok\.com)\//i, "");
   v = v.split(/[/?#]/)[0];

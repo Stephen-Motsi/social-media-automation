@@ -3,7 +3,14 @@ import { auth } from "@/auth";
 import { isStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
-import { exchangeCodeForLongLivedToken, listManagedPages, STATE_COOKIE } from "@/lib/meta/oauth";
+import {
+  exchangeCodeForLongLivedToken,
+  findWhatsAppNumber,
+  inspectToken,
+  listManagedPages,
+  STATE_COOKIE,
+  subscribeAppToWaba,
+} from "@/lib/meta/oauth";
 import { channelsUrl, clearOAuthCookies, stateMatches } from "@/lib/oauth-state";
 import { displayHandle, handleMatches, normalizeHandle, profileUrl } from "@/lib/handles";
 
@@ -23,15 +30,16 @@ export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
   if (!code) return done({ error: "no_code" });
 
-  const channels = await prisma.channel.findMany({ where: { platform: { in: ["FACEBOOK", "INSTAGRAM"] } } });
+  const channels = await prisma.channel.findMany({ where: { platform: { in: ["FACEBOOK", "INSTAGRAM", "WHATSAPP"] } } });
   const fb = channels.find((c) => c.platform === "FACEBOOK");
   const ig = channels.find((c) => c.platform === "INSTAGRAM");
-  if (!fb && !ig) return done({ error: "no_meta_channels" });
+  const wa = channels.find((c) => c.platform === "WHATSAPP");
+  if (!fb && !ig && !wa) return done({ error: "no_meta_channels" });
 
   try {
     const { access_token: userToken } = await exchangeCodeForLongLivedToken(code);
-    const pages = await listManagedPages(userToken);
-    if (pages.length === 0) return done({ error: "no_pages" });
+    const pages = fb || ig ? await listManagedPages(userToken) : [];
+    if ((fb || ig) && !wa && pages.length === 0) return done({ error: "no_pages" });
 
     let saved = 0;
     const missing: string[] = [];
@@ -84,10 +92,38 @@ export async function GET(req: NextRequest) {
       if (matches.length === 0) missing.push(`Instagram account "${displayHandle("INSTAGRAM", ig.handle)}"`);
     }
 
-    // Tell the admin what Facebook did share, so they can pick the right Page next time.
-    const shared = pages
+    // WhatsApp: the backend finds the typed number in the WhatsApp Business Accounts the admin shared,
+    // and stores its phone number ID with this sign-in's token. Nothing to copy from Meta by hand.
+    const sharedNumbers: string[] = [];
+    if (wa?.handle) {
+      const { wabaIds, expiresAt } = await inspectToken(userToken);
+      const found = await findWhatsAppNumber(wabaIds, userToken, wa.handle);
+      sharedNumbers.push(...found.shared.map((n) => n.display_phone_number));
+      if (found.number && found.waba) {
+        const handle = normalizeHandle("WHATSAPP", found.number.display_phone_number);
+        const data = {
+          displayName: `${found.number.verified_name} (${found.number.display_phone_number})`,
+          accessTokenEncrypted: encrypt(userToken),
+          tokenExpiresAt: expiresAt,
+          handle,
+          profileUrl: profileUrl("WHATSAPP", handle),
+        };
+        await prisma.socialAccount.upsert({
+          where: { platform_externalId: { platform: "WHATSAPP", externalId: found.number.id } },
+          update: data,
+          create: { platform: "WHATSAPP", externalId: found.number.id, ...data },
+        });
+        await subscribeAppToWaba(found.waba, userToken);
+        saved++;
+      } else {
+        missing.push(`WhatsApp number "${displayHandle("WHATSAPP", wa.handle)}"`);
+      }
+    }
+
+    // Tell the admin what Facebook did share, so they can pick the right Page or number next time.
+    const shared = [...pages
       .flatMap((p) => [p.name, p.instagram_business_account?.username ? `@${p.instagram_business_account.username}` : null])
-      .filter(Boolean)
+      .filter(Boolean), ...sharedNumbers]
       .join(", ");
     if (missing.length) {
       return done({ error: "handle_not_found", missing: missing.join(" and "), shared, ...(saved ? { connected: String(saved) } : {}) });
