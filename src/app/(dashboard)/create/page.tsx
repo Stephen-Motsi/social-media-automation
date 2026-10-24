@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { platformOrder } from "@/lib/policy/rules";
 import { displayHandle, handleMatches } from "@/lib/handles";
 import { ensureAllContainers } from "@/lib/channels";
+import { platformMediaOf } from "@/lib/advert-media";
 import { platforms } from "@/components/platforms";
 import { Studio, type ChannelOption, type DraftInput } from "./studio";
 
@@ -31,8 +32,20 @@ export default async function CreatePage({ searchParams }: { searchParams: Promi
 
   let draft: DraftInput | undefined;
   if (advert) {
-    const mediaId = advert.mediaUrls[0]?.match(/\/api\/media\/([a-z0-9]+)$/i)?.[1];
-    const asset = mediaId ? await prisma.mediaAsset.findUnique({ where: { id: mediaId } }) : null;
+    // Each platform's own image; older adverts have one image, used for each of their platforms
+    const own = platformMediaOf(advert.platformMedia);
+    const urls = Object.fromEntries(advert.targetPlatforms.flatMap((p) => (own[p] ?? advert.mediaUrls[0] ? [[p, own[p] ?? advert.mediaUrls[0]]] : [])));
+    const idOf = (url: string) => url.match(/\/api\/media\/([a-z0-9]+)$/i)?.[1];
+    const assets = await prisma.mediaAsset.findMany({
+      where: { id: { in: Object.values(urls).map(idOf).filter((x): x is string => !!x) } },
+      select: { id: true, width: true, height: true, blocked: true },
+    });
+    const photos = Object.fromEntries(
+      Object.entries(urls).flatMap(([p, url]) => {
+        const a = assets.find((x) => x.id === idOf(url));
+        return a ? [[p, { id: a.id, url: `/api/media/${a.id}`, width: a.width, height: a.height, blocked: a.blocked }]] : [];
+      }),
+    );
     draft = {
       id: advert.id,
       title: advert.title ?? "",
@@ -41,8 +54,7 @@ export default async function CreatePage({ searchParams }: { searchParams: Promi
       topics: advert.interests.map((i) => i.id),
       towns: advert.targetLocations.join(", "),
       targetPlatforms: advert.targetPlatforms,
-      media: asset ? { id: asset.id, url: `/api/media/${asset.id}`, width: asset.width, height: asset.height, blocked: asset.blocked } : null,
-      prompt: asset?.prompt ?? "",
+      photos,
       listed: !!advert.listedAt,
     };
   }
@@ -56,7 +68,8 @@ export default async function CreatePage({ searchParams }: { searchParams: Promi
         </Link>
       </div>
       <p className="mt-2 max-w-prose text-ink-soft">
-        Describe the advert, create its photo, write the caption, then preview it on each platform before publishing.
+        Describe the advert and choose its platforms. Each platform gets its own photo made from the details, in the
+        shape and style that platform shows best. Preview it on each platform before publishing.
         Save it as a draft any time.
       </p>
       {id && !advert && <p className="mt-4 text-danger">That draft wasn&rsquo;t found. You can start a new advert below.</p>}

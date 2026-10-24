@@ -116,16 +116,18 @@ model SocialAccount {
 }
 
 model Post {
-  id          String     @id @default(cuid())
-  content     String
-  mediaUrls   String[]
-  status      PostStatus @default(DRAFT)
-  scheduledAt DateTime?
-  publishedAt DateTime?
+  id            String     @id @default(cuid())
+  content       String
+  mediaUrls     String[]
+  // Advert images made for each platform: { "INSTAGRAM": "<media url>", ... }. mediaUrls[0] is the main one (home page).
+  platformMedia Json?
+  status        PostStatus @default(DRAFT)
+  scheduledAt   DateTime?
+  publishedAt   DateTime?
   // Last policy review per platform (see src/lib/policy/review.ts)
-  checks      Json?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  checks        Json?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 
   authorId String
   author   User   @relation(fields: [authorId], references: [id])

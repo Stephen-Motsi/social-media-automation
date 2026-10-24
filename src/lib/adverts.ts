@@ -5,6 +5,7 @@ import { schedulePost } from "@/lib/queue";
 import { proposeCampaign, whatsappNotReady } from "@/lib/audience";
 import { formatWhen, QueueUnavailable, reasonFor } from "@/lib/errors";
 import { platformRules, type PlatformVerdict } from "@/lib/policy/rules";
+import { mediaFor } from "@/lib/advert-media";
 
 // Adverts the admin defines (title, about, topics, target platforms, image, caption) and lists
 // for users, who subscribe to an advert per platform handle.
@@ -66,14 +67,16 @@ export async function postAdvertToPlatforms(advertId: string, at?: Date | null):
       outcomes.push({ platform, ok: false, message: `Not posted on ${name}: ${handle} isn't connected. Connect it in Settings on Channels.` });
       continue;
     }
-    if (!advert.mediaUrls[0] && platformRules[platform].image.required) {
+    const image = mediaFor(advert, platform);
+    if (!image && platformRules[platform].image.required) {
       outcomes.push({ platform, ok: false, message: `Not posted on ${name}: ${name} needs a photo.` });
       continue;
     }
     const post = await prisma.post.create({
       data: {
         content: advert.content,
-        mediaUrls: advert.mediaUrls,
+        // This platform's own image (made in its shape and style)
+        mediaUrls: image ? [image] : [],
         status: "SCHEDULED",
         scheduledAt: when ?? new Date(),
         authorId: advert.authorId,

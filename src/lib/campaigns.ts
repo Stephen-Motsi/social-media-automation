@@ -16,6 +16,7 @@ import { loadImage } from "@/lib/media";
 import { sendTemplate, sendText } from "@/lib/meta/whatsapp";
 import { reviewContent } from "@/lib/policy/review";
 import { accessTokenFor } from "@/lib/tokens";
+import { mediaFor } from "@/lib/advert-media";
 
 // Sends an approved campaign to its subscribers over WhatsApp (run by the worker).
 // Template expected: optional IMAGE header, body with {{1}} = subscriber's first name and {{2}} = advert text.
@@ -40,7 +41,9 @@ export async function sendCampaign(campaignId: string) {
 
   // Same rule as everywhere else: check the advert against WhatsApp's rules right before sending.
   const advert = campaign.advert;
-  const image = advert.mediaUrls[0] ? await loadImage(advert.mediaUrls[0]).catch(() => null) : null;
+  // WhatsApp's own image (made for a chat), else the advert's main one
+  const imageUrl = mediaFor(advert, "WHATSAPP");
+  const image = imageUrl ? await loadImage(imageUrl).catch(() => null) : null;
   const { verdicts } = await reviewContent({ caption: advert.content, image }, ["WHATSAPP"]);
   const blockers = verdicts[0].issues.filter((i) => i.severity === "block");
   await prisma.campaign.update({ where: { id: campaignId }, data: { status: "SENDING", checks: verdicts } });
@@ -70,7 +73,7 @@ export async function sendCampaign(campaignId: string) {
         templateName: template.name,
         languageCode: template.lang,
         components: [
-          ...(advert.mediaUrls[0] ? [{ type: "header", parameters: [{ type: "image", image: { link: advert.mediaUrls[0] } }] }] : []),
+          ...(imageUrl ? [{ type: "header", parameters: [{ type: "image", image: { link: imageUrl } }] }] : []),
           {
             type: "body",
             parameters: [

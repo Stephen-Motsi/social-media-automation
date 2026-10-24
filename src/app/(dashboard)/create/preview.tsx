@@ -3,6 +3,7 @@
 import type { Platform, PostFormat } from "@prisma/client";
 import { PlatformBadge, platforms } from "@/components/platforms";
 import type { PlatformVerdict } from "@/lib/policy/rules";
+import { mainMedia } from "@/lib/advert-media";
 
 // How the advert will look to users, on the site and on each platform it targets.
 
@@ -156,17 +157,20 @@ export function AdvertPreview({
   title,
   about,
   caption,
-  image,
+  images,
   targets,
   verdicts,
 }: {
   title: string;
   about: string;
   caption: string;
-  image: string | null;
+  // Each platform's own photo
+  images: Partial<Record<Platform, string>>;
   targets: PreviewTarget[];
   verdicts: PlatformVerdict[];
 }) {
+  // The site card uses the main photo: a square one when there is one
+  const image = mainMedia(images, targets.map((t) => t.platform));
   return (
     <div className="space-y-6">
       <section>
@@ -193,7 +197,7 @@ export function AdvertPreview({
         ) : (
           <div className="mt-3 grid gap-6 sm:grid-cols-2">
             {targets.map((t) => (
-              <PostPreview key={t.platform} target={t} caption={caption} image={image} verdict={verdicts.find((v) => v.platform === t.platform)} />
+              <PostPreview key={t.platform} target={t} caption={caption} image={images[t.platform] ?? null} verdict={verdicts.find((v) => v.platform === t.platform)} />
             ))}
           </div>
         )}

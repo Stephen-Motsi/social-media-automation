@@ -3,11 +3,10 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Platform, PostFormat } from "@prisma/client";
-import type { ImageShape } from "@/lib/ai/openai";
 import type { Issue, PlatformVerdict } from "@/lib/policy/rules";
-import { advertImagePrompt, shapeFor } from "@/lib/advert-prompt";
+import { advertImagePrompt, platformImagePrompt, platformShape } from "@/lib/advert-prompt";
 import { PlatformBadge, platforms } from "@/components/platforms";
-import { checkAction, generateAction, saveDraftAction, type GeneratedMedia } from "./actions";
+import { checkAction, generatePlatformImageAction, saveDraftAction, type GeneratedMedia } from "./actions";
 import { publish as publishAdvert } from "../admin/actions";
 import type { PlatformOutcome } from "@/lib/adverts";
 import { homeUrl, STILL_POSTING, waitUntilPosted } from "../admin/publish-progress";
@@ -22,16 +21,17 @@ export type DraftInput = {
   topics: string[];
   towns: string;
   targetPlatforms: Platform[];
-  media: GeneratedMedia | null;
-  prompt: string;
+  // Each platform's own photo
+  photos: Partial<Record<Platform, GeneratedMedia>>;
   listed: boolean;
 };
 
-const shapes: { value: ImageShape; label: string; hint: string; box: string }[] = [
-  { value: "square", label: "Square", hint: "Works on every platform", box: "h-5 w-5" },
-  { value: "landscape", label: "Landscape", hint: "3:2, works on every platform", box: "h-4 w-6" },
-  { value: "portrait", label: "Portrait", hint: "2:3, for stories; too tall for Instagram posts", box: "h-6 w-4" },
-];
+type Photos = Partial<Record<Platform, GeneratedMedia>>;
+// Where each platform's photo is up to while it's being made
+type PhotoState = Partial<Record<Platform, { busy?: boolean; error?: string; issues?: Issue[] }>>;
+
+const shapeLabel = { square: "Square", landscape: "Wide", portrait: "Tall" } as const;
+const aspectClass = { square: "aspect-square", landscape: "aspect-[3/2]", portrait: "aspect-[2/3]" } as const;
 
 const statusCopy: Record<PlatformVerdict["status"], { label: string; className: string }> = {
   pass: { label: "Ready", className: "bg-wa/15 text-emerald-700 dark:text-emerald-300" },
@@ -75,11 +75,10 @@ export function Studio({
   const [topics, setTopics] = useState<string[]>(draft?.topics ?? []);
   const [towns, setTowns] = useState(draft?.towns ?? "");
   const [targetPlatforms, setTargetPlatforms] = useState<Platform[]>(draft?.targetPlatforms ?? defaultTargets(channels));
-  const [prompt, setPrompt] = useState(draft?.prompt ?? "");
-  const [shape, setShape] = useState<ImageShape>(() =>
-    shapeFor(channels.filter((c) => (draft?.targetPlatforms ?? defaultTargets(channels)).includes(c.platform))),
-  );
-  const [media, setMedia] = useState<GeneratedMedia | null>(draft?.media ?? null);
+  // The photo description: built from the details unless the admin edits it
+  const [prompt, setPrompt] = useState("");
+  const [photos, setPhotos] = useState<Photos>(draft?.photos ?? {});
+  const [photoState, setPhotoState] = useState<PhotoState>({});
   const [verdicts, setVerdicts] = useState<PlatformVerdict[] | null>(null);
   const [mode, setMode] = useState<"edit" | "preview">("edit");
   const [when, setWhen] = useState<"now" | "later">(scheduleFirst ? "later" : "now");
@@ -95,7 +94,13 @@ export function Studio({
 
   const targets = channels.filter((c) => targetPlatforms.includes(c.platform));
   const topicNames = interests.filter((i) => topics.includes(i.id)).map((i) => i.name);
-  const autoPrompt = advertImagePrompt({ title, about, caption, topics: topicNames });
+  const details = { title, about, caption, topics: topicNames };
+  const autoPrompt = advertImagePrompt(details);
+  // Usable photos of the chosen platforms (blocked ones are never used)
+  const usable = Object.fromEntries(targets.flatMap((t) => (photos[t.platform] && !photos[t.platform]!.blocked ? [[t.platform, photos[t.platform]!]] : []))) as Photos;
+  const mediaIds = Object.fromEntries(Object.entries(usable).map(([p, m]) => [p, m!.id])) as Partial<Record<Platform, string>>;
+  const hasPhoto = Object.keys(usable).length > 0;
+  const making = Object.values(photoState).some((s) => s?.busy);
 
   function run(kind: NonNullable<typeof busy>, task: () => Promise<void>) {
     setBusy(kind);
@@ -116,7 +121,7 @@ export function Studio({
 
   const draftPayload = () => ({
     id: draftId,
-    mediaId: media && !media.blocked ? media.id : null,
+    media: mediaIds,
     caption,
     interestIds: topics,
     title,
@@ -125,21 +130,41 @@ export function Studio({
     locations: towns.split(","),
   });
 
-  // "Create photo": builds the prompt from the advert's details (or uses the edited one) and generates it.
-  const createPhoto = (usePrompt: string) =>
-    run("photo", async () => {
-      if (!usePrompt.trim()) return setError({ message: "Add a title or description first, so the photo has something to show." });
-      setPrompt(usePrompt);
-      const res = await generateAction({ prompt: usePrompt, shape, targetPlatforms });
-      if (!res.ok) return setError({ message: res.error, issues: res.issues });
-      setMedia(res.media);
-      const checked = await checkAction({ mediaId: res.media.id, caption, targetPlatforms });
-      setVerdicts(checked.ok ? checked.verdicts : res.verdicts);
+  // Creates each chosen platform's photo from the details (or the edited description), in that
+  // platform's shape and style, all at once. Each is checked against its own platform's rules.
+  const createPhotos = (only?: Platform) => {
+    const base = prompt.trim() || autoPrompt;
+    if (!base) return setError({ message: "Add a title or what it's about first, so the photos have something to show." });
+    const list = targets.filter((t) => !only || t.platform === only);
+    if (list.length === 0) return setError({ message: "Choose at least one platform first." });
+    setError(null);
+    setNotice(null);
+    setPhotoState((s) => ({ ...s, ...Object.fromEntries(list.map((t) => [t.platform, { busy: true }])) }));
+    startTransition(async () => {
+      const made: Photos = {};
+      await Promise.all(
+        list.map(async (t) => {
+          try {
+            const res = await generatePlatformImageAction({ platform: t.platform, format: t.format, prompt: platformImagePrompt(details, t.platform, t.format, base), caption });
+            if (!res.ok) return setPhotoState((s) => ({ ...s, [t.platform]: { error: res.error, issues: res.issues } }));
+            made[t.platform] = res.media;
+            setPhotos((p) => ({ ...p, [t.platform]: res.media }));
+            setPhotoState((s) => ({ ...s, [t.platform]: {} }));
+          } catch {
+            setPhotoState((s) => ({ ...s, [t.platform]: { error: "The server didn't respond. Try again." } }));
+          }
+        }),
+      );
+      // Check every platform against its own photo
+      const ids = { ...mediaIds, ...Object.fromEntries(Object.entries(made).filter(([, m]) => !m!.blocked).map(([p, m]) => [p, m!.id])) };
+      const checked = await checkAction({ media: ids, caption, targetPlatforms }).catch(() => null);
+      if (checked?.ok) setVerdicts(checked.verdicts);
     });
+  };
 
   const preview = () =>
     run("check", async () => {
-      const res = await checkAction({ mediaId: media && !media.blocked ? media.id : undefined, caption, targetPlatforms });
+      const res = await checkAction({ media: mediaIds, caption, targetPlatforms });
       if (!res.ok) return setError({ message: res.error });
       setVerdicts(res.verdicts);
       setMode("preview");
@@ -191,7 +216,7 @@ export function Studio({
     ? "Add a title."
     : targets.length === 0
       ? "Choose at least one target platform."
-      : !caption.trim() && !media
+      : !caption.trim() && !hasPhoto
         ? "Add a caption or a photo."
         : verdicts && targets.every((t) => verdicts.find((v) => v.platform === t.platform)?.status === "block")
           ? "It can't be posted on any of its platforms yet. See the checks."
@@ -203,7 +228,7 @@ export function Studio({
         {busy === "save" ? "Saving…" : listed ? "Save changes" : "Save as draft"}
       </button>
       {mode === "edit" ? (
-        <button type="button" onClick={preview} disabled={busy !== null || (!caption.trim() && !media)} className="rounded-full bg-ink px-5 py-2.5 font-medium text-white disabled:opacity-50 dark:bg-white dark:text-ink">
+        <button type="button" onClick={preview} disabled={busy !== null || making || (!caption.trim() && !hasPhoto)} className="rounded-full bg-ink px-5 py-2.5 font-medium text-white disabled:opacity-50 dark:bg-white dark:text-ink">
           {busy === "check" ? "Checking…" : "Preview"}
         </button>
       ) : (
@@ -269,7 +294,7 @@ export function Studio({
             <h2 className="text-xl font-semibold">Preview</h2>
             <p className="text-sm text-ink-soft">This is what users will see. Nothing has been published yet.</p>
           </div>
-          <AdvertPreview title={title} about={about} caption={caption} image={media && !media.blocked ? media.url : null} targets={targets} verdicts={verdicts ?? []} />
+          <AdvertPreview title={title} about={about} caption={caption} images={Object.fromEntries(Object.entries(usable).map(([p, m]) => [p, m!.url]))} targets={targets} verdicts={verdicts ?? []} />
         </section>
         <section className="glass space-y-4 rounded-[28px] p-6">
           {!listed && (
@@ -358,7 +383,6 @@ export function Studio({
                       onChange={(e) => {
                         const next = e.target.checked ? [...targetPlatforms, c.platform] : targetPlatforms.filter((x) => x !== c.platform);
                         setTargetPlatforms(next);
-                        if (!media) setShape(shapeFor(channels.filter((x) => next.includes(x.platform))));
                       }}
                       className="peer sr-only"
                     />
@@ -402,42 +426,31 @@ export function Studio({
         </div>
 
         <div className="space-y-3 border-t border-line pt-6">
-          <h2 className="text-lg font-semibold">2. Photo</h2>
+          <h2 className="text-lg font-semibold">2. Photos</h2>
+          <p className="text-sm text-ink-soft">
+            Made from the details above: one for each platform you chose, in the shape and style it shows best, and
+            checked against its rules.
+          </p>
           <button
             type="button"
-            onClick={() => createPhoto(autoPrompt)}
-            disabled={busy !== null || !autoPrompt}
-            className="blend-meta w-full rounded-full px-5 py-3 font-medium text-white shadow-md shadow-fuchsia-500/25 disabled:opacity-50"
+            onClick={() => createPhotos()}
+            disabled={busy !== null || making || !(prompt.trim() || autoPrompt) || targets.length === 0}
+            className="blend-meta w-full rounded-full px-5 py-3 font-medium text-white shadow-md shadow-fuchsia-500/25"
           >
-            {busy === "photo" ? "Creating photo… (up to a minute)" : media ? "Create a new photo from the details" : "Create photo for this advert"}
+            {making
+              ? `Creating ${targets.filter((t) => photoState[t.platform]?.busy).length} photos… (up to a minute)`
+              : `${hasPhoto ? "Create new photos" : "Create photos"} for ${targets.map((t) => platforms[t.platform].name).join(", ") || "the chosen platforms"}`}
           </button>
-          {!autoPrompt && <p className="text-sm text-ink-soft">Add a title or description first.</p>}
-          <details className="text-sm" open={!!prompt && prompt !== autoPrompt}>
-            <summary className="cursor-pointer text-ink-soft hover:text-ink">Adjust the photo description or shape</summary>
+          {!autoPrompt && !prompt.trim() && <p className="text-sm text-ink-soft">Add a title or what it&rsquo;s about first.</p>}
+          <details className="text-sm" open={!!prompt.trim()}>
+            <summary className="cursor-pointer text-ink-soft hover:text-ink">Adjust the photo description</summary>
             <textarea value={prompt || autoPrompt} onChange={(e) => setPrompt(e.target.value)} rows={4} aria-label="Photo description" className={`mt-2 ${field}`} />
-            <fieldset className="mt-2">
-              <legend className="sr-only">Shape</legend>
-              <div className="flex flex-wrap gap-2">
-                {shapes.map((s) => (
-                  <label key={s.value} className="cursor-pointer">
-                    <input type="radio" name="shape" checked={shape === s.value} onChange={() => setShape(s.value)} className="peer sr-only" />
-                    <span className={chip.replace("inline-block", "inline-flex items-center gap-2")}>
-                      <span aria-hidden className={`${s.box} inline-block shrink-0 rounded-[3px] border-2 border-current`} />
-                      {s.label}
-                    </span>
-                  </label>
-                ))}
-              </div>
-              <p className="mt-1 text-xs text-ink-soft">{shapes.find((s) => s.value === shape)?.hint}</p>
-            </fieldset>
-            <button
-              type="button"
-              onClick={() => createPhoto(prompt || autoPrompt)}
-              disabled={busy !== null}
-              className="mt-2 rounded-full border border-line bg-white/50 px-4 py-2 font-medium hover:bg-white/80 disabled:opacity-50 dark:bg-white/10"
-            >
-              Create photo with this description
-            </button>
+            <p className="mt-1 text-xs text-ink-soft">Each platform&rsquo;s style and shape are added to this automatically.</p>
+            {prompt.trim() && (
+              <button type="button" onClick={() => setPrompt("")} className="mt-1 text-xs text-ink-soft underline underline-offset-2 hover:text-ink">
+                Go back to the description from the details
+              </button>
+            )}
           </details>
         </div>
 
@@ -459,19 +472,61 @@ export function Studio({
       </section>
 
       <div className="space-y-6">
-        <section className="glass overflow-hidden rounded-[28px]">
-          {media?.blocked ? (
-            <div className="flex aspect-square flex-col items-center justify-center gap-2 p-10 text-center">
-              <p className="font-medium text-danger">Photo hidden</p>
-              <p className="max-w-xs text-ink-soft">It breaks the content rules on every platform. Change the description and create another.</p>
-            </div>
-          ) : media ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={media.url} alt={title || "Advert photo"} width={media.width} height={media.height} className="h-auto w-full" />
+        <section className="glass rounded-[28px] p-5" aria-label="Photos for each platform" aria-live="polite">
+          {targets.length === 0 ? (
+            <p className="py-10 text-center text-ink-soft">Choose the platforms; each gets its own photo here.</p>
           ) : (
-            <div className="flex aspect-square items-center justify-center p-10 text-center text-ink-soft">
-              {busy === "photo" ? "Creating your photo…" : "The advert's photo appears here."}
-            </div>
+            <ul className="grid grid-cols-2 gap-4">
+              {targets.map((t) => {
+                const shape = platformShape(t.platform, t.format);
+                const photo = photos[t.platform];
+                const st = photoState[t.platform] ?? {};
+                return (
+                  <li key={t.platform} className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      <PlatformBadge platform={t.platform} />
+                      <span className="font-medium">{platforms[t.platform].name}</span>
+                      <span className="ml-auto text-xs text-ink-soft">
+                        {shapeLabel[shape]}
+                        {t.format === "STORY" ? " · story" : ""}
+                      </span>
+                    </div>
+                    <div className={`${aspectClass[shape]} relative overflow-hidden rounded-2xl border border-line bg-white/40 dark:bg-white/5`}>
+                      {photo && !photo.blocked && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={photo.url} alt={`${title || "Advert"} for ${platforms[t.platform].name}`} className={`zoom h-full w-full object-cover ${st.busy ? "opacity-40" : ""}`} />
+                      )}
+                      {(st.busy || !photo || photo.blocked) && (
+                        <div className="absolute inset-0 flex items-center justify-center p-3 text-center text-xs text-ink-soft">
+                          {st.busy ? (
+                            <span className="animate-pulse font-medium text-ink">Creating…</span>
+                          ) : photo?.blocked ? (
+                            <span className="text-danger">Hidden: it breaks the content rules. Recreate it.</span>
+                          ) : (
+                            "Not made yet"
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {st.error && (
+                      <p role="alert" className="text-xs text-danger">
+                        {st.error}
+                        {st.issues?.map((i) => (
+                          <span key={i.code} className="block">
+                            {i.message}
+                          </span>
+                        ))}
+                      </p>
+                    )}
+                    {(photo || st.error) && !st.busy && (
+                      <button type="button" onClick={() => createPhotos(t.platform)} disabled={busy !== null || making} className="text-xs font-medium text-ink-soft underline underline-offset-2 hover:text-ink">
+                        Recreate
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </section>
         <section className="glass rounded-[28px] p-6" aria-live="polite">

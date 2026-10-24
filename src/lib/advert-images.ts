@@ -4,6 +4,7 @@ import { editImage, generateImage, imageModel, OpenAIError, type ImageShape } fr
 import { imageInfo } from "@/lib/media";
 import { blockedEverywhere, reviewContent, reviewPrompt } from "@/lib/policy/review";
 import type { Issue, PlatformVerdict } from "@/lib/policy/rules";
+import { platformShape } from "@/lib/advert-prompt";
 
 // Images for one platform's advert: generated from a prompt, refined with an instruction, or uploaded.
 // Every result is checked against that platform's rules for its format (post or story).
@@ -15,11 +16,7 @@ const dailyLimit = () => Number(process.env.IMAGE_DAILY_LIMIT ?? 20);
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 // The shape each platform shows best: stories and TikTok are tall, X's timeline is wide, the rest square.
-export function shapeForChannel(platform: Platform, format: PostFormat): ImageShape {
-  if (format === "STORY" || platform === "TIKTOK") return "portrait";
-  if (platform === "X") return "landscape";
-  return "square";
-}
+export const shapeForChannel = (platform: Platform, format: PostFormat): ImageShape => platformShape(platform, format);
 
 function openAiError(err: unknown): string {
   if (err instanceof OpenAIError) {
