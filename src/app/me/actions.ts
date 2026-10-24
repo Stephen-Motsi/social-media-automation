@@ -6,16 +6,18 @@ import { prisma } from "@/lib/db";
 import { logActivity, requireViewer } from "@/lib/session";
 import { advertPlatforms, postUrl } from "@/lib/adverts";
 import { formatWhen, reasonFor } from "@/lib/errors";
+import { displayHandle, normalizeHandle, PROFILE_PLATFORMS, validateHandle } from "@/lib/handles";
 import { platformRules } from "@/lib/policy/rules";
 import { businessWhatsAppNumber, MIN_HOURS_BETWEEN_MESSAGES, newConfirmCode, normalizePhone, proposeCampaign, whatsappLink } from "@/lib/audience";
 
 // Every action here acts only on the signed-in user's own records (viewer.id from the
 // database-checked session), never on IDs of other users sent from the browser.
 
-export type MeState = { ok?: boolean; error?: string; message?: string; link?: string | null; join?: { code: string; link: string | null } } | undefined;
+export type MeState = { ok?: boolean; error?: string; message?: string; link?: string | null; linkLabel?: string; join?: { code: string; link: string | null } } | undefined;
 
 const refresh = () => {
   revalidatePath("/me");
+  revalidatePath("/me/profile");
   revalidatePath("/");
 };
 
@@ -57,6 +59,17 @@ export async function setAdvertSubscription(advertId: string, platform: Platform
     if (free && free > new Date() && (!advert.sendAt || advert.sendAt < free)) later = `after ${formatWhen(free)} (one advert a day on WhatsApp)`;
   }
   const where = platform === "WHATSAPP" ? "on your WhatsApp" : `on ${platformRules[platform].name}`;
+  // X and Instagram go to the handle on their profile
+  if (platform === "X" || platform === "INSTAGRAM") {
+    const mine = await prisma.userSocial.findUnique({ where: { userId_platform: { userId: viewer.id, platform } } });
+    const name = platformRules[platform].name;
+    if (!mine) {
+      return { ok: true, message: `Subscribed. Add your ${name} handle to your profile and it's sent to you there.`, link: "/me/profile", linkLabel: "Add it" };
+    }
+    const you = displayHandle(platform, mine.handle);
+    const how = platform === "X" ? `by direct message to ${you}` : `by mentioning ${you} on our Instagram post`;
+    return { ok: true, message: later ? `Subscribed. It's sent ${how} ${later}.` : `Subscribed. It's on its way ${how}.` };
+  }
   if (later) return { ok: true, message: `Subscribed. It arrives ${where} ${later}.` };
   if (platform === "WHATSAPP") return { ok: true, message: "Subscribed. It's on its way to your WhatsApp." };
   const posted = await prisma.postTarget.findFirst({
@@ -119,4 +132,57 @@ export async function revokeOtherSessions(): Promise<MeState> {
   await logActivity(viewer.id, "SESSIONS_REVOKED", { count: res.count });
   refresh();
   return { ok: true, message: res.count ? `Signed out ${res.count} other ${res.count === 1 ? "device" : "devices"}.` : "No other devices were signed in." };
+}
+
+// ---- Profile ---------------------------------------------------------------------------
+
+export type ProfileState = { ok?: boolean; error?: string; message?: string; field?: string } | undefined;
+
+export async function updateProfile(_prev: ProfileState, fd: FormData): Promise<ProfileState> {
+  const viewer = await requireViewer();
+  const name = String(fd.get("name") ?? "").trim();
+  if (name.length < 2 || name.length > 80) return { error: "Not saved: enter your name (2 to 80 characters).", field: "name" };
+
+  const handles: { platform: Platform; handle: string | null }[] = [];
+  for (const platform of PROFILE_PLATFORMS) {
+    const raw = String(fd.get(platform) ?? "").trim();
+    if (!raw) {
+      handles.push({ platform, handle: null });
+      continue;
+    }
+    const problem = validateHandle(platform, raw);
+    if (problem) return { error: `Not saved: ${problem}`, field: platform };
+    handles.push({ platform, handle: normalizeHandle(platform, raw) });
+  }
+  // Adverts are sent to these handles, so they must be the person's own.
+  const deliverable = handles.some((h) => h.handle && (h.platform === "X" || h.platform === "INSTAGRAM"));
+  if (deliverable && fd.get("consent") !== "on") {
+    return { error: "Not saved: tick the box to confirm these are your accounts and you want adverts sent there.", field: "consent" };
+  }
+
+  try {
+    for (const { platform, handle } of handles) {
+      if (!handle) continue;
+      const taken = await prisma.userSocial.findFirst({ where: { platform, handle, userId: { not: viewer.id } } });
+      if (taken) return { error: `Not saved: that ${platformRules[platform].name} account is already on another profile.`, field: platform };
+    }
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: viewer.id }, data: { name } }),
+      ...handles.map(({ platform, handle }) =>
+        handle
+          ? prisma.userSocial.upsert({
+              where: { userId_platform: { userId: viewer.id, platform } },
+              update: { handle },
+              create: { userId: viewer.id, platform, handle },
+            })
+          : prisma.userSocial.deleteMany({ where: { userId: viewer.id, platform } }),
+      ),
+    ]);
+    await logActivity(viewer.id, "PROFILE_UPDATED", Object.fromEntries(handles.map((h) => [h.platform, h.handle ? displayHandle(h.platform, h.handle) : null])));
+  } catch (err) {
+    return { error: `Not saved: ${reasonFor(err)}` };
+  }
+  revalidatePath("/me/profile");
+  refresh();
+  return { ok: true, message: "Saved ✓ Adverts you subscribe to on X and Instagram are sent to these accounts." };
 }

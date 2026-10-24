@@ -75,15 +75,17 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  accounts        Account[]
-  sessions        UserSession[]
-  activity        ActivityLog[]
-  subscriptions   AdvertSubscription[]
+  accounts         Account[]
+  sessions         UserSession[]
+  activity         ActivityLog[]
+  subscriptions    AdvertSubscription[]
+  socials          UserSocial[]
+  socialDeliveries SocialDelivery[]
   // The user's WhatsApp number record (for adverts they subscribe to on WhatsApp)
-  subscriber      Subscriber?
+  subscriber       Subscriber?
   // Linking a WhatsApp number: it's only linked when "JOIN <code>" arrives from that number
-  whatsappPending String?
-  whatsappCode    String?              @unique
+  whatsappPending  String?
+  whatsappCode     String?              @unique
 
   posts Post[]
   media MediaAsset[]
@@ -141,15 +143,16 @@ model Post {
   campaigns       Campaign[]
 
   // Advert details set by the admin; listed adverts are shown to users, who subscribe to them
-  title           String?
-  about           String?
-  targetPlatforms Platform[]
-  listedAt        DateTime?
+  title            String?
+  about            String?
+  targetPlatforms  Platform[]
+  listedAt         DateTime?
   // When a published advert goes out (posted on its platforms, sent to WhatsApp subscribers)
-  sendAt          DateTime?
+  sendAt           DateTime?
   // Publishing counts as approval: WhatsApp subscribers get it automatically (false = approve each send)
-  autoSend        Boolean              @default(true)
-  subscriptions   AdvertSubscription[]
+  autoSend         Boolean              @default(true)
+  subscriptions    AdvertSubscription[]
+  socialDeliveries SocialDelivery[]
 
   // Posts made from this advert on social platforms (shown in subscribers' feeds)
   sourceAdvertId String?
@@ -450,4 +453,39 @@ model AdvertSubscription {
 
   @@unique([userId, advertId, platform])
   @@index([advertId, platform])
+}
+
+// A user's own handles, entered on their profile. Adverts they subscribe to on X are sent there
+// by direct message, and on Instagram by an @mention; Facebook and TikTok can't deliver to a person.
+model UserSocial {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform  Platform
+  handle    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, platform])
+}
+
+// One advert sent to one user's handle (X DM or Instagram mention).
+model SocialDelivery {
+  id         String         @id @default(cuid())
+  advertId   String
+  advert     Post           @relation(fields: [advertId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform   Platform
+  handle     String
+  status     DeliveryStatus @default(PENDING)
+  attempts   Int            @default(0)
+  error      String?
+  externalId String?
+  sentAt     DateTime?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@unique([advertId, userId, platform])
+  @@index([status])
 }

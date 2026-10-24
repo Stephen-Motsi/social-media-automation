@@ -213,6 +213,7 @@ export function Studio({
               onClick={publish}
               disabled={busy !== null || !!publishProblem || !!done}
               aria-live="polite"
+              data-done={done ? "" : undefined}
               className={`${done ? "bg-wa" : "blend-meta"} rounded-full px-6 py-2.5 font-medium text-white shadow-md shadow-fuchsia-500/25 disabled:opacity-50 ${done ? "disabled:opacity-100" : ""}`}
             >
               {done ?? (busy === "publish" ? (when === "now" ? "Posting…" : "Scheduling…") : when === "now" ? "Post now" : "Schedule")}

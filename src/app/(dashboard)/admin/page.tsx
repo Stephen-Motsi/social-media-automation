@@ -62,7 +62,7 @@ export default async function OverviewPage() {
 
   return (
     <div className="space-y-8">
-      <section>
+      <section className="rise">
         <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
           {greeting(now)}, {name}
         </h1>
@@ -71,6 +71,17 @@ export default async function OverviewPage() {
             ? `${plural(dueThisWeek, ["channel posts", "channels post"])} in the next 7 days.`
             : "Nothing is scheduled for the next 7 days."}
         </p>
+        <nav aria-label="Quick actions" className="mt-6 flex flex-wrap gap-3">
+          <Link href="/create" className="blend-meta rounded-full px-5 py-2.5 font-medium text-white shadow-md shadow-fuchsia-500/25">
+            Create advert
+          </Link>
+          <Link href="/posts" className="rounded-full border border-line bg-white/55 px-5 py-2.5 font-medium hover:bg-white/80 dark:bg-white/10 dark:hover:bg-white/20">
+            Schedule a post
+          </Link>
+          <Link href="/approvals" className="rounded-full border border-line bg-white/55 px-5 py-2.5 font-medium hover:bg-white/80 dark:bg-white/10 dark:hover:bg-white/20">
+            Approvals
+          </Link>
+        </nav>
       </section>
 
       {/* Channels: the one place we let colour run loud */}
@@ -87,13 +98,13 @@ export default async function OverviewPage() {
         </section>
       )}
       <section aria-label="Channels" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {shown.map((platform) => {
+        {shown.map((platform, n) => {
           const i = platformOrder.indexOf(platform);
           const p = platforms[platform];
           const count = accountsFor(platform);
           const channel = channels.find((c) => c.platform === platform)!;
           return (
-            <article key={platform} className="glass group relative overflow-hidden rounded-[28px] p-6">
+            <article key={platform} style={{ "--i": n + 1 } as React.CSSProperties} className="glass lift rise group relative overflow-hidden rounded-[28px] p-6">
               {/* channel colour glowing up from the corner */}
               <div
                 aria-hidden
@@ -132,22 +143,26 @@ export default async function OverviewPage() {
 
       <section
         aria-label="Post totals"
-        className="glass grid grid-cols-2 divide-line rounded-3xl md:grid-cols-4 md:divide-x"
+        className="glass rise grid grid-cols-2 divide-line overflow-hidden rounded-3xl md:grid-cols-4 md:divide-x"
+        style={{ "--i": 4 } as React.CSSProperties}
       >
         {stats.map((s) => (
-          <div key={s.label} className="px-6 py-5">
-            <div className="text-sm text-ink-soft">{s.label}</div>
+          <Link key={s.label} href="/posts" className="group/stat px-6 py-5 hover:bg-white/35 dark:hover:bg-white/5">
+            <div className="flex items-center justify-between text-sm text-ink-soft">
+              {s.label}
+              <span aria-hidden className="translate-x-[-4px] opacity-0 transition-all group-hover/stat:translate-x-0 group-hover/stat:opacity-100">→</span>
+            </div>
             <div
               className={`mt-1 text-2xl font-semibold tabular-nums ${s.alert && s.value > 0 ? "text-danger" : ""}`}
             >
               {s.value}
             </div>
-          </div>
+          </Link>
         ))}
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-5">
-        <section className="glass rounded-3xl p-6 lg:col-span-3">
+      <div className="rise grid gap-6 lg:grid-cols-5" style={{ "--i": 5 } as React.CSSProperties}>
+        <section className="glass lift rounded-3xl p-6 lg:col-span-3">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Up next</h2>
             <Link href="/channels" className="text-sm text-ink-soft hover:text-ink">
@@ -169,7 +184,7 @@ export default async function OverviewPage() {
           ) : (
             <ul className="mt-4 divide-y divide-line">
               {upcoming.map((c) => (
-                <li key={c.id} className="flex items-center gap-4 py-4">
+                <li key={c.id} className="-mx-2 flex items-center gap-4 rounded-2xl px-2 py-4 transition-colors hover:bg-white/35 dark:hover:bg-white/5">
                   <PlatformBadge platform={c.platform} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate">{c.advert?.content || "(image only)"}</p>
@@ -184,7 +199,7 @@ export default async function OverviewPage() {
           )}
         </section>
 
-        <section className="glass rounded-3xl p-6 lg:col-span-2">
+        <section className="glass lift rounded-3xl p-6 lg:col-span-2">
           <h2 className="text-lg font-semibold">Recent results</h2>
           {recent.length === 0 ? (
             <p className="mt-6 text-ink-soft">
@@ -193,7 +208,7 @@ export default async function OverviewPage() {
           ) : (
             <ul className="mt-4 space-y-3">
               {recent.map((t) => (
-                <li key={t.id} className="flex items-center gap-3">
+                <li key={t.id} className="-mx-2 flex items-center gap-3 rounded-2xl px-2 py-1.5 transition-colors hover:bg-white/35 dark:hover:bg-white/5">
                   <PlatformBadge platform={t.account.platform} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm">{t.post.content}</p>

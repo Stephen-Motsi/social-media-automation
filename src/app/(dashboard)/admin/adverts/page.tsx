@@ -41,15 +41,15 @@ export default async function AdvertsPage() {
         <p className="glass rounded-[28px] px-6 py-12 text-center text-ink-soft">No adverts yet. Create one to get started.</p>
       ) : (
         <ul className="space-y-4">
-          {adverts.map((a) => {
+          {adverts.map((a, n) => {
             const checks = (a.checks as PlatformVerdict[] | null) ?? [];
             const count = (p: string) => a.subscriptions.filter((s) => s.platform === p).length;
             return (
-              <li key={a.id}>
-                <article className="glass flex flex-col gap-4 rounded-[28px] p-5 sm:flex-row">
+              <li key={a.id} className="rise" style={{ "--i": Math.min(n, 8) } as React.CSSProperties}>
+                <article className="glass lift flex flex-col gap-4 overflow-hidden rounded-[28px] p-5 sm:flex-row">
                   {a.mediaUrls[0] ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={a.mediaUrls[0]} alt="" className="size-28 shrink-0 rounded-2xl object-cover" />
+                    <span className="size-28 shrink-0 overflow-hidden rounded-2xl"><img src={a.mediaUrls[0]} alt="" className="zoom size-28 object-cover" /></span>
                   ) : (
                     <div className="size-28 shrink-0 rounded-2xl border border-dashed border-line" aria-hidden />
                   )}

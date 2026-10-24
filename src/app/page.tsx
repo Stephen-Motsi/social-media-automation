@@ -30,15 +30,29 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
     <div className="min-h-screen pb-16">
       <header className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 pt-6">
         <span className="font-semibold tracking-tight">{BRAND}</span>
-        {dashboard ? (
-          <Link href={dashboard} className="rounded-full bg-ink px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-ink">
-            My dashboard
-          </Link>
-        ) : (
-          <Link href="/login" className="rounded-full bg-ink px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-ink">
-            Sign in
-          </Link>
-        )}
+        <nav className="flex items-center gap-2 text-sm">
+          {dashboard ? (
+            <>
+              {dashboard === "/me" && (
+                <Link href="/me/profile" className="rounded-full px-3 py-2 text-ink-soft hover:bg-white/40 hover:text-ink dark:hover:bg-white/10">
+                  Profile
+                </Link>
+              )}
+              <Link href={dashboard} className="rounded-full bg-ink px-4 py-2 font-medium text-white dark:bg-white dark:text-ink">
+                {dashboard === "/me" ? "My adverts" : "Admin"}
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link href="/login" className="rounded-full px-3 py-2 text-ink-soft hover:bg-white/40 hover:text-ink dark:hover:bg-white/10">
+                Sign in
+              </Link>
+              <Link href="/login?mode=signup" className="blend-meta rounded-full px-4 py-2 font-medium text-white shadow-md shadow-fuchsia-500/25">
+                Create account
+              </Link>
+            </>
+          )}
+        </nav>
       </header>
 
       <main className="mx-auto max-w-6xl px-4">
@@ -51,10 +65,10 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Link
-              href={dashboard === "/me" ? "#adverts" : dashboard ?? "/login?callbackUrl=/"}
+              href={dashboard === "/me" ? "#adverts" : dashboard ?? "/login?mode=signup"}
               className="blend-meta rounded-full px-6 py-3 font-medium text-white shadow-md shadow-fuchsia-500/25"
             >
-              {dashboard === "/me" ? "Choose adverts below" : dashboard ? "Go to admin" : "Sign in to subscribe"}
+              {dashboard === "/me" ? "Choose adverts below" : dashboard ? "Go to admin" : "Create a free account"}
             </Link>
             <Link href="/subscribe" className="rounded-full px-5 py-3 text-ink-soft hover:text-ink">
               No account? Get offers by topic on WhatsApp
@@ -66,12 +80,12 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
           <p className="glass rounded-[28px] px-6 py-12 text-center text-ink-soft">New adverts are on their way.</p>
         ) : (
           <ul id="adverts" className="grid scroll-mt-6 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {adverts.map((a) => (
-              <li key={a.id} id={a.id} className="scroll-mt-6">
-                <article className={`glass flex h-full flex-col overflow-hidden rounded-[28px] ${a.id === justPublished?.id ? "ring-2 ring-[var(--ig-3)]" : ""}`}>
+            {adverts.map((a, n) => (
+              <li key={a.id} id={a.id} className="rise scroll-mt-6" style={{ "--i": Math.min(n, 8) } as React.CSSProperties}>
+                <article className={`glass lift flex h-full flex-col overflow-hidden rounded-[28px] ${a.id === justPublished?.id ? "ring-2 ring-[var(--ig-3)]" : ""}`}>
                   {a.mediaUrls[0] && (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={a.mediaUrls[0]} alt="" className="aspect-square w-full object-cover" />
+                    <span className="block overflow-hidden"><img src={a.mediaUrls[0]} alt="" className="zoom aspect-square w-full object-cover" /></span>
                   )}
                   <div className="flex flex-1 flex-col p-5">
                     <h2 className="text-lg font-semibold">{a.title ?? "Advert"}</h2>

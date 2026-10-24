@@ -5,6 +5,7 @@ import type { Platform, PostFormat, SocialAccount } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { CAMPAIGN_QUEUE, PUBLISH_QUEUE, redisConnection, type CampaignJob, type PublishJob } from "@/lib/queue";
 import { requeueMissed } from "@/lib/dispatch";
+import { deliverToHandles } from "@/lib/social-delivery";
 import { sendCampaign } from "@/lib/campaigns";
 import { proposeAll } from "@/lib/audience";
 import { expireUnconfirmed } from "@/lib/policy/subscriptions";
@@ -179,6 +180,8 @@ async function tick() {
   try {
     const ran = await runDueChannels();
     if (ran) console.log(`Scheduler: ${ran} channel run(s) started`);
+    const handles = await deliverToHandles();
+    if (handles) console.log(`Subscribers: ${handles} advert(s) sent to their X / Instagram handles`);
     const requeued = await requeueMissed();
     if (requeued) console.log(`Scheduler: ${requeued} missed send(s) queued again`);
     // Every ~10 minutes, propose any adverts that newly match subscribers (safety net; most

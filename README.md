@@ -11,7 +11,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 
 | Decision | Detail |
 | --- | --- |
-| **Three roles** | **Users** sign in with Google or Facebook (an account is created on first sign-in) and subscribe to adverts. **Admins** run adverts, channels, the audience and users. The **super admin** also promotes and demotes admins (`/admin/roles`). Staff sign in with email and password (no public sign-up; the first super admin comes from `ADMIN_EMAIL` / `ADMIN_PASSWORD` via the seed). See [Accounts, roles and sessions](#accounts-roles-and-sessions). |
+| **Three roles** | **Users** create an account on the sign-in page (**Create account**: email + password, or **Continue with Google**/Facebook), land on the home page and subscribe to adverts. **Admins** run adverts, channels, the audience and users. The **super admin** also promotes and demotes admins (`/admin/roles`). Sign-up only ever creates users; staff come from promotion or the seed (the first super admin from `ADMIN_EMAIL` / `ADMIN_PASSWORD`). See [Accounts, roles and sessions](#accounts-roles-and-sessions). |
 | **Admins define adverts; users subscribe per platform** | An advert has a title, what it's about, topics, target platforms (the channels' real handles), an AI image and a caption. Listed adverts appear on the public home page and users' dashboards; users subscribe to an advert on specific platforms, and that decides what's sent to whom. |
 | **Subscribers are the audience (user side)** | The public home page is `/subscribe` (signed-out visitors to `/` land there). People subscribe to adverts on WhatsApp about topics they choose, with no account or password, or an admin adds them. Adverts are matched to them automatically; **an admin approves every send**. WhatsApp is the only channel that can deliver to an individual; the other platforms only allow public posts (Channels). |
 | **Subscriptions are approved automatically** | Each subscription runs through checks based on WhatsApp's policies (`src/lib/policy/subscriptions.ts`). Passing ones are accepted with no admin action; only flagged ones wait on Approvals. |
@@ -175,7 +175,7 @@ For local testing without a key, point `OPENAI_BASE_URL` at a mock server that i
 
 | Role | Signs in with | Lands on | Can |
 | --- | --- | --- | --- |
-| User | Google or Facebook | `/me` | Browse listed adverts, subscribe per platform, link and confirm a WhatsApp number, see what was sent/posted, manage their sessions |
+| User | Email + password (**Create account** on `/login?mode=signup`), Google or Facebook | `/` (home) | Subscribe per platform on the home page or `/me`, add their socials on **Profile** (`/me/profile`), link and confirm a WhatsApp number, see what was sent/posted, manage their sessions |
 | Admin | Email + password, or a user promoted by the super admin (keeps their social sign-in) | `/admin` | Everything on the admin side, plus **Users** (`/admin/users`): each user's sign-in methods, sessions, subscriptions and activity, and "Sign out everywhere" |
 | Super admin | Email + password | `/admin` | Everything, plus **Roles** (`/admin/roles`): promote users to admin and demote admins. Can't change their own role |
 
@@ -187,6 +187,7 @@ The public home page (`/`) lists the adverts and links to sign-in; `/subscribe` 
 - **Access is decided on the server.** Middleware only separates signed-in from signed-out people. Every staff page calls `pageViewer("staff")` (or `"super"`), and every staff action calls `requireStaff()` / `requireSuperAdmin()`. User actions (`src/app/me/actions.ts`) only touch rows belonging to the signed-in user's ID from the checked session, never IDs sent by the browser.
 - Users can **sign out other devices** from `/me`; admins can sign a user out everywhere. A revoked device lands on "Your session ended" at its next request. Tampered cookies are rejected.
 - **No account takeover by email:** a social sign-in whose email matches a staff (password) account is refused ("sign in with your password"). Social accounts are linked by provider and provider account ID (`Account`).
+- **Sign-up** (`signup` in `src/app/login/actions.ts`): name, email, password (8+ characters, bcrypt). Max 5 new accounts per network per hour. An email that already signs in with Google/Facebook can't be given a password. There's no email service yet, so email sign-up doesn't verify the address. If someone later signs in with Google for an email a user account was made with, Google has verified it: the account becomes theirs, its password is removed and its sessions signed out (only when the provider says `email_verified: true`; staff accounts are never taken over this way).
 - After sign-in, return paths are limited to this site (no open redirects).
 
 **Setup:** add `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` (Google Cloud → OAuth client, redirect URI `https://social.yet-kenya.com/api/auth/callback/google`) and/or `AUTH_FACEBOOK_ID` / `AUTH_FACEBOOK_SECRET` (your Meta app → Facebook Login, redirect URI `https://social.yet-kenya.com/api/auth/callback/facebook`, permissions `email`, `public_profile`). The buttons appear when the keys are set.
@@ -208,7 +209,18 @@ The public home page (`/`) lists the adverts and links to sign-in; `/subscribe` 
 6. **What's sent to whom:**
    - **WhatsApp:** users subscribed to that advert on WhatsApp (plus topic subscribers) are matched automatically and get it on their own number at the send time. Anyone who subscribes after that gets it straight away. If WhatsApp isn't ready (no template, number not connected), the send waits on **Approvals** with the reason, and goes out by itself once it's fixed. A person who failed 3 times isn't retried, and one advert per person per 24 hours (`AUDIENCE_MIN_HOURS_BETWEEN_MESSAGES`); later ones follow after the gap.
    - **Facebook, Instagram, X, TikTok** (which don't allow businesses to message individuals with adverts): the advert is posted on the business's handle at the send time (or "Post to platforms again now", or a Channels schedule). Subscribers see it there and in their feed with a link. The subscribe button tells the user when it arrives.
-7. Each user's **"What you've received"** feed shows their WhatsApp deliveries and the posts of the adverts they subscribed to on each platform.
+7. **To the user's own handles** (`src/lib/social-delivery.ts`, run by the worker every tick): on **Profile** users add their X, Instagram, Facebook and TikTok handles (or links) and confirm they're theirs. When the advert's send time comes (or straight away if they subscribe later):
+   - **X:** a direct message from your X account with the advert and a link to the post. X only delivers it if they accept messages from you (e.g. they follow you); otherwise it shows the reason. Needs the `dm.read` / `dm.write` scopes: **reconnect X** once after updating.
+   - **Instagram:** an @mention of them in a comment on your Instagram post of the advert, so it's in their notifications (Instagram doesn't let businesses message people first). Needs `instagram_manage_comments`: **reconnect Meta** once after updating.
+   - **Facebook, TikTok:** no way to send to a person through their APIs, so the handle is saved and they see it on your Page/profile and in their feed.
+   - Each send is a `SocialDelivery` (sent, waiting with the reason, or failed with the platform's reason, retried up to 3 times). Users see it in their feed; Adverts shows "sent to N subscribers by direct message / @mention".
+8. Each user's **"What you've received"** feed shows their WhatsApp deliveries and the posts of the adverts they subscribed to on each platform.
+
+## Look and feel
+
+- Buttons with white text use darker brand shades (every colour at least 4.5:1 contrast with white). Disabled buttons switch to a solid neutral look with readable text instead of a faded gradient.
+- Hover and press: coloured buttons brighten and rise slightly, cards lift (`lift`), card photos zoom gently, list rows and stat tiles highlight. Pages and cards ease in on load (`rise`, staggered with `--i`). All motion is turned off for people with "reduce motion" set.
+- Forms keep what was typed after a "Not saved" (`src/lib/keep-form.ts`; React resets uncontrolled fields after a form action otherwise). The Channels container shows **Saved ✓** (with a separate note if posting has to wait for something) or **Not saved: reason**.
 
 ## Posts and stories for followers
 

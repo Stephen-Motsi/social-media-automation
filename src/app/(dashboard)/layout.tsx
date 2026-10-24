@@ -50,7 +50,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           </form>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 pt-10">{children}</main>
+      <main className="rise mx-auto max-w-6xl px-4 pt-10">{children}</main>
     </div>
   );
 }

@@ -28,3 +28,8 @@ export async function publishImage(opts: {
 
 // TODO: carousels (children containers), Reels (media_type=REELS, poll status_code before publish),
 // and the content_publishing_limit check (rate limit on posts per 24h).
+
+// A comment on our own post; @mentions in it notify those people.
+export async function commentOnMedia(opts: { mediaId: string; accessToken: string; message: string }) {
+  return graphRequest<{ id: string }>(`${opts.mediaId}/comments`, opts.accessToken, { method: "POST", body: { message: opts.message } });
+}

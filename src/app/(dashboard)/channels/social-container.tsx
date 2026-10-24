@@ -1,6 +1,7 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useState } from "react";
+import { keepValues } from "@/lib/keep-form";
 import type { Frequency, Platform, PostFormat } from "@prisma/client";
 import { platforms } from "@/components/platforms";
 import { formatSupport, type PlatformVerdict } from "@/lib/policy/rules";
@@ -80,10 +81,18 @@ export function SocialContainer({ channel, admin }: { channel: ChannelView; admi
   const [weekdays, setWeekdays] = useState<number[]>(channel.weekdays);
   const support = formatSupport[channel.platform];
   const result = state;
+  // "Saved ✓" on the button for a few seconds after each successful save
+  const [justSaved, setJustSaved] = useState(false);
+  useEffect(() => {
+    if (!state?.ok) return;
+    setJustSaved(true);
+    const t = setTimeout(() => setJustSaved(false), 4000);
+    return () => clearTimeout(t);
+  }, [state]);
   const disabled = !admin;
 
   return (
-    <form action={action} className="glass space-y-5 rounded-3xl p-5" aria-label={`${platforms[channel.platform].name} schedule`}>
+    <form onSubmit={keepValues(action)} className="glass space-y-5 rounded-3xl p-5" aria-label={`${platforms[channel.platform].name} schedule`}>
       <input type="hidden" name="id" value={channel.id} />
       <h3 className="flex items-center gap-2 font-semibold">
         <span className={`${platforms[channel.platform].blend} size-2.5 rounded-full`} aria-hidden />
@@ -242,17 +251,15 @@ export function SocialContainer({ channel, admin }: { channel: ChannelView; admi
             <button
               type="submit"
               disabled={saving}
-              className="ml-auto rounded-full bg-ink px-5 py-2 text-sm font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink"
+              className={`ml-auto rounded-full px-5 py-2 text-sm font-medium text-white ${justSaved ? "bg-wa" : "bg-ink dark:bg-white dark:text-ink"}`}
             >
-              {saving ? "Working…" : "Save"}
+              {saving ? "Saving…" : justSaved ? "Saved ✓" : "Save"}
             </button>
             <button
               type="submit"
               // Same form, flagged so the server posts right after saving
-              formAction={(fd: FormData) => {
-                fd.set("intent", "post");
-                action(fd);
-              }}
+              name="intent"
+              value="post"
               disabled={saving || !channel.connected}
               title={channel.connected ? undefined : `Connect ${channel.handleDisplay} in Settings to post`}
               className="rounded-full border border-line bg-white/50 px-4 py-2 text-sm font-medium hover:bg-white/80 disabled:opacity-60 dark:bg-white/10"
@@ -282,7 +289,12 @@ export function SocialContainer({ channel, admin }: { channel: ChannelView; admi
         {channel.lastRunText && <p className="text-ink-soft">Last run: {channel.lastRunText}</p>}
         {channel.lastError && <p className="text-danger">Last run failed: {channel.lastError}</p>}
         {result?.error && <p role="alert" className="text-danger">{result.error}</p>}
-        {result?.ok && result.message && <p className="text-emerald-700 dark:text-emerald-300">{result.message}</p>}
+        {result?.ok && result.message && (
+          <p role="status" className="font-medium text-emerald-700 dark:text-emerald-300">
+            {result.message}
+          </p>
+        )}
+        {result?.ok && result.note && <p className="text-amber-800 dark:text-amber-200">{result.note}</p>}
         {result?.verdict && <Verdict verdict={result.verdict} />}
       </div>
     </form>

@@ -121,7 +121,7 @@ export default async function ApprovalsPage() {
             const byTopic = tally(subs.flatMap((s) => s.interests.filter((i) => advertTopics.has(i.id)).map((i) => i.name)));
             return (
               <li key={c.id}>
-                <article className="glass grid gap-6 rounded-[32px] p-6 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+                <article className="glass lift rise grid gap-6 rounded-[32px] p-6 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
                   <div>
                     {c.advert.mediaUrls[0] && (
                       // eslint-disable-next-line @next/next/no-img-element

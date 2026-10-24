@@ -25,7 +25,7 @@ export function PlatformToggle({
   const [on, setOn] = useOptimistic(subscribed);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
-  const [message, setMessage] = useState<{ text?: string; link?: string | null }>();
+  const [message, setMessage] = useState<{ text?: string; link?: string | null; label?: string }>();
   return (
     <li className="flex items-center gap-2">
       <PlatformBadge platform={platform} />
@@ -48,8 +48,12 @@ export function PlatformToggle({
             {message.link && (
               <>
                 {" "}
-                <a href={message.link} target="_blank" rel="noopener noreferrer" className="font-medium underline underline-offset-2">
-                  Open it
+                <a
+                  href={message.link}
+                  {...(message.link.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })}
+                  className="font-medium underline underline-offset-2"
+                >
+                  {message.label ?? "Open it"}
                 </a>
               </>
             )}
@@ -70,7 +74,7 @@ export function PlatformToggle({
             try {
               const res = await setAdvertSubscription(advertId, platform, !on);
               if (res?.error) setError(res.error);
-              else setMessage({ text: res?.message, link: res?.link });
+              else setMessage({ text: res?.message, link: res?.link, label: res?.linkLabel });
             } catch {
               setError("Not saved: the server didn't respond. Try again.");
             }

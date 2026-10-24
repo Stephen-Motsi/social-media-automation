@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { UserHeader } from "./header";
 import { formatWhen } from "@/lib/errors";
-import { signOut } from "@/auth";
 import { prisma } from "@/lib/db";
 import { isStaff, pageViewer } from "@/lib/session";
+import { displayHandle } from "@/lib/handles";
 import { listedAdverts, postUrl } from "@/lib/adverts";
 import { businessWhatsAppNumber, whatsappLink } from "@/lib/audience";
 import { PlatformBadge, platforms } from "@/components/platforms";
@@ -51,7 +52,7 @@ export default async function MePage() {
 
   // What happened with each subscription: WhatsApp messages to this user, or the posts on that platform
   const advertIds = [...new Set(user.subscriptions.map((s) => s.advertId))];
-  const [deliveries, posts] = await Promise.all([
+  const [deliveries, posts, handleDeliveries] = await Promise.all([
     user.subscriber
       ? prisma.delivery.findMany({
           where: { subscriberId: user.subscriber.id, campaign: { advertId: { in: advertIds } } },
@@ -63,6 +64,7 @@ export default async function MePage() {
       where: { status: "PUBLISHED", post: { sourceAdvertId: { in: advertIds } } },
       include: { account: true, post: { select: { sourceAdvertId: true, publishedAt: true, updatedAt: true } } },
     }),
+    prisma.socialDelivery.findMany({ where: { userId: user.id, advertId: { in: advertIds } } }),
   ]);
   const feed = user.subscriptions.flatMap((s) => {
     const advert = adverts.find((a) => a.id === s.advertId);
@@ -72,7 +74,22 @@ export default async function MePage() {
         .filter((d) => d.campaign.advertId === s.advertId && ["SENT", "DELIVERED", "READ"].includes(d.status))
         .map((d) => ({ key: d.id, advert, platform: s.platform, at: d.sentAt ?? d.createdAt, text: `Sent to your WhatsApp (${d.status.toLowerCase()})`, url: null as string | null }));
     }
-    return posts
+    const toHandle = handleDeliveries
+      .filter((d) => d.advertId === s.advertId && d.platform === s.platform && (d.status === "SENT" || d.status === "FAILED"))
+      .map((d) => ({
+        key: d.id,
+        advert,
+        platform: s.platform,
+        at: d.sentAt ?? d.updatedAt,
+        text:
+          d.status === "SENT"
+            ? s.platform === "X"
+              ? `Sent to ${displayHandle("X", d.handle)} by direct message`
+              : `We mentioned ${displayHandle("INSTAGRAM", d.handle)} on our post`
+            : `Couldn't reach ${displayHandle(s.platform, d.handle)}: ${d.error ?? "unknown error"}`,
+        url: null as string | null,
+      }));
+    return [...toHandle, ...posts
       .filter((t) => t.post.sourceAdvertId === s.advertId && t.account.platform === s.platform)
       .map((t) => ({
         key: t.id,
@@ -81,7 +98,7 @@ export default async function MePage() {
         at: t.post.publishedAt ?? t.post.updatedAt,
         text: `Posted on ${t.account.displayName}`,
         url: postUrl(s.platform, t.externalPostId, t.account.handle),
-      }));
+      }))];
   });
   feed.sort((a, b) => b.at.getTime() - a.at.getTime());
 
@@ -92,33 +109,9 @@ export default async function MePage() {
 
   return (
     <div className="min-h-screen pb-16">
-      <header className="sticky top-4 z-20 px-4">
-        <div className="glass mx-auto flex max-w-5xl items-center gap-3 rounded-full py-2 pr-2 pl-4">
-          <Link href="/" className="font-semibold tracking-tight">
-            {process.env.BRAND_NAME ?? "Social Automation"}
-          </Link>
-          <span className="text-sm text-ink-soft">My adverts</span>
-          {isStaff(viewer.role) && (
-            <Link href="/admin" className="text-sm text-ink-soft hover:text-ink">
-              Admin
-            </Link>
-          )}
-          <form
-            className="ml-auto flex items-center gap-3 text-sm"
-            action={async () => {
-              "use server";
-              await signOut({ redirectTo: "/" });
-            }}
-          >
-            <span className="hidden text-ink-soft sm:inline">{user.email}</span>
-            <button type="submit" className="rounded-full px-3 py-1.5 text-ink-soft hover:bg-white/40 hover:text-ink dark:hover:bg-white/10">
-              Sign out
-            </button>
-          </form>
-        </div>
-      </header>
+      <UserHeader email={user.email} current="/me" staff={isStaff(viewer.role)} />
 
-      <main className="mx-auto max-w-5xl space-y-8 px-4 pt-10">
+      <main className="rise mx-auto max-w-5xl space-y-8 px-4 pt-10">
         <section>
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Hi {user.name?.split(" ")[0] ?? "there"}</h1>
           <p className="mt-2 max-w-prose text-ink-soft">
@@ -146,7 +139,7 @@ export default async function MePage() {
             <ul className="mt-4 grid gap-5 md:grid-cols-2">
               {adverts.map((a) => (
                 <li key={a.id} id={a.id}>
-                  <article className="glass flex gap-4 rounded-[28px] p-4">
+                  <article className="glass lift flex gap-4 rounded-[28px] p-4">
                     {a.mediaUrls[0] && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={a.mediaUrls[0]} alt="" className="size-24 shrink-0 rounded-2xl object-cover sm:size-28" />

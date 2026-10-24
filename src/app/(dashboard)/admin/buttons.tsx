@@ -52,7 +52,7 @@ function PostButton({ id, label, task, className }: { id: string; label: string;
   };
   return (
     <>
-      <button type="button" disabled={phase !== "idle"} onClick={go} aria-live="polite" className={phase === "posted" || phase === "done" ? "rounded-full bg-wa px-3.5 py-1.5 text-xs font-medium text-white" : className}>
+      <button type="button" disabled={phase !== "idle"} data-done={phase === "posted" || phase === "done" ? "" : undefined} onClick={go} aria-live="polite" className={phase === "posted" || phase === "done" ? "rounded-full bg-wa px-3.5 py-1.5 text-xs font-medium text-white" : className}>
         {phase === "posting" ? "Posting…" : phase === "posted" ? "Posted ✓" : phase === "done" ? "Posted (not everywhere)" : label}
       </button>
       {problems.length > 0 && (

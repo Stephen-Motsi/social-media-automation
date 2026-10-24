@@ -63,12 +63,12 @@ export default async function PostsPage() {
           <p className="glass rounded-[28px] px-6 py-10 text-center text-ink-soft">Nothing yet.</p>
         ) : (
           <ul className="space-y-3">
-            {posts.map((p) => {
+            {posts.map((p, n) => {
               const s = statusCopy[p.status] ?? statusCopy.FAILED;
               const kind = p.targets[0]?.format === "STORY" ? "Story" : "Post";
               const from = p.sourceAdvert ? `Advert: ${p.sourceAdvert.title ?? "Untitled"}` : p.channel ? `${platforms[p.channel.platform].name} schedule` : kind;
               return (
-                <li key={p.id} className="glass flex gap-4 rounded-2xl p-4">
+                <li key={p.id} style={{ "--i": Math.min(n, 8) } as React.CSSProperties} className="glass lift rise flex gap-4 rounded-2xl p-4">
                   {p.mediaUrls[0] && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={p.mediaUrls[0]} alt="" className="size-16 shrink-0 rounded-xl object-cover" />

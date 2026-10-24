@@ -17,6 +17,16 @@
   --wa-1: #25d366;
   --wa-2: #128c7e;
   --danger: #e0245e;
+  /* Darker brand shades for anything with white text on it (each at least 4.5:1 with white) */
+  --fb-strong: #1463d8;
+  --fb-strong-2: #0b6fbf;
+  --ig-strong-1: #c2410c;
+  --ig-strong-2: #c01f63;
+  --ig-strong-3: #7a24a3;
+  --wa-strong: #15803d;
+  --wa-strong-2: #0f766e;
+  --disabled-bg: rgb(28 21 56 / 0.1);
+  --disabled-ink: rgb(28 21 56 / 0.55);
 
   /* Glass surfaces: translucent so the blended background shows through */
   --glass-top: rgb(255 255 255 / 0.52);
@@ -37,6 +47,8 @@
     --glass-edge: rgb(255 255 255 / 0.14);
     --glass-shadow: 0 28px 60px -28px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.2);
     --wash-strength: 0.38;
+    --disabled-bg: rgb(255 255 255 / 0.1);
+    --disabled-ink: rgb(255 255 255 / 0.5);
   }
 }
 
@@ -47,7 +59,7 @@
   --color-line: var(--line);
   --color-fb: var(--fb-1);
   --color-ig: var(--ig-2);
-  --color-wa: var(--wa-1);
+  --color-wa: var(--wa-strong);
   --color-danger: var(--danger);
 }
 
@@ -110,21 +122,114 @@ body::before {
 }
 
 @utility blend-facebook {
-  background: linear-gradient(135deg, var(--fb-1), var(--fb-2));
+  background: linear-gradient(135deg, var(--fb-strong), var(--fb-strong-2));
 }
 @utility blend-instagram {
-  background: linear-gradient(45deg, #feda75 0%, var(--ig-1) 25%, var(--ig-2) 55%, var(--ig-3) 80%, #4f5bd5 100%);
+  background: linear-gradient(45deg, var(--ig-strong-1) 0%, var(--ig-strong-2) 45%, var(--ig-strong-3) 80%, #4338ca 100%);
 }
 @utility blend-whatsapp {
-  background: linear-gradient(135deg, var(--wa-1), var(--wa-2));
+  background: linear-gradient(135deg, var(--wa-strong), var(--wa-strong-2));
 }
 @utility blend-x {
   background: linear-gradient(135deg, #0f1419, #536471);
 }
 @utility blend-tiktok {
-  background: linear-gradient(135deg, #25f4ee, #0f0f14 48%, #fe2c55);
+  background: linear-gradient(135deg, #0e7490, #0f0f14 48%, #be123c);
 }
 /* All three channels in one sweep, used for the active nav item and primary actions */
 @utility blend-meta {
-  background: linear-gradient(110deg, var(--fb-1), var(--ig-3) 45%, var(--ig-2) 70%, var(--ig-1));
+  background: linear-gradient(110deg, var(--fb-strong), var(--ig-strong-3) 45%, var(--ig-strong-2) 72%, var(--ig-strong-1));
+}
+
+/* Cards that respond to the pointer */
+@utility lift {
+  transition:
+    transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 0.25s ease;
+  &:hover {
+    transform: translateY(-3px);
+    box-shadow:
+      inset 0 1px 0 var(--glass-edge),
+      0 36px 70px -30px rgb(76 42 160 / 0.55),
+      0 4px 12px rgb(76 42 160 / 0.08);
+  }
+}
+
+/* Content easing in on load; stagger with style="--i: n" */
+@utility rise {
+  animation: rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* ---- Interaction (unlayered, so it applies over the utility classes) ---------- */
+a,
+button,
+[role="switch"],
+[role="tab"] {
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease,
+    filter 0.18s ease;
+}
+
+/* Coloured buttons: brighten and rise a little on hover, press down on click */
+:is(button, a):is([class*="blend-"], .bg-ink, .bg-wa, .bg-danger):not(:disabled):hover {
+  filter: brightness(1.1) saturate(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px -10px rgb(76 42 160 / 0.6);
+}
+:is(button, a):not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+/* Outline buttons get a soft lift too */
+button.border:not(:disabled):hover,
+a.border:hover {
+  box-shadow: 0 8px 18px -12px rgb(76 42 160 / 0.5);
+}
+
+/* Disabled buttons: a solid neutral look with readable text, instead of a faded gradient */
+button:disabled:not([data-done]):is([class*="blend-"], .bg-ink, .bg-wa) {
+  background: var(--disabled-bg);
+  color: var(--disabled-ink);
+  box-shadow: none;
+  opacity: 1;
+  cursor: not-allowed;
+}
+/* White text on the brand gradients: a faint shadow keeps it crisp over the lighter stops */
+[class*="blend-"].text-white,
+[class*="blend-"] .text-white {
+  text-shadow: 0 1px 1px rgb(0 0 0 / 0.18);
+}
+
+/* Photos in cards zoom gently on hover */
+.lift img.zoom,
+.group:hover img.zoom {
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.lift:hover img.zoom,
+.group:hover img.zoom {
+  transform: scale(1.04);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  .lift:hover,
+  :is(button, a):hover {
+    transform: none !important;
+  }
 }

@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { reasonFor } from "@/lib/errors";
 import { z } from "zod";
 import type { GroupKind, Platform } from "@prisma/client";
 import { AccessError, requireStaff } from "@/lib/session";
@@ -27,7 +28,8 @@ import {
 } from "@/lib/handles";
 import { DEFAULT_TIMEZONE, formatInZone, parseLocalDateTime, parseTime } from "@/lib/schedule";
 
-export type ActionState = { ok?: boolean; error?: string; message?: string; verdict?: PlatformVerdict } | undefined;
+// note: saved, but something after the save can't happen yet (shown as a follow-up, not a failure).
+export type ActionState = { ok?: boolean; error?: string; message?: string; note?: string; verdict?: PlatformVerdict } | undefined;
 
 async function requireAdmin() {
   await requireStaff();
@@ -271,8 +273,22 @@ async function checkAdvert(platform: Platform, format: "POST" | "STORY", advertI
   return verdicts[0];
 }
 
-export async function saveChannel(_prev: ActionState, formData: FormData): Promise<ActionState> {
+// Every outcome says plainly whether it was saved: "Saved ✓" (with a note if posting or the
+// schedule has to wait for something) or "Not saved: reason".
+export async function saveChannel(prev: ActionState, formData: FormData): Promise<ActionState> {
   await requireAdmin();
+  try {
+    const res = await saveChannelInner(formData);
+    if (res?.error && !res.ok) return { ...res, error: `Not saved: ${res.error.replace(/^./, (c) => c.toLowerCase())}` };
+    return res;
+  } catch (err) {
+    return { error: `Not saved: ${reasonFor(err)}` };
+  }
+}
+
+const SAVED = "Saved ✓";
+
+async function saveChannelInner(formData: FormData): Promise<ActionState> {
   const parsed = scheduleSchema.safeParse({
     id: formData.get("id"),
     format: formData.get("format"),
@@ -358,34 +374,34 @@ export async function saveChannel(_prev: ActionState, formData: FormData): Promi
 
   // "Post now" saves the form first, then posts what's on screen.
   if (formData.get("intent") === "post") {
-    if (!v.advertId) return { error: "Saved. Create the advert (a photo or a caption) first.", verdict };
-    if (verdict?.status === "block") return { error: "Saved, but this advert can't be posted here.", verdict };
+    if (!v.advertId) return { ok: true, message: SAVED, note: "Not posted: create the advert (a photo or a caption) first.", verdict };
+    if (verdict?.status === "block") return { ok: true, message: SAVED, note: "Not posted: this advert can't be posted here. See the check below.", verdict };
     if (!(await prisma.post.findUnique({ where: { id: v.advertId } }))?.title) {
-      return { error: "Saved. Give the advert a title before posting, so users know what they're subscribing to.", verdict };
+      return { ok: true, message: SAVED, note: "Not posted: give the advert a title first, so users know what they're subscribing to.", verdict };
     }
     // Posting needs a connected account for this handle; say exactly how to connect it.
     if (!(await hasMatchingAccount(channel.platform, channel.handle))) {
-      return { error: `Saved. To post, ${connectHowTo(channel.platform, channel.handle)}`, verdict };
+      return { ok: true, message: SAVED, note: `Not posted yet: to post, ${connectHowTo(channel.platform, channel.handle)}`, verdict };
     }
     try {
       await runChannel(channel.id);
     } catch (err) {
-      return { error: `Saved, but couldn't post: ${err instanceof Error ? err.message : err}`, verdict };
+      return { ok: true, message: SAVED, note: `Not posted: ${reasonFor(err)}`, verdict };
     }
     // Listed only once it's actually going out, so users never subscribe to something that can't be delivered.
     await listForUsers(v.advertId);
     refresh();
-    return { ok: true, verdict, message: "Saved and queued, and it's now listed for users to subscribe to. The result shows here and under Posts in a few seconds." };
+    return { ok: true, verdict, message: "Saved ✓ Posting now, and it's listed for users to subscribe to. The result shows here and under Posts in a few seconds." };
   }
 
-  if (problem) return { error: `Saved, but the schedule is off. ${problem}`, verdict };
+  if (problem) return { ok: true, message: SAVED, note: `The schedule is off: ${problem}`, verdict };
   return {
     ok: true,
     verdict,
     message:
       enabled && nextRunAt
-        ? `Saved. Next post: ${formatInZone(nextRunAt, channel.timezone)}. The advert is listed for users to subscribe to.`
-        : "Saved. The schedule is off.",
+        ? `Saved ✓ Next post: ${formatInZone(nextRunAt, channel.timezone)}. The advert is listed for users to subscribe to.`
+        : "Saved ✓ The schedule is off; turn it on to post automatically.",
   };
 }
 

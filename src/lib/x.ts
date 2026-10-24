@@ -20,7 +20,8 @@ const apiBase = () => (process.env.X_API_BASE_URL ?? "https://api.x.com").replac
 export const X_STATE_COOKIE = "x_oauth_state";
 export const X_VERIFIER_COOKIE = "x_oauth_verifier";
 
-export const X_SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "offline.access"];
+// dm.read + dm.write: send subscribed adverts to people as direct messages
+export const X_SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "dm.read", "dm.write", "offline.access"];
 
 export const xConfigured = () => Boolean(process.env.X_CLIENT_ID && process.env.X_CLIENT_SECRET);
 
@@ -92,4 +93,19 @@ export async function xCreatePost(token: string, text: string, mediaIds: string[
     body: JSON.stringify({ text, ...(mediaIds.length ? { media: { media_ids: mediaIds } } : {}) }),
   });
   return (await parse<{ data: { id: string } }>(res)).data;
+}
+
+export async function xUserByUsername(token: string, username: string) {
+  const res = await fetch(`${apiBase()}/2/users/by/username/${encodeURIComponent(username)}`, { headers: { Authorization: `Bearer ${token}` } });
+  return (await parse<{ data?: { id: string; username: string } }>(res)).data ?? null;
+}
+
+// Direct message to one person. X only delivers it if they accept messages from this account.
+export async function xSendDm(token: string, participantId: string, text: string) {
+  const res = await fetch(`${apiBase()}/2/dm_conversations/with/${participantId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return (await parse<{ data: { dm_event_id: string } }>(res)).data;
 }

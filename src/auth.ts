@@ -95,11 +95,23 @@ const config: NextAuthConfig = {
       if (linked) return linked.user.disabledAt ? "/login?error=disabled" : true;
 
       const existing = await prisma.user.findUnique({ where: { email } });
-      if (existing?.passwordHash) return "/login?error=use_password";
+      // Staff accounts only ever sign in with their password.
+      if (existing?.passwordHash && existing.role !== "USER") return "/login?error=use_password";
       if (existing?.disabledAt) return "/login?error=disabled";
       const verified = (profile as { email_verified?: boolean } | undefined)?.email_verified !== false;
       if (existing && !verified) return "/login?error=unverified_email";
 
+      // A user account made with email and password: the provider has verified this email, so its owner
+      // takes the account over and the unverified password is removed (it may have been set by someone else).
+      if (existing?.passwordHash) {
+        // Only an explicitly verified email (Google says so; Facebook doesn't report it) may take it over.
+        if ((profile as { email_verified?: boolean } | undefined)?.email_verified !== true) return "/login?error=use_password";
+        await prisma.$transaction([
+          prisma.user.update({ where: { id: existing.id }, data: { passwordHash: null } }),
+          prisma.userSession.updateMany({ where: { userId: existing.id, revokedAt: null }, data: { revokedAt: new Date() } }),
+          prisma.activityLog.create({ data: { userId: existing.id, action: "EMAIL_VERIFIED", detail: { provider: account.provider, passwordRemoved: true } } }),
+        ]);
+      }
       const u = existing ?? (await prisma.user.create({ data: { email, name: user.name, image: user.image, role: "USER" } }));
       await prisma.account.create({
         data: { provider: account.provider, providerAccountId: account.providerAccountId, userId: u.id },

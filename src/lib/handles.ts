@@ -11,6 +11,9 @@ export const groupNames: Record<GroupKind, string> = { META: "Meta", X: "X", TIK
 export const groupOf = (platform: Platform): GroupKind =>
   (Object.keys(groupPlatforms) as GroupKind[]).find((g) => groupPlatforms[g].includes(platform))!;
 
+// The handles users enter on their profile. WhatsApp is linked separately (verified with JOIN).
+export const PROFILE_PLATFORMS = ["X", "INSTAGRAM", "FACEBOOK", "TIKTOK"] as const satisfies readonly Platform[];
+
 // What admins enter as the "handle" for each platform.
 export const handleLabels: Record<Platform, { label: string; placeholder: string; hint: string }> = {
   FACEBOOK: { label: "Facebook Page", placeholder: "mangomarketke", hint: "Page username or link, e.g. facebook.com/mangomarketke" },
@@ -41,10 +44,12 @@ export function normalizeHandle(platform: Platform, input: string | null | undef
 
 export function validateHandle(platform: Platform, input: string): string | null {
   const h = normalizeHandle(platform, input);
-  if (!h) return `Enter the ${handleLabels[platform].label.toLowerCase()}.`;
+  // Keep platform names as written ("X handle", "Instagram handle")
+  const label = handleLabels[platform].label.replace(/^(\w+)(.*)$/, (_, name: string, rest: string) => name + rest.toLowerCase());
+  if (!h) return `Enter the ${label}.`;
   if (platform === "WHATSAPP" && (h.length < 8 || h.length > 15)) return "Enter the WhatsApp number in international format, e.g. +254 700 000 000.";
   if (platform !== "WHATSAPP" && platform !== "FACEBOOK" && !/^[a-z0-9._]{1,30}$/.test(h)) {
-    return `"${input}" doesn't look like a ${handleLabels[platform].label.toLowerCase()}.`;
+    return `"${input}" doesn't look like a valid ${label}. Use letters, numbers, dots or underscores, or paste the profile link.`;
   }
   return null;
 }

@@ -12,6 +12,8 @@ export const META_SCOPES = [
   "pages_manage_posts",
   "instagram_basic",
   "instagram_content_publish",
+  // @mention subscribers in a comment on the advert's post
+  "instagram_manage_comments",
   // Lets Pages owned through a Business portfolio show up in /me/accounts
   "business_management",
   // WhatsApp: find the shared WhatsApp Business Accounts and their phone numbers, and send messages

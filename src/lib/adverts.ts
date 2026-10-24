@@ -168,9 +168,20 @@ export async function advertStatus(advertId: string): Promise<PlatformOutcome[]>
     include: {
       advertPosts: { orderBy: { createdAt: "desc" }, include: { targets: { include: { account: true } } } },
       campaigns: { orderBy: { createdAt: "desc" }, include: { deliveries: { select: { status: true } } } },
+      socialDeliveries: { select: { platform: true, status: true } },
     },
   });
   const out: PlatformOutcome[] = [];
+  // Subscribers reached on their own X / Instagram handles
+  const toHandles = (platform: Platform) => {
+    const ds = advert.socialDeliveries.filter((d) => d.platform === platform);
+    const sent = ds.filter((d) => d.status === "SENT").length;
+    const failed = ds.filter((d) => d.status === "FAILED").length;
+    const waiting = ds.filter((d) => d.status === "PENDING").length;
+    if (!ds.length) return "";
+    const how = platform === "X" ? "by direct message" : "by @mention";
+    return ` Sent to ${sent} ${sent === 1 ? "subscriber" : "subscribers"} ${how}${waiting ? `, ${waiting} waiting` : ""}${failed ? `, ${failed} couldn't be reached` : ""}.`;
+  };
   for (const platform of advert.targetPlatforms) {
     const name = nameOf(platform);
     if (platform === "WHATSAPP") {
@@ -191,7 +202,7 @@ export async function advertStatus(advertId: string): Promise<PlatformOutcome[]>
     const post = advert.advertPosts.find((p) => p.targets.some((t) => t.account.platform === platform));
     const target = post?.targets.find((t) => t.account.platform === platform);
     if (!post || !target) out.push({ platform, ok: false, message: `${name}: not posted yet.` });
-    else if (target.status === "PUBLISHED") out.push({ platform, ok: true, message: `Posted on ${name}${post.publishedAt ? ` ${formatWhen(post.publishedAt)}` : ""}.` });
+    else if (target.status === "PUBLISHED") out.push({ platform, ok: true, message: `Posted on ${name}${post.publishedAt ? ` ${formatWhen(post.publishedAt)}` : ""}.${toHandles(platform)}` });
     else if (target.status === "FAILED") out.push({ platform, ok: false, message: `${name} failed: ${target.error ?? "unknown error"}` });
     else if (post.scheduledAt && post.scheduledAt > new Date()) out.push({ platform, ok: true, message: `Goes out on ${name} at ${formatWhen(post.scheduledAt)}.` });
     else out.push({ platform, ok: true, pending: true, message: `Posting on ${name} now.` });
