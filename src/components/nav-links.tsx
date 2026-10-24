@@ -12,6 +12,7 @@ const nav = [
   { href: "/approvals", label: "Approvals" },
   { href: "/posts", label: "Posts" },
   { href: "/admin/users", label: "Users" },
+  { href: "/admin/logs", label: "Logs" },
 ];
 const superNav = [{ href: "/admin/roles", label: "Roles" }];
 

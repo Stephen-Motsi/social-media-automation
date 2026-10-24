@@ -2,7 +2,8 @@ import Link from "next/link";
 import { pageViewer } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { platformOrder } from "@/lib/policy/rules";
-import { displayHandle } from "@/lib/handles";
+import { displayHandle, handleMatches } from "@/lib/handles";
+import { ensureAllContainers } from "@/lib/channels";
 import { platforms } from "@/components/platforms";
 import { Studio, type ChannelOption, type DraftInput } from "./studio";
 
@@ -12,16 +13,20 @@ export const dynamic = "force-dynamic";
 export default async function CreatePage({ searchParams }: { searchParams: Promise<{ id?: string; schedule?: string }> }) {
   await pageViewer("staff");
   const { id, schedule } = await searchParams;
-  const [interests, channelRows, advert] = await Promise.all([
+  await ensureAllContainers();
+  const [interests, channelRows, accounts, advert] = await Promise.all([
     prisma.interest.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
-    prisma.channel.findMany({ where: { handle: { not: null } } }),
+    prisma.channel.findMany(),
+    prisma.socialAccount.findMany(),
     id ? prisma.post.findFirst({ where: { id, status: "DRAFT", channelId: null }, include: { interests: true } }) : null,
   ]);
+  // Every platform is offered; each says whether its account is connected yet.
   const channels: ChannelOption[] = platformOrder.flatMap((p) => {
     const c = channelRows.find((ch) => ch.platform === p);
     if (!c) return [];
     const handle = displayHandle(p, c.handle);
-    return [{ platform: p, handle, label: `${platforms[p].name} · ${handle}`, format: c.format }];
+    const connected = !!c.handle && accounts.some((a) => a.platform === p && handleMatches(p, c.handle, a));
+    return [{ platform: p, handle, label: handle ? `${platforms[p].name} · ${handle}` : platforms[p].name, format: c.format, connected }];
   });
 
   let draft: DraftInput | undefined;

@@ -216,6 +216,13 @@ The public home page (`/`) lists the adverts and links to sign-in; `/subscribe` 
    - Each send is a `SocialDelivery` (sent, waiting with the reason, or failed with the platform's reason, retried up to 3 times). Users see it in their feed; Adverts shows "sent to N subscribers by direct message / @mention".
 8. Each user's **"What you've received"** feed shows their WhatsApp deliveries and the posts of the adverts they subscribed to on each platform.
 
+## Logs (sign-ins, sessions, activity)
+
+Everything is stored in Postgres: each sign-in creates a `UserSession` (provider, IP, browser, started, last seen, expiry, signed out), and every action an `ActivityLog` row (who, what, details, IP, and the admin who did it when it wasn't the person). **Logs** (`/admin/logs`, staff only) shows:
+- Totals: signed in now, sign-ins and new accounts in the last 24 hours, accounts.
+- **Activity:** every event, newest first, filtered by person/email/IP, event type and dates, with **Download CSV** (`/admin/logs/export`, up to 10,000 rows, spreadsheet-formula safe). Events: account created, signed in/out, profile updated, subscribed/unsubscribed, WhatsApp added/confirmed/removed, devices signed out, role changes, adverts published, posts scheduled, handles set, accounts connected/failed/disconnected.
+- **Sessions:** who is signed in, with what, on which device and IP, since when and last seen. **Sign out** ends one session (only the super admin can sign out staff); it shows "Signed out" there and the person lands on "Your session ended" at their next click. Each user's page (`/admin/users`) shows the same for one person.
+
 ## Look and feel
 
 - Buttons with white text use darker brand shades (every colour at least 4.5:1 contrast with white). Disabled buttons switch to a solid neutral look with readable text instead of a faded gradient.
@@ -278,16 +285,21 @@ Meta limits how many marketing messages each person receives, and may hold some 
 
 The **Channels** page (`/channels`) is where adverts get posted automatically.
 
-- **Add new** (top right) opens a dropdown of containers that don't exist yet: **Meta**, **X**, **TikTok**. Choosing **Meta** lists Facebook, Instagram and WhatsApp to tick. Each chosen platform needs its **handle**:
+- **Every platform is always there:** a **Meta** container (Facebook, Instagram, WhatsApp), **X** and **TikTok** (`ensureAllContainers` in `src/lib/channels.ts`, run when Channels or Create opens). Nothing to add or delete.
+- **Connect by handle** (Settings in each container): type the account's handle, link or number and press **Save & connect**. Handles are cleaned up (links, `@`, case, spaces):
   - Facebook: Page username or link, e.g. `facebook.com/mangomarketke` (a Page name or ID also works)
   - Instagram, X, TikTok: `@handle` or a profile link
   - WhatsApp: the business number, e.g. `+254 700 000 000`
 
-  Handles are cleaned up (links, `@`, case, spaces), so pasting a profile URL is fine.
-- **Edit** (on each container) changes handles and, for Meta, which platforms are included. Removing a platform deletes its social container and disconnects its accounts. Changing a handle disconnects accounts that no longer match. **Delete** removes the whole container.
-- **Settings** is only for connecting and disconnecting the real accounts. It shows each handle (linked to the real profile) and what's connected:
-  - **Meta:** one **Connect Facebook & Instagram** sign-in. Facebook lists the Pages the admin shares; only the Page matching the Facebook handle and the Instagram account matching the Instagram handle are linked. If the named Page/account wasn't shared, the page says so and lists what was shared. WhatsApp connects with a phone number ID and token, and is refused if it's a different number from the handle.
-  - **X / TikTok:** the platform's sign-in and consent screen. Signing in as a different account than the handle is refused, naming both. (TikTok needs the `user.info.profile` scope to confirm the username.)
+  The backend finds that account with the business's credentials and links it (`src/lib/connect-by-handle.ts`). No platform lets an app post for an account without its owner's authorisation, so that authorisation is set once in `.env`:
+
+  | Platform | Set once in `.env` | Then |
+  | --- | --- | --- |
+  | Facebook, Instagram, WhatsApp | `META_SYSTEM_USER_TOKEN`: Meta Business Settings → System users → Generate token (permissions in [Meta app setup](#meta-app-setup-connecting-real-accounts)), with the Pages, Instagram accounts and WhatsApp numbers assigned to that system user. `WHATSAPP_ACCESS_TOKEN` also works | Any of those accounts connects from its handle or number |
+  | X | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET`: X developer portal → your app → Keys and tokens (app permissions **Read, write and Direct Messages**, generated while signed in as the account you post from). Requests are signed with OAuth 1.0a (`xAuthHeader` in `src/lib/x.ts`) | The handle connects if it's that account; another handle is refused, naming both |
+  | TikTok | `TIKTOK_REFRESH_TOKEN` (with `TIKTOK_CLIENT_KEY` / `TIKTOK_CLIENT_SECRET`). TikTok has no portal tokens: the owner signs in once | The handle connects if it's that account |
+
+  If a handle isn't covered, Settings says why (e.g. "The X keys in .env are for @mangomarket, not @someoneelse") and still offers the platform sign-in (**Connect** with Facebook / X / TikTok) as an alternative. Saving an unchanged handle that isn't connected tries again. Every handle change, connection, failed connection and disconnection is in **Logs**.
 - **Each social container** (one per platform inside the parent) holds:
   - **Post as:** Post or Story (Facebook, Instagram); Message (WhatsApp; Status isn't available); Post (X, TikTok).
   - **Advert**, made right here for this platform (`advert-composer.tsx`):
@@ -358,6 +370,9 @@ See [`.env.example`](.env.example) for the full list with comments. The main one
 | `META_GRAPH_API_VERSION` | Graph API version, e.g. `v23.0`. Check the [changelog](https://developers.facebook.com/docs/graph-api/changelog) and update it as needed |
 | `META_WEBHOOK_VERIFY_TOKEN` | Must match the token set in the Meta webhook config |
 | `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_ACCESS_TOKEN` | WhatsApp Cloud API |
+| `META_SYSTEM_USER_TOKEN` | Connect Facebook, Instagram and WhatsApp from their handles ([Channels](#channels-and-scheduling)) |
+| `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | Connect X from its handle (OAuth 1.0a keys from the developer portal) |
+| `TIKTOK_REFRESH_TOKEN` | Connect TikTok from its handle (from one sign-in by the owner) |
 
 ## Meta app setup (connecting real accounts)
 

@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { homeUrl, STILL_POSTING, waitUntilPosted } from "./publish-progress";
-import { postNow, publish, unlist, type PublishState, setRole, signOutEverywhere, type AdminState } from "./actions";
+import { postNow, publish, revokeUserSession, unlist, type PublishState, setRole, signOutEverywhere, type AdminState } from "./actions";
 
 function useAction() {
   const [state, setState] = useState<AdminState>();
@@ -95,6 +95,20 @@ export function AdvertButtons({ id, listed }: { id: string; listed: boolean }) {
       )}
       <Feedback state={state} />
     </div>
+  );
+}
+
+export function RevokeSession({ id }: { id: string }) {
+  const { state, pending, run } = useAction();
+  return (
+    <span className="flex flex-wrap items-center justify-end gap-2">
+      {!state?.ok && (
+        <button type="button" disabled={pending} onClick={() => confirm("Sign out this device?") && run(() => revokeUserSession(id))} className={ghost}>
+          {pending ? "Signing out…" : "Sign out"}
+        </button>
+      )}
+      <Feedback state={state} />
+    </span>
   );
 }
 

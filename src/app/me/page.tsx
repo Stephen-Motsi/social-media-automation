@@ -5,6 +5,7 @@ import { formatWhen } from "@/lib/errors";
 import { prisma } from "@/lib/db";
 import { isStaff, pageViewer } from "@/lib/session";
 import { displayHandle } from "@/lib/handles";
+import { deviceName } from "@/lib/activity";
 import { listedAdverts, postUrl } from "@/lib/adverts";
 import { businessWhatsAppNumber, whatsappLink } from "@/lib/audience";
 import { PlatformBadge, platforms } from "@/components/platforms";
@@ -22,13 +23,6 @@ const when = new Intl.DateTimeFormat("en-GB", {
 });
 
 const providerNames: Record<string, string> = { google: "Google", facebook: "Facebook", mock: "Test login" };
-
-function deviceName(ua: string | null) {
-  if (!ua) return "Unknown device";
-  const os = /iPhone|iPad/.test(ua) ? "iPhone/iPad" : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "Device";
-  const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
-  return `${browser} on ${os}`;
-}
 
 export default async function MePage() {
   const viewer = await pageViewer("user");

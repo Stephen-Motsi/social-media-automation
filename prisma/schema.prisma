@@ -424,6 +424,7 @@ model UserSession {
   user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([lastSeenAt])
 }
 
 model ActivityLog {
@@ -439,6 +440,9 @@ model ActivityLog {
   actorId   String?
 
   @@index([userId, createdAt])
+  // The admin Logs page: newest first, filtered by action
+  @@index([createdAt])
+  @@index([action, createdAt])
 }
 
 // A user's subscription to one advert on one platform handle

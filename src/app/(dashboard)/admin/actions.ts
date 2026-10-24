@@ -78,6 +78,19 @@ export async function signOutEverywhere(userId: string): Promise<AdminState> {
   return { ok: true, message: `Signed out of ${res.count} ${res.count === 1 ? "session" : "sessions"}.` };
 }
 
+// Signs out one device. Same rule as above: only the super admin can sign out staff.
+export async function revokeUserSession(sessionId: string): Promise<AdminState> {
+  const actor = await requireStaff();
+  const session = await prisma.userSession.findUnique({ where: { id: sessionId }, include: { user: true } });
+  if (!session) return { error: "Session not found." };
+  if (session.user.role !== "USER" && actor.role !== "SUPER_ADMIN") return { error: "Only the super admin can sign out staff." };
+  if (session.revokedAt) return { ok: true, message: "Already signed out." };
+  await prisma.userSession.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
+  await logActivity(session.userId, "SESSION_REVOKED", { by: actor.email, session: sessionId.slice(-6) }, actor.id);
+  refresh();
+  return { ok: true, message: "Signed out." };
+}
+
 // ---- Roles (super admin only) ------------------------------------------------------------
 
 export async function setRole(userId: string, role: "USER" | "ADMIN"): Promise<AdminState> {

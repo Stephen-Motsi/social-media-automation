@@ -1,8 +1,8 @@
 import type { Channel } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { schedulePost } from "@/lib/queue";
-import { nextRun, type ScheduleSpec } from "@/lib/schedule";
-import { displayHandle, handleMatches } from "@/lib/handles";
+import { DEFAULT_TIMEZONE, nextRun, type ScheduleSpec } from "@/lib/schedule";
+import { displayHandle, groupOrder, groupPlatforms, handleMatches } from "@/lib/handles";
 
 export const scheduleSpec = (c: Channel): ScheduleSpec => ({
   frequency: c.frequency,
@@ -76,4 +76,20 @@ export async function runDueChannels(now = new Date()) {
     }
   }
   return due.length;
+}
+
+// Every platform always has its container: Meta (Facebook, Instagram, WhatsApp), X and TikTok.
+// Missing ones are created without a handle; the admin types the handle to connect it.
+export async function ensureAllContainers() {
+  const groups = await prisma.channelGroup.findMany({ include: { channels: { select: { platform: true } } } });
+  for (const kind of groupOrder) {
+    let group = groups.find((g) => g.kind === kind);
+    if (!group) group = { ...(await prisma.channelGroup.upsert({ where: { kind }, update: {}, create: { kind } })), channels: [] };
+    for (const platform of groupPlatforms[kind]) {
+      if (group.channels.some((c) => c.platform === platform)) continue;
+      await prisma.channel
+        .create({ data: { platform, groupId: group.id, timezone: DEFAULT_TIMEZONE } })
+        .catch(() => null); // created at the same moment by another request
+    }
+  }
 }

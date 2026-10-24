@@ -13,7 +13,7 @@ import type { PlatformOutcome } from "@/lib/adverts";
 import { homeUrl, STILL_POSTING, waitUntilPosted } from "../admin/publish-progress";
 import { AdvertPreview } from "./preview";
 
-export type ChannelOption = { platform: Platform; label: string; handle: string; format: PostFormat };
+export type ChannelOption = { platform: Platform; label: string; handle: string; format: PostFormat; connected: boolean };
 export type DraftInput = {
   id: string;
   title: string;
@@ -38,6 +38,10 @@ const statusCopy: Record<PlatformVerdict["status"], { label: string; className: 
   warn: { label: "Check", className: "bg-amber-400/20 text-amber-800 dark:text-amber-200" },
   block: { label: "Can't post", className: "bg-danger/15 text-danger" },
 };
+
+// New adverts start with the connected platforms (all of them if none is connected yet).
+const defaultTargets = (channels: ChannelOption[]) =>
+  (channels.some((c) => c.connected) ? channels.filter((c) => c.connected) : channels).map((c) => c.platform);
 
 // "2026-10-24T09:30" in the browser's time zone, for the datetime input's minimum
 function localNow() {
@@ -70,10 +74,10 @@ export function Studio({
   const [caption, setCaption] = useState(draft?.caption ?? "");
   const [topics, setTopics] = useState<string[]>(draft?.topics ?? []);
   const [towns, setTowns] = useState(draft?.towns ?? "");
-  const [targetPlatforms, setTargetPlatforms] = useState<Platform[]>(draft?.targetPlatforms ?? channels.map((c) => c.platform));
+  const [targetPlatforms, setTargetPlatforms] = useState<Platform[]>(draft?.targetPlatforms ?? defaultTargets(channels));
   const [prompt, setPrompt] = useState(draft?.prompt ?? "");
   const [shape, setShape] = useState<ImageShape>(() =>
-    shapeFor(channels.filter((c) => (draft?.targetPlatforms ?? channels.map((x) => x.platform)).includes(c.platform))),
+    shapeFor(channels.filter((c) => (draft?.targetPlatforms ?? defaultTargets(channels)).includes(c.platform))),
   );
   const [media, setMedia] = useState<GeneratedMedia | null>(draft?.media ?? null);
   const [verdicts, setVerdicts] = useState<PlatformVerdict[] | null>(null);
@@ -335,8 +339,15 @@ export function Studio({
           </label>
           <fieldset>
             <legend className="font-medium">Target platforms</legend>
+            {channels.some((c) => !c.connected) && (
+              <p className="mt-1 text-sm text-ink-soft">
+                <span aria-hidden className="mr-1 inline-block size-1.5 rounded-full bg-amber-500 align-middle" />
+                Not connected yet: {channels.filter((c) => !c.connected).map((c) => platforms[c.platform].name).join(", ")}. You can still choose them; type their handle on{" "}
+                <a href="/channels" className="font-medium text-ink underline underline-offset-2">Channels</a> to connect before it goes out.
+              </p>
+            )}
             {channels.length === 0 ? (
-              <p className="mt-1 text-sm text-ink-soft">Add containers on Channels first; each platform needs a handle.</p>
+              <p className="mt-1 text-sm text-ink-soft">Loading platforms…</p>
             ) : (
               <div className="mt-2 flex flex-wrap gap-2">
                 {channels.map((c) => (
@@ -351,7 +362,11 @@ export function Studio({
                       }}
                       className="peer sr-only"
                     />
-                    <span className={chip}>{c.label}</span>
+                    <span className={chip.replace("inline-block", "inline-flex items-center gap-1.5")}>
+                      <span aria-hidden className={`size-1.5 rounded-full ${c.connected ? "bg-wa" : "bg-amber-500"}`} />
+                      {c.label}
+                      <span className="sr-only">{c.connected ? " (connected)" : " (not connected yet)"}</span>
+                    </span>
                   </label>
                 ))}
               </div>

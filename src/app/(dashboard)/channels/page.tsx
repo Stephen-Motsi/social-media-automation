@@ -6,12 +6,12 @@ import { metaConfigured, redirectUri } from "@/lib/meta/oauth";
 import { xConfigured, xRedirectUri } from "@/lib/x";
 import { tiktokConfigured, tiktokRedirectUri } from "@/lib/tiktok";
 import { describeSchedule, formatInZone, toLocalDateTimeInput } from "@/lib/schedule";
-import { scheduleSpec } from "@/lib/channels";
+import { ensureAllContainers, scheduleSpec } from "@/lib/channels";
+import { handleConnect } from "@/lib/connect-by-handle";
 import { platforms } from "@/components/platforms";
-import { displayHandle, groupNames, groupOrder, groupPlatforms, handleMatches, profileUrl } from "@/lib/handles";
+import { displayHandle, groupOrder, groupPlatforms, handleMatches, profileUrl } from "@/lib/handles";
 import { GroupCard, type ConnectView } from "./group-card";
 import { uploadHint } from "@/lib/policy/rules";
-import { NewGroup } from "./new-group";
 
 export const dynamic = "force-dynamic";
 
@@ -95,6 +95,8 @@ function connectFor(kind: GroupKind): ConnectView {
 
 export default async function ChannelsPage({ searchParams }: { searchParams: Promise<Params> }) {
   await pageViewer("staff");
+  // Meta (Facebook, Instagram, WhatsApp), X and TikTok are always here
+  await ensureAllContainers();
   const [params, session, groups, accounts] = await Promise.all([
     searchParams,
     auth(),
@@ -122,7 +124,6 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
   };
   const admin = isStaff(session?.user?.role);
   const ordered = groupOrder.flatMap((k) => groups.filter((g) => g.kind === k));
-  const missing = groupOrder.filter((k) => !groups.some((g) => g.kind === k));
   const error = errorNotice(params);
 
   return (
@@ -131,11 +132,10 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
         <div>
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Channels</h1>
           <p className="mt-2 max-w-prose text-ink-soft">
-            Each container links your real accounts in its settings. Inside it, choose what each platform posts, as a
-            post or story, and when.
+            Every platform has its container: Meta (Facebook, Instagram and WhatsApp), X and TikTok. Type each
+            account&rsquo;s handle in Settings to connect it, then choose what it posts, as a post or story, and when.
           </p>
         </div>
-        {admin && <NewGroup missing={missing} />}
       </div>
 
       {error && (
@@ -170,6 +170,7 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
               const spec = scheduleSpec(c);
               return [
                 {
+                  byHandle: handleConnect(platform),
                   handleInput: displayHandle(platform, c.handle),
                   handleDisplay: displayHandle(platform, c.handle) || "No handle set",
                   profileUrl: profileUrl(platform, c.handle),
@@ -222,9 +223,6 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
             );
           })}
         </div>
-      )}
-      {missing.length > 0 && ordered.length > 0 && (
-        <p className="mt-6 text-sm text-ink-soft">Not added yet: {missing.map((k) => groupNames[k]).join(", ")}.</p>
       )}
     </div>
   );

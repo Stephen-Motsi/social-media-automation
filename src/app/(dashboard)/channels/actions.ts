@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { reasonFor } from "@/lib/errors";
+import { connectByHandle, handleConnect } from "@/lib/connect-by-handle";
 import { z } from "zod";
-import type { GroupKind, Platform } from "@prisma/client";
-import { AccessError, requireStaff } from "@/lib/session";
+import type { Platform } from "@prisma/client";
+import { AccessError, logActivity, requireStaff } from "@/lib/session";
 import { generateAdvertImage, refineAdvertImage, type ImageResult } from "@/lib/advert-images";
 import { publicMediaUrl } from "@/lib/media";
 import { proposeCampaign } from "@/lib/audience";
@@ -16,125 +17,34 @@ import { computeNextRun, runChannel } from "@/lib/channels";
 import { loadImage } from "@/lib/media";
 import { reviewContent } from "@/lib/policy/review";
 import { formatSupport, type PlatformVerdict } from "@/lib/policy/rules";
-import {
-  displayHandle,
-  groupNames,
-  groupOrder,
-  groupPlatforms,
-  handleMatches,
-  normalizeHandle,
-  profileUrl,
-  validateHandle,
-} from "@/lib/handles";
-import { DEFAULT_TIMEZONE, formatInZone, parseLocalDateTime, parseTime } from "@/lib/schedule";
+import { displayHandle, handleMatches, normalizeHandle, profileUrl, validateHandle } from "@/lib/handles";
+import { formatInZone, parseLocalDateTime, parseTime } from "@/lib/schedule";
 
 // note: saved, but something after the save can't happen yet (shown as a follow-up, not a failure).
 export type ActionState = { ok?: boolean; error?: string; message?: string; note?: string; verdict?: PlatformVerdict } | undefined;
 
 async function requireAdmin() {
-  await requireStaff();
+  return requireStaff();
 }
+
+// Admin changes to connected accounts go in the activity log (shown on Logs).
+const logAdmin = (userId: string, action: string, detail: Record<string, unknown>) => logActivity(userId, action, detail).catch(() => null);
 
 function refresh() {
   revalidatePath("/channels");
   revalidatePath("/");
 }
 
-// ---- Parent containers (Meta, X, TikTok) ------------------------------------------
-
-export type GroupInput = { kind: GroupKind; platforms: Platform[]; handles: Partial<Record<Platform, string>> };
-
-function checkGroupInput({ kind, platforms, handles }: GroupInput): string | null {
-  if (!groupOrder.includes(kind)) return "Unknown container type.";
-  if (platforms.length === 0) return "Choose at least one platform.";
-  if (platforms.some((p) => !groupPlatforms[kind].includes(p))) return "That platform doesn't belong in this container.";
-  for (const p of platforms) {
-    const problem = validateHandle(p, handles[p] ?? "");
-    if (problem) return problem;
-  }
-  return null;
-}
-
-export async function createGroup(input: GroupInput): Promise<ActionState> {
-  await requireAdmin();
-  const problem = checkGroupInput(input);
-  if (problem) return { error: problem };
-  if (await prisma.channelGroup.findUnique({ where: { kind: input.kind } })) {
-    return { error: `There's already a ${groupNames[input.kind]} container.` };
-  }
-  await prisma.channelGroup.create({
-    data: {
-      kind: input.kind,
-      channels: {
-        create: input.platforms.map((platform) => ({
-          platform,
-          handle: normalizeHandle(platform, input.handles[platform]),
-          timezone: DEFAULT_TIMEZONE,
-        })),
-      },
-    },
-  });
-  refresh();
-  return { ok: true };
-}
-
-// Edit a container's platforms and handles. Removing a platform deletes its social container
-// and disconnects its accounts; changing a handle unlinks accounts that no longer match it.
-export async function updateGroup(groupId: string, input: Omit<GroupInput, "kind">): Promise<ActionState> {
-  await requireAdmin();
-  const group = await prisma.channelGroup.findUnique({ where: { id: groupId }, include: { channels: true } });
-  if (!group) return { error: "This container no longer exists." };
-  const problem = checkGroupInput({ kind: group.kind, ...input });
-  if (problem) return { error: problem };
-
-  const removed = group.channels.filter((c) => !input.platforms.includes(c.platform));
-  for (const c of removed) {
-    await prisma.$transaction([
-      prisma.channel.delete({ where: { id: c.id } }),
-      prisma.socialAccount.deleteMany({ where: { platform: c.platform } }),
-    ]);
-  }
-  let unlinked = 0;
-  for (const platform of input.platforms) {
-    const handle = normalizeHandle(platform, input.handles[platform]);
-    const existing = group.channels.find((c) => c.platform === platform);
-    if (!existing) {
-      await prisma.channel.create({ data: { platform, handle, groupId, timezone: DEFAULT_TIMEZONE } });
-      continue;
-    }
-    if (existing.handle === handle) continue;
-    await prisma.channel.update({ where: { id: existing.id }, data: { handle } });
-    const accounts = await prisma.socialAccount.findMany({ where: { platform } });
-    const stale = accounts.filter((a) => !handleMatches(platform, handle, a)).map((a) => a.id);
-    if (stale.length) unlinked += (await prisma.socialAccount.deleteMany({ where: { id: { in: stale } } })).count;
-  }
-  refresh();
-  return {
-    ok: true,
-    message: unlinked
-      ? `Saved. ${unlinked} connected account${unlinked === 1 ? "" : "s"} didn't match the new handle and ${unlinked === 1 ? "was" : "were"} disconnected.`
-      : "Saved.",
-  };
-}
-
-// Deleting a container stops its schedules and disconnects all of its accounts.
-export async function deleteGroup(groupId: string): Promise<ActionState> {
-  await requireAdmin();
-  const group = await prisma.channelGroup.findUnique({ where: { id: groupId } });
-  if (!group) return { ok: true };
-  await prisma.$transaction([
-    prisma.channelGroup.delete({ where: { id: groupId } }),
-    prisma.socialAccount.deleteMany({ where: { platform: { in: groupPlatforms[group.kind] } } }),
-  ]);
-  refresh();
-  return { ok: true };
-}
+// ---- Containers --------------------------------------------------------------------
+// Meta (Facebook, Instagram, WhatsApp), X and TikTok always exist (ensureAllContainers in
+// src/lib/channels.ts). Admins set each platform's handle in Settings (setHandle below).
 
 // ---- Settings: connect / disconnect --------------------------------------------
 
 export async function disconnectAccount(id: string): Promise<ActionState> {
-  await requireAdmin();
-  await prisma.socialAccount.delete({ where: { id } }).catch(() => null);
+  const admin = await requireAdmin();
+  const removed = await prisma.socialAccount.delete({ where: { id } }).catch(() => null);
+  if (removed) await logAdmin(admin.id, "ACCOUNT_DISCONNECTED", { platform: removed.platform, account: removed.displayName });
   refresh();
   return { ok: true };
 }
@@ -212,24 +122,50 @@ export async function connectWhatsAppFromEnv(): Promise<ActionState> {
 
 // Change one platform's handle from Settings: a phone number, @handle or profile link.
 export async function setHandle(channelId: string, value: string): Promise<ActionState> {
-  await requireAdmin();
+  const admin = await requireAdmin();
   const channel = await prisma.channel.findUnique({ where: { id: channelId } });
   if (!channel) return { error: "This container no longer exists." };
   const problem = validateHandle(channel.platform, value);
   if (problem) return { error: problem };
   const handle = normalizeHandle(channel.platform, value);
-  if (handle === channel.handle) return { ok: true, message: "No change." };
+  if (handle === channel.handle) {
+    // Same handle: connect it if it isn't yet, rather than doing nothing.
+    if (!(await hasMatchingAccount(channel.platform, handle)) && handleConnect(channel.platform).ready) {
+      const res = await connectByHandle(channel.platform);
+      await logAdmin(admin.id, res.ok ? "ACCOUNT_CONNECTED" : "CONNECT_FAILED", { platform: channel.platform, handle: displayHandle(channel.platform, handle), result: res.ok ? res.message : res.error });
+      refresh();
+      return res.ok ? { ok: true, message: `${res.message} ✓` } : { ok: true, message: `${displayHandle(channel.platform, handle)} is saved.`, note: `Not connected: ${res.error}` };
+    }
+    return { ok: true, message: "No change." };
+  }
   await prisma.channel.update({ where: { id: channel.id }, data: { handle } });
   // Accounts that don't belong to the new handle are unlinked, so nothing posts to the wrong account.
   const stale = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } }))
     .filter((a) => !handleMatches(channel.platform, handle, a))
     .map((a) => a.id);
   if (stale.length) await prisma.socialAccount.deleteMany({ where: { id: { in: stale } } });
+  // Connect straight from the handle when the business's credentials are set up.
+  await logAdmin(admin.id, "HANDLE_SET", { platform: channel.platform, handle: displayHandle(channel.platform, handle) });
+  const saved = `Saved ${displayHandle(channel.platform, handle)}.${stale.length ? " The previously connected account didn't match, so it was disconnected." : ""}`;
+  if (handleConnect(channel.platform).ready) {
+    const res = await connectByHandle(channel.platform);
+    await logAdmin(admin.id, res.ok ? "ACCOUNT_CONNECTED" : "CONNECT_FAILED", { platform: channel.platform, handle: displayHandle(channel.platform, handle), result: res.ok ? res.message : res.error });
+    refresh();
+    return res.ok ? { ok: true, message: `${saved} ${res.message} ✓` } : { ok: true, message: saved, note: `Not connected: ${res.error}` };
+  }
   refresh();
-  return {
-    ok: true,
-    message: `Saved ${displayHandle(channel.platform, handle)}.${stale.length ? " The previously connected account didn't match, so it was disconnected." : ""} Now connect it below.`,
-  };
+  return { ok: true, message: saved, note: `To connect it from the handle, ${handleConnect(channel.platform).setup}. Or use the sign-in button below.` };
+}
+
+// "Connect" next to a handle: links the account using the business's credentials in .env.
+export async function connectHandle(channelId: string): Promise<ActionState> {
+  const admin = await requireAdmin();
+  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+  if (!channel) return { error: "This container no longer exists." };
+  const res = await connectByHandle(channel.platform);
+  await logAdmin(admin.id, res.ok ? "ACCOUNT_CONNECTED" : "CONNECT_FAILED", { platform: channel.platform, handle: displayHandle(channel.platform, channel.handle), result: res.ok ? res.message : res.error });
+  refresh();
+  return res.ok ? { ok: true, message: `${res.message} ✓` } : { error: res.error };
 }
 
 // ---- Social container: format, advert, schedule ------------------------------------
@@ -487,10 +423,10 @@ async function hasMatchingAccount(platform: Platform, handle: string | null) {
 function connectHowTo(platform: Platform, handle: string | null) {
   const who = displayHandle(platform, handle) || "the account";
   if (platform === "WHATSAPP") {
-    return `connect ${who}: in this container's Settings, choose "Connect with a phone number ID and token" and enter the Phone number ID and a permanent access token from your Meta app (WhatsApp → API Setup).`;
+    return `connect ${who}: in this container's Settings, press Connect next to the number.`;
   }
   if (platform === "FACEBOOK" || platform === "INSTAGRAM") {
-    return `connect ${who}: in this container's Settings, press "Connect Facebook & Instagram" and sign in as an admin of that Page. This needs META_APP_ID and META_APP_SECRET in .env.`;
+    return `connect ${who}: in this container's Settings, press Connect next to the handle (or sign in with Facebook as an admin of that Page).`;
   }
-  return `connect ${who}: in this container's Settings, press Connect and sign in as ${who}.`;
+  return `connect ${who}: in this container's Settings, press Connect next to the handle (or sign in as ${who}).`;
 }
