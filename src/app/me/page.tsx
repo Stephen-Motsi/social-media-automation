@@ -9,7 +9,7 @@ import { deviceName } from "@/lib/activity";
 import { listedAdverts, postUrl } from "@/lib/adverts";
 import { businessWhatsAppNumber, whatsappLink } from "@/lib/audience";
 import { PlatformBadge, platforms } from "@/components/platforms";
-import { PlatformToggle, SessionButtons, WhatsAppLink } from "./widgets";
+import { PlatformToggle, SessionButtons, SubscribeAll, WhatsAppLink } from "./widgets";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "My adverts" };
@@ -142,6 +142,9 @@ export default async function MePage() {
                       <h3 className="font-semibold">{a.title ?? "Advert"}</h3>
                       {a.about && <p className="mt-0.5 text-sm text-ink-soft">{a.about}</p>}
                       {a.sendAt && a.sendAt > new Date() && <p className="mt-1 text-xs font-medium text-[var(--ig-3)]">Goes out {formatWhen(a.sendAt)}</p>}
+                      <div className="mt-3">
+                        <SubscribeAll advertId={a.id} subscribed={a.platforms.filter((p) => subscribed(a.id, p.platform)).length} offered={a.platforms.filter((p) => p.platform !== "WHATSAPP" || waActive).length} />
+                      </div>
                       <ul className="mt-3 space-y-2">
                         {a.platforms.map((p) => (
                           <PlatformToggle

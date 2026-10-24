@@ -5,7 +5,7 @@ import { formatWhen } from "@/lib/errors";
 import { getViewer, isStaff } from "@/lib/session";
 import { PlatformBadge, platforms } from "@/components/platforms";
 import { prisma } from "@/lib/db";
-import { PlatformToggle } from "./me/widgets";
+import { PlatformToggle, SubscribeAll } from "./me/widgets";
 
 export const dynamic = "force-dynamic";
 
@@ -107,6 +107,11 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
                             </li>
                           ))}
                         </ul>
+                      </div>
+                    )}
+                    {user && a.platforms.length > 0 && (
+                      <div className="mt-4">
+                        <SubscribeAll advertId={a.id} subscribed={a.platforms.filter((p) => subscribed(a.id, p.platform)).length} offered={a.platforms.filter((p) => p.platform !== "WHATSAPP" || waActive).length} />
                       </div>
                     )}
                     {user ? (

@@ -1,5 +1,6 @@
 import { auth, signOut } from "@/auth";
 import { prisma } from "@/lib/db";
+import Link from "next/link";
 import { NavLinks } from "@/components/nav-links";
 
 // Three overlapping dots, one per channel.
@@ -14,10 +15,11 @@ function BrandMark() {
 }
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const [session, pendingSends, flaggedSubscriptions] = await Promise.all([
+  const [session, pendingSends, flaggedSubscriptions, unread] = await Promise.all([
     auth(),
     prisma.campaign.count({ where: { status: "PENDING_APPROVAL" } }),
     prisma.subscriber.count({ where: { status: "NEEDS_REVIEW" } }),
+    prisma.notification.count({ where: { readAt: null } }),
   ]);
   const pendingApprovals = pendingSends + flaggedSubscriptions;
 
@@ -27,11 +29,25 @@ export default async function DashboardLayout({ children }: { children: React.Re
         <div className="glass mx-auto flex max-w-6xl items-center gap-2 rounded-full py-2 pr-2 pl-3 sm:gap-3 sm:pl-4">
           <span className="flex items-center gap-2 font-semibold tracking-tight">
             <BrandMark />
-            <span className="hidden whitespace-nowrap xl:inline">Social Automation</span>
+            <span className="hidden whitespace-nowrap 2xl:inline">Social Automation</span>
           </span>
           <NavLinks pendingApprovals={pendingApprovals} superAdmin={session?.user?.role === "SUPER_ADMIN"} />
+          <Link
+            href="/admin/notifications"
+            aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}
+            className="relative ml-auto shrink-0 rounded-full p-2 text-ink-soft hover:bg-white/40 hover:text-ink dark:hover:bg-white/10"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+            </svg>
+            {unread > 0 && (
+              <span aria-hidden className="absolute -top-0.5 -right-0.5 inline-flex min-w-5 items-center justify-center rounded-full bg-danger px-1 text-[11px] font-semibold text-white tabular-nums">
+                {unread > 99 ? "99+" : unread}
+              </span>
+            )}
+          </Link>
           <form
-            className="ml-auto flex shrink-0 items-center gap-3 text-sm"
+            className="flex shrink-0 items-center gap-3 text-sm"
             action={async () => {
               "use server";
               await signOut({ redirectTo: "/login" });

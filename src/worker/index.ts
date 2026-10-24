@@ -3,7 +3,7 @@
 import { Worker } from "bullmq";
 import type { Platform, PostFormat, SocialAccount } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { CAMPAIGN_QUEUE, PUBLISH_QUEUE, redisConnection, type CampaignJob, type PublishJob } from "@/lib/queue";
+import { CAMPAIGN_QUEUE, DELIVER_QUEUE, PUBLISH_QUEUE, redisConnection, type CampaignJob, type DeliverJob, type PublishJob } from "@/lib/queue";
 import { requeueMissed } from "@/lib/dispatch";
 import { deliverToHandles } from "@/lib/social-delivery";
 import { sendCampaign } from "@/lib/campaigns";
@@ -172,6 +172,13 @@ const campaignWorker = new Worker<CampaignJob>(CAMPAIGN_QUEUE, (job) => sendCamp
 });
 campaignWorker.on("completed", (job) => console.log(`Campaign ${job.data.campaignId} sent`));
 campaignWorker.on("failed", (job, err) => console.error(`Campaign ${job?.data.campaignId} failed:`, err.message));
+
+// Subscribed adverts sent to one person's X / Instagram handles right after they subscribe.
+const deliverWorker = new Worker<DeliverJob>(DELIVER_QUEUE, (job) => deliverToHandles(new Date(), job.data), {
+  connection: redisConnection(),
+});
+deliverWorker.on("completed", (job, sent) => sent && console.log(`Sent advert ${job.data.advertId} to subscriber ${job.data.userId}'s handles`));
+deliverWorker.on("failed", (job, err) => console.error(`Delivery ${job?.id} failed:`, err.message));
 
 // Scheduler: check for due channel runs every 30 seconds.
 const TICK_MS = Number(process.env.SCHEDULER_TICK_MS ?? 30_000);

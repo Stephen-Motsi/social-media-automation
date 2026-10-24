@@ -5,6 +5,7 @@ import { accessTokenFor } from "@/lib/tokens";
 import { xSendDm, xUserByUsername } from "@/lib/x";
 import { commentOnMedia } from "@/lib/meta/instagram";
 import { postUrl } from "@/lib/adverts";
+import { notifyAdmins } from "@/lib/notify";
 
 // Sends adverts to the handles subscribers put on their profile, once the advert's send time comes
 // (straight away for people who subscribe later). Run by the worker on every scheduler tick.
@@ -41,10 +42,13 @@ function explain(platform: Platform, handle: string, err: unknown) {
   return msg;
 }
 
-export async function deliverToHandles(now = new Date()) {
+// `only`: one person's subscription to one advert (sent straight after they subscribe);
+// without it, everything that's due (the worker's safety net).
+export async function deliverToHandles(now = new Date(), only?: { advertId: string; userId: string }) {
   // 1. Who should get what: subscriptions on X/Instagram, for adverts that are listed and due, with a handle on file
   const subs = await prisma.advertSubscription.findMany({
     where: {
+      ...(only ?? {}),
       platform: { in: HANDLE_PLATFORMS },
       advert: { listedAt: { not: null }, OR: [{ sendAt: null }, { sendAt: { lte: now } }] },
       user: { disabledAt: null, socials: { some: { platform: { in: HANDLE_PLATFORMS } } } },
@@ -60,6 +64,7 @@ export async function deliverToHandles(now = new Date()) {
   // 2. Send what's waiting (and retry recent failures a few times)
   const due = await prisma.socialDelivery.findMany({
     where: {
+      ...(only ?? {}),
       OR: [{ status: "PENDING" }, { status: "FAILED", attempts: { lt: MAX_ATTEMPTS }, updatedAt: { lte: new Date(now.getTime() - RETRY_AFTER_MS) } }],
     },
     include: { advert: true, user: { select: { socials: true, subscriptions: true, disabledAt: true } } },
@@ -108,10 +113,18 @@ export async function deliverToHandles(now = new Date()) {
       await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: "SENT", externalId, sentAt: new Date(), error: null, attempts: { increment: 1 } } });
       sent++;
     } catch (err) {
-      await prisma.socialDelivery.update({
-        where: { id: d.id },
-        data: { status: "FAILED", attempts: { increment: 1 }, error: explain(d.platform, d.handle, err).slice(0, 500) },
-      });
+      const error = explain(d.platform, d.handle, err).slice(0, 500);
+      await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: "FAILED", attempts: { increment: 1 }, error } });
+      // Tell the admins once, on the first failure
+      if (d.attempts === 0) {
+        await notifyAdmins({
+          kind: "SEND_FAILED",
+          title: `Couldn't send "${d.advert.title ?? "an advert"}" to ${displayHandle(d.platform, d.handle)}`,
+          body: error,
+          link: "/admin/adverts",
+          userId: d.userId,
+        });
+      }
     }
   }
   return sent;

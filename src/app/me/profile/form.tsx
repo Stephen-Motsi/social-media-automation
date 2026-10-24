@@ -9,12 +9,13 @@ export type ProfileField = { platform: Platform; value: string; placeholder: str
 
 const field = "mt-1 w-full rounded-xl border border-line bg-white/55 px-3 py-2 placeholder:text-ink-soft/60 dark:bg-white/5";
 
-export function ProfileForm({ name, email, socials }: { name: string; email: string; socials: ProfileField[] }) {
+export function ProfileForm({ name, email, socials, autoSubscribe }: { name: string; email: string; socials: ProfileField[]; autoSubscribe: boolean }) {
   const [state, action, pending] = useActionState(updateProfile, undefined);
   const invalid = (f: string) => (state?.field === f ? true : undefined);
   // Controlled, so what was typed stays after a "Not saved" (React resets uncontrolled form fields)
   const [values, setValues] = useState<Record<string, string>>(() => ({ name, ...Object.fromEntries(socials.map((s) => [s.platform, s.value])) }));
   const [consent, setConsent] = useState(false);
+  const [auto, setAuto] = useState(autoSubscribe);
   const bind = (key: string) => ({ name: key, value: values[key] ?? "", onChange: (e: React.ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [key]: e.target.value })) });
 
   return (
@@ -61,6 +62,14 @@ export function ProfileForm({ name, email, socials }: { name: string; email: str
           ))}
         </ul>
       </fieldset>
+
+      <label className="flex items-start gap-2 rounded-2xl border border-line bg-white/30 p-4 text-sm dark:bg-white/[0.03]">
+        <input type="checkbox" name="autoSubscribe" checked={auto} onChange={(e) => setAuto(e.target.checked)} className="mt-0.5 size-4 accent-[var(--ig-3)]" />
+        <span>
+          <span className="font-medium">Subscribe me to every new advert</span>
+          <span className="block text-xs text-ink-soft">New adverts are sent to the accounts above automatically, as soon as they&rsquo;re published. You can unsubscribe from any of them.</span>
+        </span>
+      </label>
 
       <label className="flex items-start gap-2 text-sm">
         <input type="checkbox" name="consent" checked={consent} onChange={(e) => setConsent(e.target.checked)} aria-invalid={invalid("consent")} className="mt-0.5 size-4 accent-[var(--ig-3)]" />

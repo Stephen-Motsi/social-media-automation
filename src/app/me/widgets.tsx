@@ -3,7 +3,8 @@
 import { useActionState, useOptimistic, useState, useTransition } from "react";
 import type { Platform } from "@prisma/client";
 import { PlatformBadge, platforms } from "@/components/platforms";
-import { linkWhatsApp, revokeOtherSessions, revokeSession, setAdvertSubscription, unlinkWhatsApp, type MeState } from "./actions";
+import { linkWhatsApp, revokeOtherSessions, revokeSession, setAdvertSubscription, subscribeAll, unlinkWhatsApp, unsubscribeAll, type MeState, type SubscribeAllState } from "./actions";
+import { useRouter } from "next/navigation";
 
 const field = "w-full rounded-xl border border-line bg-white/55 px-3 py-2 dark:bg-white/5";
 
@@ -184,5 +185,69 @@ export function SessionButtons({ id, current }: { id?: string; current?: boolean
       </button>
       {msg && <span className="text-xs text-ink-soft">{msg}</span>}
     </span>
+  );
+}
+
+// One click: subscribe on every platform the advert is on; it's sent to the accounts on the profile.
+export function SubscribeAll({ advertId, subscribed, offered }: { advertId: string; subscribed: number; offered: number }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [state, setState] = useState<SubscribeAllState>();
+  const all = subscribed > 0 && subscribed >= offered;
+  const run = (fn: () => Promise<SubscribeAllState>) =>
+    start(async () => {
+      try {
+        setState(await fn());
+      } catch {
+        setState({ error: "The server didn't respond. Try again." });
+      }
+      router.refresh();
+    });
+
+  return (
+    <div className="space-y-2">
+      {subscribed === 0 || !all ? (
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => run(() => subscribeAll(advertId))}
+          className="blend-meta w-full rounded-full px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-fuchsia-500/25"
+        >
+          {pending ? "Subscribing…" : subscribed ? "Subscribe on every platform" : "Subscribe"}
+        </button>
+      ) : (
+        <div className="flex items-center justify-between gap-2 rounded-full bg-wa/15 py-1.5 pr-1.5 pl-4 text-sm font-medium text-emerald-800 dark:text-emerald-200">
+          Subscribed ✓
+          <button type="button" disabled={pending} onClick={() => confirm("Unsubscribe from this advert on every platform?") && run(() => unsubscribeAll(advertId))} className="rounded-full px-3 py-1 text-xs font-normal text-ink-soft hover:bg-white/50 hover:text-danger">
+            {pending ? "…" : "Unsubscribe"}
+          </button>
+        </div>
+      )}
+      {state?.error && (
+        <p role="alert" className="text-xs text-danger">
+          {state.error}
+        </p>
+      )}
+      {(state?.subscribed?.length || state?.skipped?.length) ? (
+        <ul role="status" className="space-y-1 text-xs">
+          {[...(state.subscribed ?? []).map((n) => ({ ...n, ok: true })), ...(state.skipped ?? []).map((n) => ({ ...n, ok: false }))].map((n) => (
+            <li key={n.platform} className="flex gap-1.5">
+              <PlatformBadge platform={n.platform} />
+              <span className={n.ok ? "text-emerald-800 dark:text-emerald-200" : "text-amber-800 dark:text-amber-200"}>
+                {n.message}
+                {n.link && (
+                  <>
+                    {" "}
+                    <a href={n.link} {...(n.link.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="font-medium underline underline-offset-2">
+                      {n.linkLabel ?? "Open"}
+                    </a>
+                  </>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }

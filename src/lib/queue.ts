@@ -54,3 +54,14 @@ export async function queueCampaign(campaignId: string, sendAt?: Date | null) {
   campaignQueue ??= new Queue<CampaignJob>(CAMPAIGN_QUEUE, { connection: redisConnection() });
   await addJob(campaignQueue, "send", { campaignId }, `campaign-${campaignId}`, sendAt);
 }
+
+// Sending a subscribed advert to one person's handles, straight after they subscribe.
+export const DELIVER_QUEUE = "deliver-subscription";
+export type DeliverJob = { advertId: string; userId: string };
+
+let deliverQueue: Queue<DeliverJob> | undefined;
+
+export async function queueDelivery(advertId: string, userId: string, at?: Date | null) {
+  deliverQueue ??= new Queue<DeliverJob>(DELIVER_QUEUE, { connection: redisConnection() });
+  await addJob(deliverQueue, "deliver", { advertId, userId }, `deliver-${advertId}-${userId}`, at);
+}

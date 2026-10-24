@@ -67,7 +67,7 @@ export default async function ProfilePage() {
           </div>
         </section>
         <section className="glass rounded-3xl p-6">
-          <ProfileForm name={user.name ?? ""} email={user.email} socials={socials} />
+          <ProfileForm name={user.name ?? ""} email={user.email} socials={socials} autoSubscribe={user.autoSubscribe} />
         </section>
       </main>
     </div>

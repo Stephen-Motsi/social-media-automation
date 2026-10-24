@@ -147,6 +147,9 @@ export async function publishAdvert(advertId: string, opts: { sendAt?: Date | nu
       await proposeCampaign(advertId, "Advert published").catch((err) => console.error("proposeCampaign:", err));
       outcomes.push(await whatsappOutcome(advertId));
     }
+    // People who asked for every new advert are subscribed (and sent it) now. Loaded lazily: it uses
+    // the request's session helpers, which the worker doesn't have.
+    await import("@/lib/user-subscriptions").then((m) => m.autoSubscribeUsers(advertId)).catch((err) => console.error("autoSubscribe:", err));
     return { ok: true, listed: true, outcomes };
   } catch (err) {
     return { ok: false, error: reasonFor(err) };

@@ -4,11 +4,11 @@ import { revalidatePath } from "next/cache";
 import type { Platform } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { logActivity, requireViewer } from "@/lib/session";
-import { advertPlatforms, postUrl } from "@/lib/adverts";
-import { formatWhen, reasonFor } from "@/lib/errors";
+import { subscribeUser, unsubscribeUser, deliverAfterProfileChange, type PlatformNote } from "@/lib/user-subscriptions";
+import { reasonFor } from "@/lib/errors";
 import { displayHandle, normalizeHandle, PROFILE_PLATFORMS, validateHandle } from "@/lib/handles";
 import { platformRules } from "@/lib/policy/rules";
-import { businessWhatsAppNumber, MIN_HOURS_BETWEEN_MESSAGES, newConfirmCode, normalizePhone, proposeCampaign, whatsappLink } from "@/lib/audience";
+import { businessWhatsAppNumber, newConfirmCode, normalizePhone, whatsappLink } from "@/lib/audience";
 
 // Every action here acts only on the signed-in user's own records (viewer.id from the
 // database-checked session), never on IDs of other users sent from the browser.
@@ -23,63 +23,46 @@ const refresh = () => {
 
 export async function setAdvertSubscription(advertId: string, platform: Platform, on: boolean): Promise<MeState> {
   const viewer = await requireViewer();
-  const advert = await prisma.post.findFirst({ where: { id: advertId, listedAt: { not: null } } });
-  if (!advert) return { error: "This advert isn't available any more." };
-  if (!(await advertPlatforms(advert.targetPlatforms)).some((p) => p.platform === platform)) {
-    return { error: "This advert isn't offered on that platform." };
-  }
-  if (on && platform === "WHATSAPP") {
-    const sub = await prisma.subscriber.findUnique({ where: { userId: viewer.id } });
-    if (sub?.status !== "ACTIVE") return { error: "Link and confirm your WhatsApp number first." };
-  }
-
   try {
-    if (on) {
-      await prisma.advertSubscription.upsert({
-        where: { userId_advertId_platform: { userId: viewer.id, advertId, platform } },
-        update: {},
-        create: { userId: viewer.id, advertId, platform },
-      });
-      // Automatic: a WhatsApp subscription joins the send (at the advert's time, or now if that has passed).
-      if (platform === "WHATSAPP") await proposeCampaign(advertId, "New subscription").catch((err) => console.error("proposeCampaign:", err));
-    } else {
-      await prisma.advertSubscription.deleteMany({ where: { userId: viewer.id, advertId, platform } });
+    if (!on) {
+      await unsubscribeUser(viewer.id, advertId, [platform]);
+      refresh();
+      return { ok: true, message: "Unsubscribed." };
     }
-    await logActivity(viewer.id, on ? "SUBSCRIBE" : "UNSUBSCRIBE", { advert: advert.title ?? advert.id, platform });
+    const res = await subscribeUser(viewer.id, advertId, [platform]);
+    refresh();
+    if (!res.ok) return { error: res.error };
+    const note = res.subscribed[0] ?? res.skipped[0];
+    if (!res.subscribed.length) return { error: note?.message ?? "Couldn't subscribe." };
+    return { ok: true, message: `Subscribed. ${note.message}`, link: note.link, linkLabel: note.linkLabel };
   } catch (err) {
     return { error: `Not saved: ${reasonFor(err)}` };
   }
-  refresh();
-  if (!on) return { ok: true, message: "Unsubscribed." };
-  let later = advert.sendAt && advert.sendAt > new Date() ? formatWhen(advert.sendAt) : null;
-  if (platform === "WHATSAPP") {
-    // One advert per person per day: if they just got one, this one follows after the gap.
-    const last = (await prisma.subscriber.findUnique({ where: { userId: viewer.id } }))?.lastSentAt;
-    const free = last ? new Date(last.getTime() + MIN_HOURS_BETWEEN_MESSAGES * 3600_000) : null;
-    if (free && free > new Date() && (!advert.sendAt || advert.sendAt < free)) later = `after ${formatWhen(free)} (one advert a day on WhatsApp)`;
+}
+
+export type SubscribeAllState = { ok?: boolean; error?: string; subscribed?: PlatformNote[]; skipped?: PlatformNote[] } | undefined;
+
+// One click: subscribe on every platform the advert is on, and send it to what's on the profile.
+export async function subscribeAll(advertId: string): Promise<SubscribeAllState> {
+  const viewer = await requireViewer();
+  try {
+    const res = await subscribeUser(viewer.id, advertId);
+    refresh();
+    return res.ok ? { ok: true, subscribed: res.subscribed, skipped: res.skipped } : { error: res.error };
+  } catch (err) {
+    return { error: `Not subscribed: ${reasonFor(err)}` };
   }
-  const where = platform === "WHATSAPP" ? "on your WhatsApp" : `on ${platformRules[platform].name}`;
-  // X and Instagram go to the handle on their profile
-  if (platform === "X" || platform === "INSTAGRAM") {
-    const mine = await prisma.userSocial.findUnique({ where: { userId_platform: { userId: viewer.id, platform } } });
-    const name = platformRules[platform].name;
-    if (!mine) {
-      return { ok: true, message: `Subscribed. Add your ${name} handle to your profile and it's sent to you there.`, link: "/me/profile", linkLabel: "Add it" };
-    }
-    const you = displayHandle(platform, mine.handle);
-    const how = platform === "X" ? `by direct message to ${you}` : `by mentioning ${you} on our Instagram post`;
-    return { ok: true, message: later ? `Subscribed. It's sent ${how} ${later}.` : `Subscribed. It's on its way ${how}.` };
+}
+
+export async function unsubscribeAll(advertId: string): Promise<SubscribeAllState> {
+  const viewer = await requireViewer();
+  try {
+    await unsubscribeUser(viewer.id, advertId);
+    refresh();
+    return { ok: true, subscribed: [], skipped: [] };
+  } catch (err) {
+    return { error: `Not saved: ${reasonFor(err)}` };
   }
-  if (later) return { ok: true, message: `Subscribed. It arrives ${where} ${later}.` };
-  if (platform === "WHATSAPP") return { ok: true, message: "Subscribed. It's on its way to your WhatsApp." };
-  const posted = await prisma.postTarget.findFirst({
-    where: { status: "PUBLISHED", account: { platform }, post: { sourceAdvertId: advertId } },
-    include: { account: true },
-  });
-  const handle = (await advertPlatforms([platform]))[0]?.handle;
-  return posted
-    ? { ok: true, message: `Subscribed. It's posted on ${handle ?? platformRules[platform].name}.`, link: postUrl(platform, posted.externalPostId, posted.account.handle) }
-    : { ok: true, message: `Subscribed. You'll see it on ${handle ?? platformRules[platform].name} once it's posted.` };
 }
 
 export async function linkWhatsApp(_prev: MeState, fd: FormData): Promise<MeState> {
@@ -167,7 +150,7 @@ export async function updateProfile(_prev: ProfileState, fd: FormData): Promise<
       if (taken) return { error: `Not saved: that ${platformRules[platform].name} account is already on another profile.`, field: platform };
     }
     await prisma.$transaction([
-      prisma.user.update({ where: { id: viewer.id }, data: { name } }),
+      prisma.user.update({ where: { id: viewer.id }, data: { name, autoSubscribe: fd.get("autoSubscribe") === "on" } }),
       ...handles.map(({ platform, handle }) =>
         handle
           ? prisma.userSocial.upsert({
@@ -182,7 +165,9 @@ export async function updateProfile(_prev: ProfileState, fd: FormData): Promise<
   } catch (err) {
     return { error: `Not saved: ${reasonFor(err)}` };
   }
+  // Adverts they already subscribed to go to the handles they just added
+  await deliverAfterProfileChange(viewer.id).catch(() => null);
   revalidatePath("/me/profile");
   refresh();
-  return { ok: true, message: "Saved ✓ Adverts you subscribe to on X and Instagram are sent to these accounts." };
+  return { ok: true, message: "Saved ✓ Adverts you subscribe to are sent to these accounts automatically." };
 }
