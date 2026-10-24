@@ -1,3 +1,6 @@
+// Give up on a platform call that hangs, so the admin gets a reason instead of a frozen button.
+const API_TIMEOUT_MS = 20_000;
+
 // X (Twitter) API v2: OAuth 2.0 with PKCE, posting and image upload.
 // Docs: https://docs.x.com/resources/fundamentals/authentication/oauth-2-0/authorization-code
 //       https://docs.x.com/x-api/posts/creation-of-a-post
@@ -55,7 +58,7 @@ export type XTokens = { access_token: string; refresh_token?: string; expires_in
 async function tokenRequest(params: Record<string, string>): Promise<XTokens> {
   // Confidential client: authenticate with the client ID and secret.
   const basic = Buffer.from(`${process.env.X_CLIENT_ID}:${process.env.X_CLIENT_SECRET}`).toString("base64");
-  const res = await fetch(`${apiBase()}/2/oauth2/token`, {
+  const res = await fetch(`${apiBase()}/2/oauth2/token`, { signal: AbortSignal.timeout(API_TIMEOUT_MS),
     method: "POST",
     headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ ...params, client_id: process.env.X_CLIENT_ID! }),
@@ -69,7 +72,7 @@ export const xExchangeCode = (code: string, codeVerifier: string) =>
 export const xRefresh = (refreshToken: string) => tokenRequest({ grant_type: "refresh_token", refresh_token: refreshToken });
 
 export async function xGetMe(token: string) {
-  const res = await fetch(`${apiBase()}/2/users/me`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(`${apiBase()}/2/users/me`, { signal: AbortSignal.timeout(API_TIMEOUT_MS), headers: { Authorization: `Bearer ${token}` } });
   return (await parse<{ data: { id: string; name: string; username: string } }>(res)).data;
 }
 
@@ -78,7 +81,7 @@ export async function xUploadImage(token: string, data: Uint8Array, mimeType: st
   form.set("media", new Blob([Buffer.from(data)], { type: mimeType }), "image");
   form.set("media_category", "tweet_image");
   form.set("media_type", mimeType);
-  const res = await fetch(`${apiBase()}/2/media/upload`, {
+  const res = await fetch(`${apiBase()}/2/media/upload`, { signal: AbortSignal.timeout(API_TIMEOUT_MS),
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: form,
@@ -87,7 +90,7 @@ export async function xUploadImage(token: string, data: Uint8Array, mimeType: st
 }
 
 export async function xCreatePost(token: string, text: string, mediaIds: string[] = []) {
-  const res = await fetch(`${apiBase()}/2/tweets`, {
+  const res = await fetch(`${apiBase()}/2/tweets`, { signal: AbortSignal.timeout(API_TIMEOUT_MS),
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ text, ...(mediaIds.length ? { media: { media_ids: mediaIds } } : {}) }),
@@ -96,13 +99,13 @@ export async function xCreatePost(token: string, text: string, mediaIds: string[
 }
 
 export async function xUserByUsername(token: string, username: string) {
-  const res = await fetch(`${apiBase()}/2/users/by/username/${encodeURIComponent(username)}`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(`${apiBase()}/2/users/by/username/${encodeURIComponent(username)}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS), headers: { Authorization: `Bearer ${token}` } });
   return (await parse<{ data?: { id: string; username: string } }>(res)).data ?? null;
 }
 
 // Direct message to one person. X only delivers it if they accept messages from this account.
 export async function xSendDm(token: string, participantId: string, text: string) {
-  const res = await fetch(`${apiBase()}/2/dm_conversations/with/${participantId}/messages`, {
+  const res = await fetch(`${apiBase()}/2/dm_conversations/with/${participantId}/messages`, { signal: AbortSignal.timeout(API_TIMEOUT_MS),
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ text }),

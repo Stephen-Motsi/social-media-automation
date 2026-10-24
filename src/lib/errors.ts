@@ -6,6 +6,9 @@ export function reasonFor(err: unknown): string {
     return "the database isn't reachable. Start it (docker compose up -d) and try again.";
   }
   if (err instanceof QueueUnavailable) return err.message;
+  if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+    return "a service didn't answer in time (Meta, X, TikTok or OpenAI). Try again in a minute.";
+  }
   const msg = err instanceof Error ? err.message : String(err);
   if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT/.test(msg)) return `a service isn't reachable (${msg}).`;
   return msg;

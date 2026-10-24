@@ -260,11 +260,11 @@ export function SocialContainer({ channel, admin }: { channel: ChannelView; admi
               // Same form, flagged so the server posts right after saving
               name="intent"
               value="post"
-              disabled={saving || !channel.connected}
-              title={channel.connected ? undefined : `Connect ${channel.handleDisplay} in Settings to post`}
+              // Clickable even when not connected: it saves, then says exactly what's needed to post
+              disabled={saving}
               className="rounded-full border border-line bg-white/50 px-4 py-2 text-sm font-medium hover:bg-white/80 disabled:opacity-60 dark:bg-white/10"
             >
-              Post now
+              {saving ? "Working…" : "Post now"}
             </button>
           </>
         )}
@@ -294,7 +294,11 @@ export function SocialContainer({ channel, admin }: { channel: ChannelView; admi
             {result.message}
           </p>
         )}
-        {result?.ok && result.note && <p className="text-amber-800 dark:text-amber-200">{result.note}</p>}
+        {result?.ok && result.note && (
+          <p role="alert" className="rounded-2xl border border-amber-500/40 bg-amber-400/15 px-3 py-2 font-medium text-amber-900 dark:text-amber-100">
+            {result.note}
+          </p>
+        )}
         {result?.verdict && <Verdict verdict={result.verdict} />}
       </div>
     </form>

@@ -13,6 +13,10 @@ export class OpenAIError extends Error {
   }
 }
 
+// Image creation can take about a minute; content checks should answer in seconds.
+const IMAGE_TIMEOUT_MS = 150_000;
+const CHECK_TIMEOUT_MS = 20_000;
+
 const baseUrl = () => (process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
 
 async function call<T>(path: string, body: unknown): Promise<T> {
@@ -20,6 +24,7 @@ async function call<T>(path: string, body: unknown): Promise<T> {
   if (!key) throw new OpenAIError("OPENAI_API_KEY is not set", "not_configured");
 
   const res = await fetch(`${baseUrl()}/${path}`, {
+    signal: AbortSignal.timeout(path.startsWith("images/") ? IMAGE_TIMEOUT_MS : CHECK_TIMEOUT_MS),
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -77,7 +82,7 @@ export async function editImage(
   form.set("quality", process.env.OPENAI_IMAGE_QUALITY ?? "medium");
   form.set("output_format", "jpeg");
   form.set("output_compression", "90");
-  const res = await fetch(`${baseUrl()}/images/edits`, { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form });
+  const res = await fetch(`${baseUrl()}/images/edits`, { signal: AbortSignal.timeout(IMAGE_TIMEOUT_MS), method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new OpenAIError(json?.error?.message ?? `OpenAI request failed (${res.status})`, json?.error?.code, res.status);
   return Buffer.from(json.data[0].b64_json, "base64");

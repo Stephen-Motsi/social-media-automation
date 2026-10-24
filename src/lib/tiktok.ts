@@ -1,3 +1,6 @@
+// Give up on a platform call that hangs, so the admin gets a reason instead of a frozen button.
+const API_TIMEOUT_MS = 20_000;
+
 // TikTok Login Kit + Content Posting API (photo posts).
 // Docs: https://developers.tiktok.com/doc/login-kit-web
 //       https://developers.tiktok.com/doc/oauth-user-access-token-management
@@ -49,7 +52,7 @@ export type TikTokTokens = {
 };
 
 async function tokenRequest(params: Record<string, string>): Promise<TikTokTokens> {
-  const res = await fetch(`${apiBase()}/v2/oauth/token/`, {
+  const res = await fetch(`${apiBase()}/v2/oauth/token/`, { signal: AbortSignal.timeout(API_TIMEOUT_MS),
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -73,7 +76,7 @@ export const tiktokRefresh = (refreshToken: string) =>
 
 // TikTok API responses carry { data, error: { code: "ok" | ..., message } }
 async function api<T>(path: string, token: string, init: { method?: "GET" | "POST"; body?: unknown } = {}): Promise<T> {
-  const res = await fetch(`${apiBase()}${path}`, {
+  const res = await fetch(`${apiBase()}${path}`, { signal: AbortSignal.timeout(API_TIMEOUT_MS),
     method: init.method ?? "GET",
     headers: {
       Authorization: `Bearer ${token}`,

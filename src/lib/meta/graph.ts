@@ -1,5 +1,8 @@
 import { createHmac } from "node:crypto";
 
+// Give up on a platform call that hangs, so the admin gets a reason instead of a frozen button.
+const API_TIMEOUT_MS = 20_000;
+
 // Thin wrapper around the Meta Graph API, shared by Facebook, Instagram and WhatsApp clients.
 
 export class GraphApiError extends Error {
@@ -36,7 +39,7 @@ export async function graphRequest<T>(
   const proof = accessToken ? appSecretProof(accessToken) : undefined;
   if (proof) url.searchParams.set("appsecret_proof", proof);
 
-  const res = await fetch(url, {
+  const res = await fetch(url, { signal: AbortSignal.timeout(API_TIMEOUT_MS),
     method: init.method ?? "GET",
     headers: {
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
