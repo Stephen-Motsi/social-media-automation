@@ -4,6 +4,8 @@ import { advertStatus, listedAdverts } from "@/lib/adverts";
 import { formatWhen } from "@/lib/errors";
 import { getViewer, isStaff } from "@/lib/session";
 import { PlatformBadge, platforms } from "@/components/platforms";
+import { prisma } from "@/lib/db";
+import { PlatformToggle } from "./me/widgets";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +18,13 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
   // Just published by an admin: show how it's going out on each platform.
   const justPublished = published && viewer && isStaff(viewer.role) ? adverts.find((a) => a.id === published) : undefined;
   const status = justPublished ? await advertStatus(justPublished.id) : [];
+  // Signed-in users subscribe right here, per platform.
+  const user =
+    viewer && !isStaff(viewer.role)
+      ? await prisma.user.findUnique({ where: { id: viewer.id }, select: { subscriptions: true, subscriber: { select: { status: true } } } })
+      : null;
+  const subscribed = (advertId: string, p: string) => !!user?.subscriptions.some((s) => s.advertId === advertId && s.platform === p);
+  const waActive = user?.subscriber?.status === "ACTIVE";
 
   return (
     <div className="min-h-screen pb-16">
@@ -33,24 +42,6 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
       </header>
 
       <main className="mx-auto max-w-6xl px-4">
-        {justPublished && (
-          <section id="published" role="status" className="glass mt-6 scroll-mt-6 rounded-[28px] border border-wa/40 p-5">
-            <p className="font-semibold">
-              Published: &ldquo;{justPublished.title}&rdquo; is live on the home page{justPublished.sendAt && justPublished.sendAt > new Date() ? ` and goes out ${formatWhen(justPublished.sendAt)}` : ""}.
-            </p>
-            <ul className="mt-2 space-y-1 text-sm">
-              {status.map((o) => (
-                <li key={o.platform} className="flex gap-2">
-                  <span aria-hidden className={`mt-1.5 size-2 shrink-0 rounded-full ${o.ok ? "bg-wa" : "bg-danger"}`} />
-                  <span className={o.ok ? "" : "text-danger"}>{o.message}</span>
-                </li>
-              ))}
-            </ul>
-            <Link href="/admin/adverts" className="mt-3 inline-block text-sm font-medium underline underline-offset-2">
-              Back to Adverts
-            </Link>
-          </section>
-        )}
 
         <section className="pt-14 pb-10">
           <h1 className="max-w-3xl text-4xl font-semibold tracking-tight sm:text-6xl">Pick the adverts you want, where you want them</h1>
@@ -60,10 +51,10 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Link
-              href={dashboard ?? "/login?callbackUrl=/me"}
+              href={dashboard === "/me" ? "#adverts" : dashboard ?? "/login?callbackUrl=/"}
               className="blend-meta rounded-full px-6 py-3 font-medium text-white shadow-md shadow-fuchsia-500/25"
             >
-              {dashboard ? "Choose adverts" : "Sign in to subscribe"}
+              {dashboard === "/me" ? "Choose adverts below" : dashboard ? "Go to admin" : "Sign in to subscribe"}
             </Link>
             <Link href="/subscribe" className="rounded-full px-5 py-3 text-ink-soft hover:text-ink">
               No account? Get offers by topic on WhatsApp
@@ -74,7 +65,7 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
         {adverts.length === 0 ? (
           <p className="glass rounded-[28px] px-6 py-12 text-center text-ink-soft">New adverts are on their way.</p>
         ) : (
-          <ul className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <ul id="adverts" className="grid scroll-mt-6 gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {adverts.map((a) => (
               <li key={a.id} id={a.id} className="scroll-mt-6">
                 <article className={`glass flex h-full flex-col overflow-hidden rounded-[28px] ${a.id === justPublished?.id ? "ring-2 ring-[var(--ig-3)]" : ""}`}>
@@ -91,6 +82,34 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
                     {a.interests.length > 0 && (
                       <p className="mt-2 text-xs text-ink-soft">{a.interests.map((i) => i.name).join(" · ")}</p>
                     )}
+                    {a.id === justPublished?.id && (
+                      <div role="status" className="mt-3 rounded-2xl border border-wa/40 bg-wa/10 p-3 text-xs">
+                        <p className="font-semibold text-emerald-700 dark:text-emerald-300">Published ✓ Users can subscribe to it here.</p>
+                        <ul className="mt-1.5 space-y-0.5">
+                          {status.map((o) => (
+                            <li key={o.platform} className="flex gap-1.5">
+                              <span aria-hidden className={`mt-1 size-1.5 shrink-0 rounded-full ${o.ok ? "bg-wa" : "bg-danger"}`} />
+                              <span className={o.ok ? "" : "text-danger"}>{o.message}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {user ? (
+                      <ul className="mt-4 space-y-2" aria-label="Subscribe on">
+                        {a.platforms.map((p) => (
+                          <PlatformToggle
+                            key={p.platform}
+                            advertId={a.id}
+                            platform={p.platform}
+                            handle={p.handle}
+                            url={p.url}
+                            subscribed={subscribed(a.id, p.platform)}
+                            disabledReason={p.platform === "WHATSAPP" && !waActive ? "link your number in My adverts first" : undefined}
+                          />
+                        ))}
+                      </ul>
+                    ) : (
                     <ul className="mt-4 flex flex-wrap gap-2" aria-label="Available on">
                       {a.platforms.map((p) => (
                         <li key={p.platform} className="flex items-center gap-1.5 rounded-full border border-line bg-white/40 py-1 pr-3 pl-1 text-xs dark:bg-white/5">
@@ -105,12 +124,21 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
                         </li>
                       ))}
                     </ul>
-                    <Link
-                      href={dashboard === "/me" ? `/me#${a.id}` : dashboard ? "/admin/adverts" : `/login?callbackUrl=${encodeURIComponent(`/me#${a.id}`)}`}
-                      className="mt-auto pt-5 text-sm font-medium underline-offset-2 hover:underline"
-                    >
-                      {dashboard === "/me" ? "Subscribe" : dashboard ? "Manage in admin" : "Sign in to subscribe"}
-                    </Link>
+                    )}
+                    {user ? (
+                      !waActive && a.platforms.some((p) => p.platform === "WHATSAPP") && (
+                        <Link href="/me#whatsapp" className="mt-auto pt-5 text-sm font-medium underline-offset-2 hover:underline">
+                          Link your WhatsApp to get it on your phone
+                        </Link>
+                      )
+                    ) : (
+                      <Link
+                        href={dashboard ? "/admin/adverts" : `/login?callbackUrl=${encodeURIComponent(`/#${a.id}`)}`}
+                        className="mt-auto pt-5 text-sm font-medium underline-offset-2 hover:underline"
+                      >
+                        {dashboard ? "Manage in admin" : "Sign in to subscribe"}
+                      </Link>
+                    )}
                   </div>
                 </article>
               </li>

@@ -127,7 +127,7 @@ export default async function MePage() {
           </p>
         </section>
 
-        <section className="glass rounded-3xl p-6" aria-labelledby="wa-h">
+        <section id="whatsapp" className="glass scroll-mt-24 rounded-3xl p-6" aria-labelledby="wa-h">
           <h2 id="wa-h" className="text-lg font-semibold">My WhatsApp</h2>
           <div className="mt-3">
             <WhatsAppLink

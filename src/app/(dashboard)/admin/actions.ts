@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { logActivity, requireStaff, requireSuperAdmin } from "@/lib/session";
-import { cancelPendingSends, postAdvertToPlatforms, publishAdvert, type PlatformOutcome } from "@/lib/adverts";
+import { advertStatus, cancelPendingSends, postAdvertToPlatforms, publishAdvert, type PlatformOutcome } from "@/lib/adverts";
 import { reasonFor } from "@/lib/errors";
 
 export type AdminState = { ok?: boolean; error?: string; message?: string } | undefined;
@@ -31,6 +31,12 @@ export async function publish(advertId: string, opts: { sendAt?: string | null; 
   return { ok: true, outcomes: report.outcomes };
 }
 
+// Where a just-published advert stands, polled by the Publish / Post now buttons.
+export async function publishProgress(advertId: string): Promise<PlatformOutcome[]> {
+  await requireStaff();
+  return advertStatus(advertId);
+}
+
 export async function unlist(advertId: string): Promise<AdminState> {
   await requireStaff();
   try {
@@ -45,16 +51,16 @@ export async function unlist(advertId: string): Promise<AdminState> {
   }
 }
 
-export async function postNow(advertId: string): Promise<AdminState> {
+export async function postNow(advertId: string): Promise<PublishState> {
   await requireStaff();
   try {
-    const outcomes = (await postAdvertToPlatforms(advertId)).filter(Boolean);
+    const outcomes = await postAdvertToPlatforms(advertId);
     refresh();
-    if (outcomes.length === 0) return { error: "No social platforms to post to (WhatsApp goes to subscribers' numbers)." };
-    const ok = outcomes.filter((o) => o.ok);
-    return ok.length ? { ok: true, message: outcomes.map((o) => o.message).join(" ") } : { error: outcomes.map((o) => o.message).join(" ") };
+    if (outcomes.length === 0) return { ok: false, error: "no social platforms to post to (WhatsApp goes to subscribers' numbers)." };
+    if (!outcomes.some((o) => o.ok)) return { ok: false, error: outcomes.map((o) => o.message).join(" ") };
+    return { ok: true, outcomes };
   } catch (err) {
-    return { error: `Not posted: ${reasonFor(err)}` };
+    return { ok: false, error: reasonFor(err) };
   }
 }
 

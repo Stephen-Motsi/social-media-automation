@@ -40,7 +40,8 @@ export function postUrl(platform: Platform, externalPostId: string | null, handl
 }
 
 // What happened (or will happen) on one platform, in words an admin can act on.
-export type PlatformOutcome = { platform: Platform; ok: boolean; message: string };
+// pending: still going out right now (the worker hasn't finished it yet).
+export type PlatformOutcome = { platform: Platform; ok: boolean; message: string; pending?: boolean };
 
 const nameOf = (p: Platform) => platformRules[p].name;
 const checksOf = (advert: { checks: unknown }) => (advert.checks as PlatformVerdict[] | null) ?? [];
@@ -177,8 +178,10 @@ export async function advertStatus(advertId: string): Promise<PlatformOutcome[]>
       const n = (s: string[]) => c?.deliveries.filter((d) => s.includes(d.status)).length ?? 0;
       if (!c) out.push({ platform, ok: true, message: advert.sendAt && advert.sendAt > new Date() ? `Goes to WhatsApp subscribers at ${formatWhen(advert.sendAt)}.` : "No WhatsApp subscribers yet." });
       else if (c.status === "PENDING_APPROVAL") out.push({ platform, ok: false, message: c.reason?.startsWith("Waiting:") ? `WhatsApp is waiting: ${c.reason.slice("Waiting: ".length)}` : `WhatsApp: ${c.deliveries.length} waiting for your approval.` });
-      else if (c.status === "APPROVED") out.push({ platform, ok: true, message: `WhatsApp: sending to ${c.deliveries.length} ${c.sendAt && c.sendAt > new Date() ? `at ${formatWhen(c.sendAt)}` : "now"}.` });
-      else if (c.status === "SENDING") out.push({ platform, ok: true, message: "WhatsApp: sending now." });
+      else if (c.status === "APPROVED") {
+        const later = c.sendAt && c.sendAt > new Date();
+        out.push({ platform, ok: true, pending: !later, message: `WhatsApp: sending to ${c.deliveries.length} ${later ? `at ${formatWhen(c.sendAt!)}` : "now"}.` });
+      } else if (c.status === "SENDING") out.push({ platform, ok: true, pending: true, message: "WhatsApp: sending now." });
       else if (c.status === "SENT") {
         const failed = n(["FAILED"]);
         out.push({ platform, ok: failed === 0, message: `WhatsApp: sent to ${n(["SENT", "DELIVERED", "READ"])}${failed ? `, ${failed} failed` : ""}${n(["SKIPPED"]) ? `, ${n(["SKIPPED"])} held back (already messaged in the last 24 hours; sent automatically after that)` : ""}.` });
@@ -190,7 +193,8 @@ export async function advertStatus(advertId: string): Promise<PlatformOutcome[]>
     if (!post || !target) out.push({ platform, ok: false, message: `${name}: not posted yet.` });
     else if (target.status === "PUBLISHED") out.push({ platform, ok: true, message: `Posted on ${name}${post.publishedAt ? ` ${formatWhen(post.publishedAt)}` : ""}.` });
     else if (target.status === "FAILED") out.push({ platform, ok: false, message: `${name} failed: ${target.error ?? "unknown error"}` });
-    else out.push({ platform, ok: true, message: post.scheduledAt && post.scheduledAt > new Date() ? `Goes out on ${name} at ${formatWhen(post.scheduledAt)}.` : `Posting on ${name} now.` });
+    else if (post.scheduledAt && post.scheduledAt > new Date()) out.push({ platform, ok: true, message: `Goes out on ${name} at ${formatWhen(post.scheduledAt)}.` });
+    else out.push({ platform, ok: true, pending: true, message: `Posting on ${name} now.` });
   }
   return out;
 }

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import type { Platform } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { logActivity, requireViewer } from "@/lib/session";
-import { advertPlatforms } from "@/lib/adverts";
+import { advertPlatforms, postUrl } from "@/lib/adverts";
 import { formatWhen, reasonFor } from "@/lib/errors";
 import { platformRules } from "@/lib/policy/rules";
 import { businessWhatsAppNumber, MIN_HOURS_BETWEEN_MESSAGES, newConfirmCode, normalizePhone, proposeCampaign, whatsappLink } from "@/lib/audience";
@@ -12,9 +12,12 @@ import { businessWhatsAppNumber, MIN_HOURS_BETWEEN_MESSAGES, newConfirmCode, nor
 // Every action here acts only on the signed-in user's own records (viewer.id from the
 // database-checked session), never on IDs of other users sent from the browser.
 
-export type MeState = { ok?: boolean; error?: string; message?: string; join?: { code: string; link: string | null } } | undefined;
+export type MeState = { ok?: boolean; error?: string; message?: string; link?: string | null; join?: { code: string; link: string | null } } | undefined;
 
-const refresh = () => revalidatePath("/me");
+const refresh = () => {
+  revalidatePath("/me");
+  revalidatePath("/");
+};
 
 export async function setAdvertSubscription(advertId: string, platform: Platform, on: boolean): Promise<MeState> {
   const viewer = await requireViewer();
@@ -54,7 +57,16 @@ export async function setAdvertSubscription(advertId: string, platform: Platform
     if (free && free > new Date() && (!advert.sendAt || advert.sendAt < free)) later = `after ${formatWhen(free)} (one advert a day on WhatsApp)`;
   }
   const where = platform === "WHATSAPP" ? "on your WhatsApp" : `on ${platformRules[platform].name}`;
-  return { ok: true, message: later ? `Subscribed. It arrives ${where} ${later}.` : platform === "WHATSAPP" ? "Subscribed. It's on its way to your WhatsApp." : `Subscribed. See it ${where} below once it's posted.` };
+  if (later) return { ok: true, message: `Subscribed. It arrives ${where} ${later}.` };
+  if (platform === "WHATSAPP") return { ok: true, message: "Subscribed. It's on its way to your WhatsApp." };
+  const posted = await prisma.postTarget.findFirst({
+    where: { status: "PUBLISHED", account: { platform }, post: { sourceAdvertId: advertId } },
+    include: { account: true },
+  });
+  const handle = (await advertPlatforms([platform]))[0]?.handle;
+  return posted
+    ? { ok: true, message: `Subscribed. It's posted on ${handle ?? platformRules[platform].name}.`, link: postUrl(platform, posted.externalPostId, posted.account.handle) }
+    : { ok: true, message: `Subscribed. You'll see it on ${handle ?? platformRules[platform].name} once it's posted.` };
 }
 
 export async function linkWhatsApp(_prev: MeState, fd: FormData): Promise<MeState> {

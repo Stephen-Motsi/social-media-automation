@@ -10,6 +10,7 @@ import { PlatformBadge, platforms } from "@/components/platforms";
 import { checkAction, generateAction, saveDraftAction, type GeneratedMedia } from "./actions";
 import { publish as publishAdvert } from "../admin/actions";
 import type { PlatformOutcome } from "@/lib/adverts";
+import { homeUrl, STILL_POSTING, waitUntilPosted } from "../admin/publish-progress";
 import { AdvertPreview } from "./preview";
 
 export type ChannelOption = { platform: Platform; label: string; handle: string; format: PostFormat };
@@ -81,6 +82,8 @@ export function Studio({
   const [sendAt, setSendAt] = useState("");
   const [autoSend, setAutoSend] = useState(true);
   const [report, setReport] = useState<PlatformOutcome[] | null>(null);
+  // Shown on the publish button once it has gone out (or been scheduled), just before going home
+  const [done, setDone] = useState<string | null>(null);
   const [error, setError] = useState<{ message: string; issues?: Issue[] } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<"photo" | "check" | "save" | "publish" | null>(null);
@@ -160,10 +163,23 @@ export function Studio({
       // The browser's local time, sent as an exact moment
       const res = await publishAdvert(saved.postId, { sendAt: when === "later" ? new Date(sendAt).toISOString() : null, autoSend });
       if (!res.ok) return setError({ message: `Saved as a draft, but not published: ${res.error}` });
-      // All good: show it on the home page, as users see it. Otherwise stay and show what didn't go out.
-      if (res.outcomes.every((o) => o.ok)) return router.push(`/?published=${saved.postId}#published`);
-      setNotice("Saved and published, but not everywhere:");
-      setReport(res.outcomes);
+      // "Now": wait until each platform has actually posted (the worker posts it).
+      let outcomes = res.outcomes;
+      let timedOut = false;
+      if (when === "now" && outcomes.some((o) => o.ok)) {
+        const progress = await waitUntilPosted(saved.postId);
+        timedOut = progress.timedOut;
+        // Keep the reasons for platforms that were never queued (e.g. not connected)
+        outcomes = [...res.outcomes.filter((o) => !o.ok), ...progress.outcomes.filter((o) => !res.outcomes.some((r) => !r.ok && r.platform === o.platform))];
+      }
+      // All good: "Posted", then the advert on the home page, as users see it. Otherwise stay and show what didn't go out.
+      if (!timedOut && outcomes.every((o) => o.ok)) {
+        setDone(when === "now" ? "Posted ✓" : "Scheduled ✓");
+        setTimeout(() => router.push(homeUrl(saved.postId)), 1200);
+        return;
+      }
+      setNotice(timedOut ? "Published, but still posting:" : "Published, but not everywhere:");
+      setReport(timedOut ? [...outcomes, { platform: outcomes[0]?.platform ?? "FACEBOOK", ok: false, message: STILL_POSTING }] : outcomes);
     });
 
   const socialTargets = targets.filter((t) => t.platform !== "WHATSAPP").map((t) => platforms[t.platform].name);
@@ -195,10 +211,11 @@ export function Studio({
             <button
               type="button"
               onClick={publish}
-              disabled={busy !== null || !!publishProblem}
-              className="blend-meta rounded-full px-6 py-2.5 font-medium text-white shadow-md shadow-fuchsia-500/25 disabled:opacity-50"
+              disabled={busy !== null || !!publishProblem || !!done}
+              aria-live="polite"
+              className={`${done ? "bg-wa" : "blend-meta"} rounded-full px-6 py-2.5 font-medium text-white shadow-md shadow-fuchsia-500/25 disabled:opacity-50 ${done ? "disabled:opacity-100" : ""}`}
             >
-              {busy === "publish" ? "Publishing…" : when === "now" ? "Publish now" : "Publish and schedule"}
+              {done ?? (busy === "publish" ? (when === "now" ? "Posting…" : "Scheduling…") : when === "now" ? "Post now" : "Schedule")}
             </button>
           )}
         </>
@@ -219,7 +236,7 @@ export function Studio({
               </li>
             ))}
           </ul>
-          <a href={`/?published=${draftId}#published`} className="inline-block font-medium underline underline-offset-2">
+          <a href={draftId ? homeUrl(draftId) : "/"} className="inline-block font-medium underline underline-offset-2">
             See it on the home page
           </a>
         </div>

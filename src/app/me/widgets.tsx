@@ -25,7 +25,7 @@ export function PlatformToggle({
   const [on, setOn] = useOptimistic(subscribed);
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
-  const [message, setMessage] = useState<string>();
+  const [message, setMessage] = useState<{ text?: string; link?: string | null }>();
   return (
     <li className="flex items-center gap-2">
       <PlatformBadge platform={platform} />
@@ -42,7 +42,19 @@ export function PlatformToggle({
           {disabledReason && !on ? ` · ${disabledReason}` : ""}
         </p>
         {error && <p role="alert" className="text-xs text-danger">{error}</p>}
-        {message && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{message}</p>}
+        {message?.text && (
+          <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">
+            {message.text}
+            {message.link && (
+              <>
+                {" "}
+                <a href={message.link} target="_blank" rel="noopener noreferrer" className="font-medium underline underline-offset-2">
+                  Open it
+                </a>
+              </>
+            )}
+          </p>
+        )}
       </div>
       <button
         type="button"
@@ -58,7 +70,7 @@ export function PlatformToggle({
             try {
               const res = await setAdvertSubscription(advertId, platform, !on);
               if (res?.error) setError(res.error);
-              else setMessage(res?.message);
+              else setMessage({ text: res?.message, link: res?.link });
             } catch {
               setError("Not saved: the server didn't respond. Try again.");
             }
