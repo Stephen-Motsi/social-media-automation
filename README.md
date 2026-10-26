@@ -11,7 +11,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 
 | Decision | Detail |
 | --- | --- |
-| **Three roles** | **Users** create an account on the sign-in page (**Create account**: email + password, or **Continue with Google**/Facebook), land on the home page and subscribe to adverts. **Admins** run adverts, channels, the audience and users. The **super admin** also promotes and demotes admins (`/admin/roles`). Sign-up only ever creates users; staff come from promotion or the seed (the first super admin from `ADMIN_EMAIL` / `ADMIN_PASSWORD`). See [Accounts, roles and sessions](#accounts-roles-and-sessions). |
+| **Three roles** | **Users** create an account on the sign-in page (**Create account**: email + password, or **Continue with Google**/Facebook), land on the home page and subscribe to adverts. **Admins** run adverts, channels, the audience and publishing. The **super admin** also manages accounts, roles and sessions, and can inspect audit logs and platform activity (`/admin/super-admin`, `/admin/users`, `/admin/roles`, `/admin/logs`). Role management promotes users to admins or demotes admins to users; it does not change super-admin accounts. Sign-up only ever creates users; staff come from promotion or the seed (the first super admin from `ADMIN_EMAIL` / `ADMIN_PASSWORD`). See [Accounts, roles and sessions](#accounts-roles-and-sessions). |
 | **Admins define adverts; users subscribe per platform** | An advert has a title, what it's about, topics, target platforms (the channels' real handles), an AI image and a caption. Listed adverts appear on the public home page and users' dashboards; users subscribe to an advert on specific platforms, and that decides what's sent to whom. |
 | **Subscribers are the audience (user side)** | The public home page is `/subscribe` (signed-out visitors to `/` land there). People subscribe to adverts on WhatsApp about topics they choose, with no account or password, or an admin adds them. Adverts are matched to them automatically; **an admin approves every send**. WhatsApp is the only channel that can deliver to an individual; the other platforms only allow public posts (Channels). |
 | **Subscriptions are approved automatically** | Each subscription runs through checks based on WhatsApp's policies (`src/lib/policy/subscriptions.ts`). Passing ones are accepted with no admin action; only flagged ones wait on Approvals. |
@@ -54,7 +54,7 @@ src/
     page.tsx              PUBLIC home page: listed adverts and sign-in
     login/                Sign-in: Google/Facebook for users, email + password for staff
     me/                   USER dashboard: subscribe per advert/platform, WhatsApp link, feed, sessions
-    (dashboard)/          Staff area: admin/ (overview, adverts, users, roles), Create, Channels, Audience, Approvals, Posts
+    (dashboard)/          Staff area: admin/ (overview, adverts, super-admin workspace, user and role management, audit logs), Create, Channels, Audience, Approvals, Posts
       create/             AI image + caption composer with per-platform checks (saves adverts as drafts)
       channels/           Meta / X / TikTok containers: settings (connect/disconnect) + social containers
       audience/           Subscribers, topics, WhatsApp template, subscribe link

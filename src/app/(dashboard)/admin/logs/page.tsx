@@ -26,7 +26,7 @@ type Params = LogFilters & { tab?: string; page?: string; status?: string };
 
 // Everything people do, and every signed-in session, from the database (ActivityLog, UserSession).
 export default async function LogsPage({ searchParams }: { searchParams: Promise<Params> }) {
-  await pageViewer("staff");
+  await pageViewer("super");
   const p = await searchParams;
   const tab = p.tab === "sessions" ? "sessions" : "activity";
   const page = Math.max(1, Number(p.page) || 1);

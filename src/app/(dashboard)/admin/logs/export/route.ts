@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getViewer, isStaff } from "@/lib/session";
+import { getViewer } from "@/lib/session";
 import { activityDetail, activityLabel } from "@/lib/activity";
 import { activityWhere } from "../query";
 
@@ -8,10 +8,10 @@ const MAX_ROWS = 10_000;
 // Spreadsheet-safe: quote every cell, and stop formulas (=, +, -, @) from running when opened.
 const cell = (v: unknown) => `"${String(v ?? "").replace(/^([=+\-@])/, "'$1").replace(/"/g, '""')}"`;
 
-// The activity log as CSV, with the Logs page's filters. Staff only.
+// The activity log as CSV, with the Logs page's filters. Super admins only.
 export async function GET(req: Request) {
   const viewer = await getViewer();
-  if (!viewer || !isStaff(viewer.role)) return NextResponse.json({ error: "Only admins can export logs." }, { status: 403 });
+  if (!viewer || viewer.role !== "SUPER_ADMIN") return NextResponse.json({ error: "Only the super admin can export logs." }, { status: 403 });
   const p = new URL(req.url).searchParams;
   const rows = await prisma.activityLog.findMany({
     where: activityWhere({ q: p.get("q") ?? undefined, action: p.get("action") ?? undefined, from: p.get("from") ?? undefined, to: p.get("to") ?? undefined }),

@@ -1,0 +1,48 @@
+SOCIAL MEDIA AUTOMATION - SYSTEM OVERVIEW
+
+Purpose
+This web app lets staff create and manage adverts, schedule social posts, and
+deliver relevant offers to subscribers.
+
+Roles
+- Users sign in and subscribe to listed adverts on selected platforms. They can
+  manage their profile, WhatsApp link, subscriptions, and sessions.
+- Admins manage adverts, social channels, subscribers, approvals, and publishing.
+- Super admins have the admin capabilities plus access to user management,
+  audit logs, role management, and the super-admin dashboard.
+
+Main features
+- Create adverts with captions and images, including AI-assisted content tools
+  and checks against platform requirements.
+- Connect Facebook, Instagram, WhatsApp, X, and TikTok accounts.
+- Configure channels and recurring schedules.
+- Publish posts and send WhatsApp messages through a background worker.
+- Let account holders subscribe to adverts and let public subscribers receive
+  relevant offers by WhatsApp.
+- Review activity, sessions, notifications, and approval items according to
+  the signed-in user's role.
+
+Technology
+- Next.js, React, TypeScript, and Tailwind CSS for the web application.
+- Auth.js for authentication and role-aware access checks.
+- PostgreSQL and Prisma for application data.
+- Redis and BullMQ for background and scheduled jobs.
+- Platform APIs for publishing and messaging; OpenAI services for image
+  generation and content moderation.
+
+Key routes
+- /                 Public advert listing and entry point.
+- /login            Sign in and account creation.
+- /me               User dashboard.
+- /admin            Admin dashboard.
+- /admin/super-admin Super-admin overview.
+- /admin/users      Super-admin user management.
+- /admin/logs       Super-admin activity and session logs.
+- /admin/roles      Super-admin role management.
+- /channels         Social account and schedule management.
+- /audience         Subscriber and audience management.
+- /approvals        Items requiring staff review.
+
+The application checks access on the server, not only in the navigation.
+Platform credentials and environment settings belong in local environment
+configuration; do not store secrets in this overview file.

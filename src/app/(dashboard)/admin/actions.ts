@@ -67,23 +67,20 @@ export async function postNow(advertId: string): Promise<PublishState> {
 // ---- Users ---------------------------------------------------------------------------
 
 export async function signOutEverywhere(userId: string): Promise<AdminState> {
-  const actor = await requireStaff();
+  const actor = await requireSuperAdmin();
   const target = await prisma.user.findUnique({ where: { id: userId } });
   if (!target) return { error: "User not found." };
-  // Only the super admin can sign out staff.
-  if (target.role !== "USER" && actor.role !== "SUPER_ADMIN") return { error: "Only the super admin can sign out staff." };
   const res = await prisma.userSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
   await logActivity(userId, "SESSIONS_REVOKED", { by: actor.email, count: res.count }, actor.id);
   refresh();
   return { ok: true, message: `Signed out of ${res.count} ${res.count === 1 ? "session" : "sessions"}.` };
 }
 
-// Signs out one device. Same rule as above: only the super admin can sign out staff.
+// Signs out one device. Session management is reserved for super admins.
 export async function revokeUserSession(sessionId: string): Promise<AdminState> {
-  const actor = await requireStaff();
+  const actor = await requireSuperAdmin();
   const session = await prisma.userSession.findUnique({ where: { id: sessionId }, include: { user: true } });
   if (!session) return { error: "Session not found." };
-  if (session.user.role !== "USER" && actor.role !== "SUPER_ADMIN") return { error: "Only the super admin can sign out staff." };
   if (session.revokedAt) return { ok: true, message: "Already signed out." };
   await prisma.userSession.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
   await logActivity(session.userId, "SESSION_REVOKED", { by: actor.email, session: sessionId.slice(-6) }, actor.id);
