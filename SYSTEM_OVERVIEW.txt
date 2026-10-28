@@ -1,48 +1,564 @@
-SOCIAL MEDIA AUTOMATION - SYSTEM OVERVIEW
+SOCIAL MEDIA AUTOMATION - SYSTEM INFORMATION / LANDING PAGE FACTUAL REFERENCE
 
-Purpose
-This web app lets staff create and manage adverts, schedule social posts, and
-deliver relevant offers to subscribers.
+Last updated from repository inspection: 2026-10-28
+Document selected: SYSTEM_OVERVIEW.txt is the existing repository TXT file that
+specifically describes this application's system and is the most relevant candidate.
+No application source, database, dependency, schema, migration, or runtime
+behavior was changed for this documentation update.
 
-Roles
-- Users sign in and subscribe to listed adverts on selected platforms. They can
-  manage their profile, WhatsApp link, subscriptions, and sessions.
-- Admins manage adverts, social channels, subscribers, approvals, and publishing.
-- Super admins have the admin capabilities plus access to user management,
-  audit logs, role management, and the super-admin dashboard.
+STATUS LEGEND
+- Implemented: code exists and focused repository checks confirm its behavior or structure.
+- Partially implemented: user-facing or backend code exists, but end-to-end/live verification is incomplete.
+- Planned: described only as future work or explicitly marked TODO/next steps in the repository.
+- Blocked: cannot be completed because required credentials, services, or configuration are absent.
+- Unverified: not established through live testing; do not present as working.
 
-Main features
-- Create adverts with captions and images, including AI-assisted content tools
-  and checks against platform requirements.
-- Connect Facebook, Instagram, WhatsApp, X, and TikTok accounts.
-- Configure channels and recurring schedules.
-- Publish posts and send WhatsApp messages through a background worker.
-- Let account holders subscribe to adverts and let public subscribers receive
-  relevant offers by WhatsApp.
-- Review activity, sessions, notifications, and approval items according to
-  the signed-in user's role.
+A. PRODUCT IDENTITY
 
-Technology
-- Next.js, React, TypeScript, and Tailwind CSS for the web application.
-- Auth.js for authentication and role-aware access checks.
-- PostgreSQL and Prisma for application data.
-- Redis and BullMQ for background and scheduled jobs.
-- Platform APIs for publishing and messaging; OpenAI services for image
-  generation and content moderation.
+Application name/branding
+- Name used by code when BRAND_NAME is not set: Social Automation.
+- No separate logo asset or fixed product-name lockup was identified. Branding is mostly text in src/app/page.tsx and src/app/subscribe/page.tsx.
 
-Key routes
-- /                 Public advert listing and entry point.
-- /login            Sign in and account creation.
-- /me               User dashboard.
-- /admin            Admin dashboard.
-- /admin/super-admin Super-admin overview.
-- /admin/users      Super-admin user management.
-- /admin/logs       Super-admin activity and session logs.
-- /admin/roles      Super-admin role management.
-- /channels         Social account and schedule management.
-- /audience         Subscriber and audience management.
-- /approvals        Items requiring staff review.
+Main purpose
+- A staff/admin dashboard for creating adverts, generating or uploading media,
+  checking policy limits, connecting social accounts, scheduling content, and
+  publishing adverts or posts across supported platforms.
+- A public-facing subscription area lets people opt in by topic to receive
+  matching WhatsApp adverts, while signed-in users can also subscribe to listed
+  adverts and view received items.
 
-The application checks access on the server, not only in the navigation.
-Platform credentials and environment settings belong in local environment
-configuration; do not store secrets in this overview file.
+Target users
+- Ordinary users: sign in, manage advert subscriptions, connect their own
+  WhatsApp/social handles, and review received deliveries.
+- Staff admins: manage adverts, channels, audiences, approvals, posts and
+  publishing.
+- Super admins: additionally manage users and roles, sessions, notifications and
+  audit logs.
+
+Current implementation status
+- Implemented in code: authentication, roles, database-backed sessions, advert
+  creation and listing, subscriber matching/consent, approvals, channels,
+  scheduling, policy review, notifications, activity logs, public subscription.
+- Partially implemented or unverified: real delivery and live social account
+  integration; repository documentation and mock/API client tests indicate these
+  need live credentials and platform verification.
+- See the README status and blockers before making any live delivery claim.
+
+B. USER-FACING FEATURES AND STATUS
+
+1. Sign-in and account creation
+- User actions: email/password sign-up, email/password sign-in, Google or
+  Facebook social sign-in when OAuth credentials are configured.
+- Routes/components: /login, src/app/login/page.tsx,
+  src/app/login/login-form.tsx, src/app/login/actions.ts, src/auth.ts.
+- Status: Partially implemented. Credentials and session behavior exist. Google
+  and Facebook buttons are conditional on configured client credentials; current
+  .env has no Google or Facebook OAuth ID/secret values. Staff social login is
+  intentionally refused so password accounts cannot be taken over by email.
+- Limitations: no email verification service; public password sign-up creates a
+  USER account. Social provider login and staff account handling are blocked from
+  verification without real provider credentials.
+
+2. Public advert browsing and subscription
+- User actions: signed-out visitors can browse listed adverts, see platform
+  availability, and start sign-in; signed-in users can subscribe per platform.
+- Routes/components: /, src/app/page.tsx, src/app/me/widgets.tsx,
+  src/lib/user-subscriptions.ts.
+- Status: Implemented in code. Destination and subscription behavior is server
+  enforced through the current authenticated user; WhatsApp requires a confirmed
+  active subscriber number.
+- Limitations: listed adverts depend on a DRAFT advert whose listedAt is set,
+  and platforms depend on channel handles. Real delivery remains unverified.
+
+3. WhatsApp topic subscriptions without a full account
+- User actions: choose name, phone, town and interests; record consent; confirm
+  ownership by sending JOIN; manage topics or unsubscribe with a secret link.
+- Routes/components: /subscribe, /subscribe/manage/[token],
+  src/app/subscribe/page.tsx, src/app/subscribe/forms.tsx,
+  src/app/subscribe/actions.ts, src/lib/policy/subscriptions.ts.
+- Status: Implemented in code with policy checks and tests. The WhatsApp
+  confirmation and STOP webhooks require live Meta configuration.
+- Limitations: public subscription topics depend on seeded or admin-created
+  Interest records; live phone delivery requires a connected WhatsApp account,
+  approved template, and webhook setup.
+
+4. Signed-in user dashboard
+- User actions: subscribe/unsubscribe per advert and platform; link or remove
+  WhatsApp; add Facebook, Instagram, X, or TikTok handles; manage active
+  sessions; view delivery/feed and activity.
+- Routes/components: /me, /me/profile,
+  src/app/me/page.tsx, src/app/me/profile/page.tsx,
+  src/app/me/actions.ts, src/app/me/profile/form.tsx.
+- Status: Implemented in code and server-authorized by viewer ID.
+- Limitations: handle delivery depends on platform API permissions and connected
+  business accounts. A user account has no billing, plan, or usage page.
+
+5. Advert creation, review and publishing
+- User actions: enter details/topics/platforms/caption, generate or upload
+  platform-specific media, preview, save drafts, publish now or schedule.
+- Routes/components: /create and /posts, src/app/(dashboard)/create/*,
+  src/app/(dashboard)/posts/*, src/lib/adverts.ts,
+  src/lib/policy/review.ts, src/lib/ai/openai.ts.
+- Status: Partially implemented. UI, server actions, policy checks, draft storage,
+  scheduling, and worker jobs are implemented. Live social publishing is
+  unverified and generation is blocked without OpenAI credentials.
+- Limitations: worker and Redis/Postgres must be available; Instagram requires
+  media; WhatsApp template setup is required for audience campaigns; image
+  storage is in Postgres rather than object storage.
+
+6. Social channels and recurring schedules
+- User actions: manage Meta/X/TikTok container settings, type account handles,
+  connect/disconnect accounts, create platform-specific adverts, and configure
+  once/daily/weekly/monthly schedules.
+- Routes/components: /channels, src/app/(dashboard)/channels/*,
+  src/lib/channels.ts, src/lib/handles.ts.
+- Status: Implemented in code with schedule unit tests. Live account connection
+  and live publishing remain unverified.
+- Limitations: scheduling does nothing unless the worker runs; recurring X posts
+  may fail if identical content is blocked as a duplicate; TikTok posts may be
+  restricted until app audit.
+
+7. Ordinary posts and stories
+- User actions: create feed posts or supported stories, upload/generate media,
+  publish now or schedule, and view per-platform result.
+- Routes/components: /posts, src/app/(dashboard)/posts/*,
+  src/lib/policy/rules.ts, src/worker/index.ts.
+- Status: Partially implemented. Post creation, storage, checks and worker
+  dispatch exist. Facebook/Instagram stories and each platform live API result
+  are unverified without provider credentials.
+- Limitations: WhatsApp Status and X/TikTok stories are not supported by their
+  APIs; only Facebook and Instagram stories are valid where accounts are
+  connected.
+
+8. Audience and campaign approvals
+- User actions: admins add/import people, manage topics/templates, review
+  subscriber flags, approve/reject advert sends, and view delivery status.
+- Routes/components: /audience, /approvals,
+  src/app/(dashboard)/audience/*, src/app/(dashboard)/approvals/*,
+  src/lib/audience.ts, src/lib/campaigns.ts.
+- Status: Implemented in code with focused policy/audience tests. Live WhatsApp
+  delivery, Meta receipts, STOP handling, and template approval are unverified.
+- Limitations: approval and sending depend on WhatsApp configuration/webhooks;
+  Meta may throttle marketing messages.
+
+9. Admin notifications and activity
+- User actions: admins view unread notifications and activity/session logs.
+- Routes/components: /admin, /admin/notifications, /admin/logs,
+  /admin/logs/export, /admin/users, /admin/roles,
+  src/app/(dashboard)/admin/*, src/lib/activity.ts, src/lib/audit-core.ts.
+- Status: Implemented in code. Focused authorization and audit unit tests pass.
+- Exceptions: actual live usage and high-volume log/export behavior are
+  unverified.
+
+10. Accounts redirect
+- Route: /accounts redirects to /channels; implementation:
+  src/app/(dashboard)/accounts/page.tsx.
+- Status: Implemented. Do not advertise /accounts independently.
+
+11. Analytics, reports and dashboard metrics
+- User actions: staff sees channel counts, content totals, upcoming schedules,
+  recent delivery results, and activity/session exports.
+- Routes: /admin, /admin/logs, /admin/logs/export, /posts.
+- Status: Partially implemented. Operational metrics exist; there is no
+  third-party analytics or advertising-performance analytics module identified.
+
+12. Onboarding and help
+- No dedicated onboarding wizard, help center, documentation route, or terms
+  guide was found. Existing login/subscribe/forms provide contextual instructions.
+- Status: Partially implemented or planned. README is the main setup documentation.
+
+C. SOCIAL PLATFORM INTEGRATIONS
+
+Common integration dependency
+- No live integration should be claimed without credentials and provider testing.
+  The worker uses BullMQ/Redis and the relevant API client; integration code exists
+  in src/lib/meta, src/lib/x.ts, src/lib/tiktok.ts, src/lib/tokens.ts, and
+  src/worker/index.ts.
+
+Facebook
+- Package/API: Meta Graph API, native fetch wrappers, src/lib/meta/*.
+- Authentication: Meta OAuth / app credentials, OAuth or an environment token for
+  handle connection. Scopes include Pages and posting permissions described in
+  README and src/lib/meta/oauth.ts.
+- Operations: connect matching Page, create feed posts, photo stories.
+- Status: Partially implemented/unverified. Mock platform testing is documented;
+  live App Review/Business Verification and credentials are required.
+- Known restrictions: Page ownership, app permissions, linked Instagram account
+  requirements, and Graph API version changes.
+
+Instagram
+- Package/API: Meta Graph/Instagram Content Publishing API.
+- Authentication: Facebook Login/Meta OAuth and linked professional Instagram
+  account.
+- Operations: image feed posts and stories, limited direct-to-user mention
+  delivery for subscribed users, webhook comment TODO remains.
+- Status: Partially implemented/unverified. Text-only posts are not supported by
+  policy review; a public image URL is required.
+- Restrictions: professional account linked to a Facebook Page; publish limits,
+  connected account permissions, and app review.
+
+WhatsApp
+- Package/API: Meta WhatsApp Cloud API, src/lib/meta/whatsapp.ts.
+- Authentication: permanent/business/system-user token, OAuth token, or manual
+  phone number ID/token.
+- Operations: text, image and template messages; delivery webhooks; STOP/MANAGE
+  handling; subscriber campaign delivery.
+- Status: Partially implemented/unverified. Template approval, live phone number,
+  webhook setup and marketing message permissions are required.
+- Restrictions: free-form messaging generally depends on recipient contact within
+  a 24-hour window; templates are needed outside it.
+
+X (Twitter)
+- Package/API: X API v2, native fetch plus OAuth 2.0 PKCE / OAuth 1.0a helpers;
+  src/lib/x.ts.
+- Authentication: X_CLIENT_ID / X_CLIENT_SECRET for OAuth, X API keys/access
+  secrets or connected OAuth for posting and DMs.
+- Operations: feed posts, media upload, OAuth account connection, refresh tokens,
+  X direct message delivery where permitted.
+- Status: Partially implemented/unverified. Unit tests cover signatures and
+  OAuth-related helpers; live paid plan/app access and live posting are required.
+- Restrictions: paid API plan may be required; dm.read/dm.write scopes and a
+  recipient permission policy apply; repeating identical posts can be rejected.
+
+TikTok
+- Package/API: TikTok Login Kit / Content Posting API, src/lib/tiktok.ts.
+- Authentication: TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET and refresh token via
+  OAuth connection.
+- Operations: photo posts, account lookup, refresh token support.
+- Status: Partially implemented/unverified. Live app audit, publishing approval,
+  verified domain, and credentials are required.
+- Restrictions: posts are SELF_ONLY before audit by default; privacy level and
+  public media URL requirements apply.
+
+Google social login
+- Package/API: Auth.js Google provider, src/auth.ts.
+- Status: Implemented as a conditional provider, Blocked for use until both
+  Google OAuth environment values are configured; live callback is
+  <AUTH_URL>/api/auth/callback/google. It is not a social publishing integration.
+
+Facebook login as user sign-in
+- Package/API: Auth.js Facebook provider.
+- Status: Implemented as a conditional provider, Blocked for use until Facebook
+  login environment values are configured; callback is
+  <AUTH_URL>/api/auth/callback/facebook.
+
+D. AUTOMATION AND BACKEND
+
+Framework and architecture
+- Next.js 15 App Router, React 19, TypeScript, Tailwind CSS 4.
+- Server Components, Server Actions, API route handlers, middleware, Auth.js v5.
+- PostgreSQL 16 plus Prisma 6.16.2.
+- Redis 7 plus BullMQ 5.58.5 for publishing, campaign, handle delivery and delayed
+  queue jobs.
+- BullMQ workers run separately; Next.js itself does not perform scheduled sends.
+
+Important API/routes
+- Auth: GET/POST /api/auth/[...nextauth]
+- Media public retrieval: GET /api/media/[id]
+- Upload: POST /api/uploads
+- Meta OAuth connect/callback: GET /api/meta/connect,
+  GET /api/meta/callback
+- X OAuth connect/callback: GET /api/x/connect, GET /api/x/callback
+- TikTok OAuth connect/callback: GET /api/tiktok/connect,
+  GET /api/tiktok/callback
+- Meta webhooks: GET/POST /api/webhooks/meta
+
+Background automation
+- Three BullMQ queue types: publish-post, send-campaign, deliver-subscription.
+- src/worker/index.ts runs workers, channel schedule checks, requeue safety,
+  audience matching, delivery handling, and unconfirmed-subscription expiration.
+- The default scheduler tick is 30 seconds via SCHEDULER_TICK_MS.
+- requeueMissed queues due missed sends when Redis/worker availability resumes.
+- No n8n configuration or integration is present in package dependencies or
+  source code. Status: Not configured / not integrated.
+
+Authentication/session
+- Credentials plus Google/Facebook OAuth. Each sign-in creates a UserSession and
+  ActivityLog row. Signed cookie stores a session ID rather than relying on
+  mutable JWT role claims.
+- Server and page actions validate active database session and current role.
+  Sessions expire after 30 days, lastSeen is throttled, and users/staff can revoke
+  sessions.
+- Staff cannot sign in via social providers for an existing password account in
+  order to avoid account takeover. Social accounts are linked by provider and
+  provider account ID.
+
+External services
+- OpenAI for image generation and moderation.
+- Meta, X, and TikTok APIs for account connection/publishing.
+- PostgreSQL and Redis for state/jobs.
+- Cloudflare tunnel/hosting instructions are documentation only; no deployment
+  integration is verified here.
+
+Environment variable names only
+- Core: DATABASE_URL, REDIS_URL, AUTH_SECRET, AUTH_URL, AUTH_TRUST_HOST,
+  ALLOWED_DEV_ORIGINS.
+- Auth/social login: AUTH_GOOGLE_ID, AUTH_GOOGLE_SECRET,
+  AUTH_FACEBOOK_ID, AUTH_FACEBOOK_SECRET, MOCK_OAUTH_URL.
+- Seed/branding/settings: ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME,
+  BRAND_NAME, APP_TIMEZONE.
+- Encryption: TOKEN_ENCRYPTION_KEY.
+- Meta: META_APP_ID, META_APP_SECRET, META_GRAPH_API_VERSION,
+  META_WEBHOOK_VERIFY_TOKEN, META_LOGIN_CONFIG_ID,
+  META_SYSTEM_USER_TOKEN, META_GRAPH_BASE_URL, META_DIALOG_BASE_URL,
+  WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID,
+  WHATSAPP_ACCESS_TOKEN, PUBLIC_BASE_URL.
+- OpenAI: OPENAI_API_KEY, OPENAI_IMAGE_MODEL, OPENAI_IMAGE_QUALITY,
+  IMAGE_DAILY_LIMIT, OPENAI_BASE_URL.
+- X: X_CLIENT_ID, X_CLIENT_SECRET, X_API_KEY, X_API_SECRET,
+  X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET, X_AUTH_BASE_URL, X_API_BASE_URL.
+- TikTok: TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, TIKTOK_REFRESH_TOKEN,
+  TIKTOK_PRIVACY_LEVEL, TIKTOK_AUTH_BASE_URL, TIKTOK_API_BASE_URL.
+- Scheduler/audience: SCHEDULER_TICK_MS, DEFAULT_COUNTRY_CODE,
+  AUDIENCE_MIN_HOURS_BETWEEN_MESSAGES, AUDIENCE_WHATSAPP_TEMPLATE,
+  AUDIENCE_WHATSAPP_TEMPLATE_LANG.
+
+E. PRICING AND COMMERCIAL INFORMATION
+
+- Existing plans/prices: Unknown — no pricing page, Stripe/payment dependency,
+  subscription plan model, checkout route, or billing implementation found.
+- Trial periods: Unknown — not implemented or documented as verified.
+- Usage limits: IMAGE_DAILY_LIMIT defaults to 20 generated images per 24 hours;
+  this is the only explicit application usage limit found and relates to AI image
+  generation, not a commercial plan.
+- Advertising platform API plans and costs are separate external requirements,
+  especially X API; no application price can be inferred.
+
+F. SECURITY, PRIVACY AND TRUST
+
+Authentication/authorization
+- Current database-backed sessions and server role checks are implemented.
+- Super-admin-only operations are checked by requireSuperAdmin/server actions.
+- Middleware is coarse and access decisions are repeated on the server.
+- Passwords are bcrypt hashed. Social staff takeover by matching email is refused.
+- Open redirect risk is reduced by safe callback path checks.
+
+Social token handling
+- Platform access/refresh tokens are encrypted with AES-256-GCM before storage,
+  when stored through the SocialAccount token helpers.
+- X/TikTok refresh paths exist and token refresh failures can block delivery until
+  credentials reconnect; README describes token-health alerting as future work.
+- Webhook Meta signatures use X-Hub-Signature-256 verification.
+
+Data storage/deletion
+- PostgreSQL stores application, consent, sessions, audits, subscriber, campaign,
+  and media records; image bytes are stored in Postgres.
+- Admins can delete an Audience Subscriber record, which cascades data depending
+  on Prisma relations. User account deletion is not advertised or implemented as
+  a complete self-service account-deletion flow in the inspected code.
+- WhatsApp unsubscribe and user-level subscription removal are implemented.
+- Users can unlink WhatsApp and remove saved social handles. Admins can disconnect
+  connected social accounts. These operations remove app associations; provider
+  OAuth/app consent cannot be revoked by the repository alone and requires the
+  provider account controls.
+- Users can revoke one or other active sessions.
+
+Privacy/terms
+- No public privacy policy or terms-of-service route/page was found.
+- The public subscription records consent text/time/IP/source and supports STOP/
+  unsubscribe, subject to live Meta webhook processing.
+- Do not make a GDPR/CCPA/legal-compliance or "fully secure" claim without legal
+  and implementation review.
+
+G. ROUTES AND USER JOURNEY
+
+Public routes
+- / : public advert list; also redirects signed-out? Code landing page renders
+  adverts itself and links to /login or /subscribe. A staff/user dashboard link
+  is shown when signed in.
+- /subscribe : public WhatsApp topic subscription form.
+- /subscribe/manage/[token] : secret-token subscription management.
+- /login : sign-in/create account.
+- /api/auth/[...nextauth] : authentication handlers.
+- /api/webhooks/meta : Meta webhook verification and events.
+- /api/media/[id] : public media retrieval, with blocked media denied.
+
+User routes (server-access checked)
+- /me : advert subscriptions and received-items feed.
+- /me/profile : profile/social handles and preferences.
+
+Main staff routes
+- /admin : admin overview and quick actions.
+- /create : advert and AI media creation.
+- /posts : ordinary post/story scheduling and status.
+- /channels : social account and schedule management.
+- /audience : subscribers/topics/template management.
+- /approvals : subscription and campaign approvals.
+- /admin/adverts : advert management.
+- /admin/notifications : staff notifications.
+- /accounts : redirects to /channels; legacy route only.
+
+Super-admin/internal routes
+- /admin/super-admin : super-admin overview; not ordinary public content.
+- /admin/users : user/session/subscription/activity management.
+- /admin/roles : role promotion/demotion.
+- /admin/logs : activity/session audit logs.
+- /admin/logs/export : authenticated staff CSV export, server-authorized.
+
+Relevant API routes
+- /api/uploads (staff upload).
+- /api/meta/connect and /api/meta/callback.
+- /api/x/connect and /api/x/callback.
+- /api/tiktok/connect and /api/tiktok/callback.
+
+Real primary public CTAs
+- Signed-out: "Create a free account" -> /login?mode=signup.
+- Signed-out: "Sign in to subscribe" -> /login with callback URL to the advert card.
+- "No account? Get offers by topic on WhatsApp" -> /subscribe.
+- Existing user sign-in links -> /login; /login is redirected to dashboard when
+  already signed in.
+- Destinations for sign-in and account creation are implemented; live OAuth
+  providers are conditional on credentials.
+
+H. LANDING PAGE CONTENT RECOMMENDATIONS
+
+Suggested headline (strictly based on implemented capabilities)
+- "Create, schedule and manage adverts across your connected channels"
+
+Alternative verified-value headline
+- "Choose an advert channel, reach your audience, and see every send's status"
+
+Concise value proposition
+- A role-aware dashboard that combines advert creation, AI/media policy review,
+  channel schedules, WhatsApp audience subscriptions, campaign approvals and
+  delivery status reporting.
+
+Defensible benefits (3-6)
+1. Create and preview adverts with platform-specific content and technical checks.
+2. Schedule posts and channel runs through a Redis/BullMQ background worker.
+3. Let users subscribe to adverts on their chosen platform.
+4. Manage WhatsApp topic subscribers, consent, ownership confirmation, and opt-out.
+5. Review audience sends before delivery when approval is required.
+6. View recent posts, delivery outcomes, sessions and activity from one dashboard.
+
+Strongest verified features to highlight
+- Advert creation and platform policy review.
+- Public `/subscribe` WhatsApp topic workflow.
+- Channel schedule management.
+- User per-platform subscriptions.
+- Audience campaign approvals and status.
+- Database-backed staff/user authorization and activity logs.
+
+Simple how-it-works explanation
+1. Staff create an advert and review platform checks.
+2. Staff connect accounts and configure channels/schedules.
+3. Users or WhatsApp-only subscribers choose matching adverts/topics.
+4. The background worker sends, posts or proposes the delivery according to
+   schedule and approval rules.
+5. The dashboard reports platform-specific success or failure.
+
+Platform names/logos safe to display
+- The application has explicit integration code/UI for Facebook, Instagram,
+  WhatsApp, X, and TikTok. Their names can be identified as intended integrations,
+  but only after clearly qualifying that live connection/publishing is
+  unverified. Avoid success claims, live delivery counts, or badges such as
+  "connected" until credentials and live testing exist.
+- Google and Facebook login providers may be named only as optional sign-in
+  options; both are currently credential-blocked in the inspected environment.
+
+Best existing onboarding CTA
+- Primary: "Create a free account" -> /login?mode=signup.
+- Secondary no-account route: "Get offers by topic on WhatsApp" -> /subscribe.
+- Signed-out advert card: "Sign in to subscribe" -> /login with callback.
+- Do not advertise a paid subscription or paid plan CTA because none is implemented.
+
+Truthful FAQ candidates
+- How do I subscribe? Choose an advertised channel or use /subscribe for
+  WhatsApp topics.
+- Which platforms are supported? Facebook, Instagram, WhatsApp, X, and TikTok
+  have integration code; live availability depends on configuration.
+- Do I need a password for WhatsApp offers? No. Use /subscribe and confirm a
+  WhatsApp ownership code.
+- Can I stop messages? Replies/actions support STOP and unsubscribe workflows;
+  the account dashboard also supports unsubscribing.
+- Does scheduling work automatically? It requires the web app, Redis, and the
+  separate worker process running.
+- Are AI checks guaranteed? No. The app has fail-closed moderation/policy rules,
+  but it cannot guarantee provider or legal compliance.
+
+Information to omit until verified
+- Live posts delivered or real delivery statistics.
+- Number of customers, success rates, testimonials, or platform integration
+  certifications.
+- "Free," trials, paid tiers, prices, or billing unless a commercial implementation
+  is added and verified.
+- Privacy/legal guarantees, despite consent and token controls being present.
+- Google/Gmail or Facebook sign-in buttons as available when provider credentials
+  are absent. Gmail in particular has no separate implementation; Google OAuth
+  is the Google Gmail/Google-account sign-in mechanism.
+
+I. CURRENT PROJECT HEALTH AND LIMITATIONS
+
+Verified successful checks
+- npm run typecheck: passed (no TypeScript errors).
+- npm test: passed. The suite executed policy review, schedule, handle, audience,
+  subscription, advert prompt, X, dashboard series, session and audit tests; all
+  shown cases passed.
+- npm run build: FAILED. Compilation completed and lint/type collection began,
+  but Next.js failed while collecting page data for /admin/adverts.
+  Complete reported error:
+  "PageNotFoundError: Cannot find module for page: /admin/adverts"
+  followed by:
+  "PageNotFoundError: Cannot find module for page: /accounts"
+  and:
+  "Build error occurred. Failed to collect page data for /admin/adverts"
+  Both source page files exist and compiled route output for both paths was created
+  under .next/server/app/(dashboard)/..., but the generated app-paths manifest did
+  not contain a complete route listing at failure time. This is a build/runtime
+  route-discovery error; no source routing fix was attempted or applied.
+
+Build warnings encountered during compilation
+- BullMQ: dynamic child processor dependency warning in node_modules.
+- jose/Auth.js: CompressionStream/DecompressionStream are mentioned as Node APIs
+  not supported in Edge Runtime context. These were build warnings, not yet a
+  confirmed application runtime failure.
+
+Main configuration blockers
+- AUTH_GOOGLE_ID and AUTH_GOOGLE_SECRET are empty, so Google/Gmail sign-in is
+  conditional and unavailable in the inspected environment.
+- AUTH_FACEBOOK_ID and AUTH_FACEBOOK_SECRET are empty, so Facebook login is
+  unavailable.
+- Social platform credentials/API permissions are not verified as live from this
+  repository inspection.
+- OpenAI credentials may be absent; generation is designed to fail closed and
+  show an error.
+- Redis/Postgres and the separate worker must be running for scheduling/delivery.
+- WhatsApp template, live phone number, approval and webhook setup are external
+  requirements not established as live here.
+- Meta, X, and TikTok live account publishing and app approval are unverified.
+- n8n is not configured.
+- There is no pricing/billing integration.
+- There is no privacy/terms route or complete self-service account deletion route.
+
+Existing landing page status
+- Implemented: src/app/page.tsx contains a live advert listing and marketing-style
+  hero/CTA, and signed-out users are not sent to /login by the page itself.
+- Public account sign-up and the WhatsApp subscriber route exist, so their
+  destinations are verifiable.
+- The landing page can change based on database state: without listed adverts it
+  shows "New adverts are on their way."
+- No browser/live screenshot verification was performed in this inspection task.
+
+Data/operational limitations
+- MediaAssets are stored in PostgreSQL; README identifies object storage as a
+  scalability improvement.
+- Repeated/failed source checks remain explicit in the README and should not be
+  silently treated as fixed in landing-page copy.
+- Webhook TODOs remain for Page/Instagram comments and inbound processing beyond
+  WhatsApp status/STOP behavior.
+
+Evidence locations
+- Project overview: README.md
+- Landing page: src/app/page.tsx
+- Login/auth: src/app/login/page.tsx, src/app/login/actions.ts, src/auth.ts,
+  src/auth.config.ts, src/middleware.ts
+- User area: src/app/me/page.tsx, src/app/me/profile/page.tsx
+- Subscriber area: src/app/subscribe/page.tsx, src/app/subscribe/actions.ts
+- Staff area: src/app/(dashboard)/admin/page.tsx,
+  src/app/(dashboard)/create/, src/app/(dashboard)/channels/,
+  src/app/(dashboard)/audience/, src/app/(dashboard)/approvals/,
+  src/app/(dashboard)/posts/
+- Database: prisma/schema.prisma and prisma/migrations/
+- Worker: src/worker/index.ts, src/lib/queue.ts, src/lib/dispatch.ts
+- Integrations: src/lib/meta/, src/lib/x.ts, src/lib/tiktok.ts
+- Tests: package.json, src/lib/*.test.ts, src/lib/policy/*.test.ts

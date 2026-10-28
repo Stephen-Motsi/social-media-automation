@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { logActivity, requireStaff, requireSuperAdmin } from "@/lib/session";
+import { logActivity, requireStaff, withAdminAudit } from "@/lib/session";
 import { advertStatus, cancelPendingSends, postAdvertToPlatforms, publishAdvert, type PlatformOutcome } from "@/lib/adverts";
 import { reasonFor } from "@/lib/errors";
 
@@ -67,40 +67,57 @@ export async function postNow(advertId: string): Promise<PublishState> {
 // ---- Users ---------------------------------------------------------------------------
 
 export async function signOutEverywhere(userId: string): Promise<AdminState> {
-  const actor = await requireSuperAdmin();
-  const target = await prisma.user.findUnique({ where: { id: userId } });
-  if (!target) return { error: "User not found." };
-  const res = await prisma.userSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
-  await logActivity(userId, "SESSIONS_REVOKED", { by: actor.email, count: res.count }, actor.id);
-  refresh();
-  return { ok: true, message: `Signed out of ${res.count} ${res.count === 1 ? "session" : "sessions"}.` };
+  const result = await withAdminAudit<AdminState>("SESSIONS_REVOKED", async (tx) => {
+    const target = await tx.user.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!target) return { result: { error: "User not found." }, event: null };
+    const res = await tx.userSession.updateMany({ where: { userId: target.id, revokedAt: null }, data: { revokedAt: new Date() } });
+    return {
+      result: { ok: true, message: `Signed out of ${res.count} ${res.count === 1 ? "session" : "sessions"}.` },
+      event: res.count ? { action: "SESSIONS_REVOKED", targetUserId: target.id, detail: { count: res.count } } : null,
+    };
+  });
+  if (result?.ok) refresh();
+  return result;
 }
 
 // Signs out one device. Session management is reserved for super admins.
 export async function revokeUserSession(sessionId: string): Promise<AdminState> {
-  const actor = await requireSuperAdmin();
-  const session = await prisma.userSession.findUnique({ where: { id: sessionId }, include: { user: true } });
-  if (!session) return { error: "Session not found." };
-  if (session.revokedAt) return { ok: true, message: "Already signed out." };
-  await prisma.userSession.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
-  await logActivity(session.userId, "SESSION_REVOKED", { by: actor.email, session: sessionId.slice(-6) }, actor.id);
-  refresh();
-  return { ok: true, message: "Signed out." };
+  const result = await withAdminAudit<AdminState>("SESSION_REVOKED", async (tx) => {
+    const session = await tx.userSession.findUnique({ where: { id: sessionId }, select: { id: true, userId: true, revokedAt: true } });
+    if (!session) return { result: { error: "Session not found." }, event: null };
+    if (session.revokedAt) return { result: { ok: true, message: "Already signed out." }, event: null };
+    const revoked = await tx.userSession.updateMany({
+      where: { id: session.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (!revoked.count) return { result: { ok: true, message: "Already signed out." }, event: null };
+    return {
+      result: { ok: true, message: "Signed out." },
+      event: { action: "SESSION_REVOKED", targetUserId: session.userId, detail: null },
+    };
+  });
+  if (result?.ok) refresh();
+  return result;
 }
 
 // ---- Roles (super admin only) ------------------------------------------------------------
 
 export async function setRole(userId: string, role: "USER" | "ADMIN"): Promise<AdminState> {
-  const actor = await requireSuperAdmin();
-  if (userId === actor.id) return { error: "You can't change your own role." };
-  if (role !== "USER" && role !== "ADMIN") return { error: "Unknown role." };
-  const target = await prisma.user.findUnique({ where: { id: userId } });
-  if (!target) return { error: "User not found." };
-  if (target.role === "SUPER_ADMIN") return { error: "The super admin's role can't be changed here." };
-  if (target.role === role) return { ok: true };
-  await prisma.user.update({ where: { id: userId }, data: { role } });
-  // Takes effect on their next request: roles are read from the database every time.
-  await logActivity(userId, "ROLE_CHANGE", { from: target.role, to: role, by: actor.email }, actor.id);
-  refresh();
-  return { ok: true, message: `${target.name ?? target.email} is now ${role === "ADMIN" ? "an admin" : "a user"}.` };
+  const result = await withAdminAudit<AdminState>("ROLE_CHANGE", async (tx, actor) => {
+    if (userId === actor.id) return { result: { error: "You can't change your own role." }, event: null };
+    if (role !== "USER" && role !== "ADMIN") return { result: { error: "Unknown role." }, event: null };
+    const target = await tx.user.findUnique({ where: { id: userId }, select: { id: true, name: true, email: true, role: true } });
+    if (!target) return { result: { error: "User not found." }, event: null };
+    if (target.role === "SUPER_ADMIN") {
+      return { result: { error: "The super admin's role can't be changed here." }, event: null };
+    }
+    if (target.role === role) return { result: { ok: true }, event: null };
+    await tx.user.update({ where: { id: target.id }, data: { role } });
+    return {
+      result: { ok: true, message: `${target.name ?? target.email} is now ${role === "ADMIN" ? "an admin" : "a user"}.` },
+      event: { action: "ROLE_CHANGE", targetUserId: target.id, detail: { from: target.role, to: role } },
+    };
+  });
+  if (result?.message) refresh();
+  return result;
 }
