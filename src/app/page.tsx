@@ -6,6 +6,7 @@ import { getViewer, isStaff } from "@/lib/session";
 import { PlatformBadge, platforms } from "@/components/platforms";
 import { prisma } from "@/lib/db";
 import { PlatformToggle, SubscribeAll } from "./me/widgets";
+import { HomeExperience } from "./home-experience";
 
 export const dynamic = "force-dynamic";
 
@@ -28,53 +29,8 @@ export default async function LandingPage({ searchParams }: { searchParams: Prom
 
   return (
     <div className="min-h-screen pb-16">
-      <header className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 pt-6">
-        <span className="font-semibold tracking-tight">{BRAND}</span>
-        <nav className="flex items-center gap-2 text-sm">
-          {dashboard ? (
-            <>
-              {dashboard === "/me" && (
-                <Link href="/me/profile" className="rounded-full px-3 py-2 text-ink-soft hover:bg-white/40 hover:text-ink dark:hover:bg-white/10">
-                  Profile
-                </Link>
-              )}
-              <Link href={dashboard} className="rounded-full bg-ink px-4 py-2 font-medium text-white dark:bg-white dark:text-ink">
-                {dashboard === "/me" ? "My adverts" : "Admin"}
-              </Link>
-            </>
-          ) : (
-            <>
-              <Link href="/login" className="rounded-full px-3 py-2 text-ink-soft hover:bg-white/40 hover:text-ink dark:hover:bg-white/10">
-                Sign in
-              </Link>
-              <Link href="/login?mode=signup" className="blend-meta rounded-full px-4 py-2 font-medium text-white shadow-md shadow-fuchsia-500/25">
-                Create account
-              </Link>
-            </>
-          )}
-        </nav>
-      </header>
-
+      <HomeExperience brand={BRAND} dashboard={dashboard} />
       <main className="mx-auto max-w-6xl px-4">
-
-        <section className="pt-14 pb-10">
-          <h1 className="max-w-3xl text-4xl font-semibold tracking-tight sm:text-6xl">Pick the adverts you want, where you want them</h1>
-          <p className="mt-4 max-w-2xl text-lg text-ink-soft">
-            Subscribe to an advert on Facebook, Instagram, WhatsApp, X or TikTok. WhatsApp adverts come straight to your
-            number; on the other platforms you&rsquo;ll see where each one is posted.
-          </p>
-          <div className="mt-6 flex flex-wrap gap-3">
-            <Link
-              href={dashboard === "/me" ? "#adverts" : dashboard ?? "/login?mode=signup"}
-              className="blend-meta rounded-full px-6 py-3 font-medium text-white shadow-md shadow-fuchsia-500/25"
-            >
-              {dashboard === "/me" ? "Choose adverts below" : dashboard ? "Go to admin" : "Create a free account"}
-            </Link>
-            <Link href="/subscribe" className="rounded-full px-5 py-3 text-ink-soft hover:text-ink">
-              No account? Get offers by topic on WhatsApp
-            </Link>
-          </div>
-        </section>
 
         {adverts.length === 0 ? (
           <p className="glass rounded-[28px] px-6 py-12 text-center text-ink-soft">New adverts are on their way.</p>

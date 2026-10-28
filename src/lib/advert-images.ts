@@ -5,6 +5,7 @@ import { imageInfo } from "@/lib/media";
 import { blockedEverywhere, reviewContent, reviewPrompt } from "@/lib/policy/review";
 import type { Issue, PlatformVerdict } from "@/lib/policy/rules";
 import { platformShape } from "@/lib/advert-prompt";
+import { composeAdvertImage, type AdvertCopy } from "@/lib/advert-compositor";
 
 // Images for one platform's advert: generated from a prompt, refined with an instruction, or uploaded.
 // Every result is checked against that platform's rules for its format (post or story).
@@ -75,7 +76,14 @@ async function store(
   };
 }
 
-export async function generateAdvertImage(userId: string, prompt: string, platform: Platform, format: PostFormat, caption = ""): Promise<ImageResult> {
+export async function generateAdvertImage(
+  userId: string,
+  prompt: string,
+  platform: Platform,
+  format: PostFormat,
+  caption = "",
+  copy?: AdvertCopy,
+): Promise<ImageResult> {
   const text = prompt.trim();
   if (text.length < 3) return { ok: false, error: "Describe the advert image in a few words." };
   if (text.length > 1000) return { ok: false, error: "Keep the description under 1,000 characters." };
@@ -84,7 +92,8 @@ export async function generateAdvertImage(userId: string, prompt: string, platfo
   const blocked = await screen(text);
   if (blocked) return blocked;
   try {
-    const bytes = await generateImage(text, shapeForChannel(platform, format));
+    const background = await generateImage(text, shapeForChannel(platform, format));
+    const bytes = copy ? await composeAdvertImage(background, platform, format, copy) : background;
     return store(new Uint8Array(bytes), { userId, source: "GENERATED", prompt: text, caption }, platform, format);
   } catch (err) {
     return { ok: false, error: openAiError(err) };

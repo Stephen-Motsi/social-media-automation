@@ -1,7 +1,6 @@
 import type { Platform } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { displayHandle, handleMatches, profileUrl } from "@/lib/handles";
-import { schedulePost } from "@/lib/queue";
 import { proposeCampaign, whatsappNotReady } from "@/lib/audience";
 import { formatWhen, QueueUnavailable, reasonFor } from "@/lib/errors";
 import { platformRules, type PlatformVerdict } from "@/lib/policy/rules";
@@ -86,6 +85,7 @@ export async function postAdvertToPlatforms(advertId: string, at?: Date | null):
     });
     const at = when ? `at ${formatWhen(when)}` : "now";
     try {
+      const { schedulePost } = await import("@/lib/queue");
       await schedulePost(post.id, when);
       outcomes.push({ platform, ok: true, message: `${when ? "Scheduled" : "Posting"} on ${name} ${at}.` });
     } catch (err) {

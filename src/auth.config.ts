@@ -4,7 +4,7 @@ import type { NextAuthConfig } from "next-auth";
 // Middleware only does coarse routing from the signed token; every page and action re-checks
 // the session and role against the database on the server (src/lib/session.ts).
 
-const PUBLIC = [/^\/$/, /^\/subscribe(\/|$)/, /^\/login$/, /^\/api\/auth\//, /^\/api\/webhooks\//, /^\/api\/media\//];
+const PUBLIC = [/^\/$/, /^\/features$/, /^\/how-it-works$/, /^\/platforms$/, /^\/pricing$/, /^\/about$/, /^\/subscribe(\/|$)/, /^\/login$/, /^\/api\/auth\//, /^\/api\/webhooks\//, /^\/api\/media\//];
 export const STAFF_ROLES = ["ADMIN", "SUPER_ADMIN"];
 
 export const authConfig = {

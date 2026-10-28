@@ -92,7 +92,7 @@ export function DashboardShell({
     });
 
   return (
-    <div className="min-h-screen">
+    <div className={`dashboard-premium min-h-screen ${superAdmin ? "dashboard-super-admin" : ""}`}>
       {mobileOpen && <button type="button" aria-label="Close navigation" className="fixed inset-0 z-30 bg-ink/35 backdrop-blur-sm md:hidden" onClick={() => setMobileOpen(false)} />}
       <aside className={`glass fixed inset-y-0 left-0 z-40 flex w-72 flex-col rounded-none border-y-0 border-l-0 p-4 transition-[width,transform] duration-200 md:w-64 md:translate-x-0 ${collapsed ? "md:w-20" : ""} ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <Link href="/" className={`mb-8 flex h-12 items-center gap-3 px-2 font-semibold tracking-tight ${collapsed ? "md:justify-center md:px-0" : ""}`}>

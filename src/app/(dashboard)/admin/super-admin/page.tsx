@@ -134,9 +134,12 @@ export default async function SuperAdminPage({ searchParams }: { searchParams: P
           <h2 className="mt-1 text-3xl font-semibold tracking-tight sm:text-4xl">Good {greeting(now)}, admin</h2>
           <p className="mt-2 text-sm text-ink-soft">Monitor publishing, accounts and platform activity in one place.</p>
         </div>
-        <Link href="/admin/roles" className="blend-meta inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-fuchsia-500/20">
-          Manage roles <span aria-hidden>→</span>
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/create" className="rounded-full border border-line bg-white/55 px-4 py-2.5 text-sm font-medium dark:bg-white/10">Create advert</Link>
+          <Link href="/admin/roles" className="blend-meta inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-fuchsia-500/20">
+            Manage roles <span aria-hidden>→</span>
+          </Link>
+        </div>
       </section>
 
       <section aria-label="Platform metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

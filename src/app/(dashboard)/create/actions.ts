@@ -69,11 +69,40 @@ async function reviewPerPlatform(caption: string, media: Partial<Record<Platform
 }
 
 // Creates the image for one platform from the advert's details: its shape, its style, its rules.
-export async function generatePlatformImageAction(input: { platform: Platform; format: "POST" | "STORY"; prompt: string; caption: string }): Promise<ImageResult> {
+export async function generatePlatformImageAction(input: {
+  platform: Platform;
+  format: "POST" | "STORY";
+  prompt: string;
+  caption: string;
+  headline?: string;
+  offer?: string;
+  supporting?: string;
+  cta?: string;
+  handle?: string;
+  accountId?: string;
+}): Promise<ImageResult> {
   const userId = await requireUser();
   if (!platformOrder.includes(input.platform)) return { ok: false, error: "Unknown platform." };
+  let handle = input.handle?.trim();
+  if (input.accountId) {
+    const account = await prisma.socialAccount.findUnique({ where: { id: input.accountId }, select: { platform: true, handle: true, displayName: true } });
+    if (!account || account.platform !== input.platform) return { ok: false, error: "The selected social account does not belong to this platform." };
+    handle = account.handle?.trim() || undefined;
+    if (!handle) return { ok: false, error: `${account.displayName} has no verified platform handle or identity. Add one on Channels first.` };
+  }
+  if (handle) {
+    handle = handle.replace(/^https?:\/\/[^/]+\//, "").replace(/^@/, "");
+    if (!/^[@A-Za-z0-9._-]{2,80}$/.test(handle)) return { ok: false, error: "The social handle is not valid." };
+  }
   try {
-    return await generateAdvertImage(userId, input.prompt, input.platform, input.format === "STORY" ? "STORY" : "POST", input.caption);
+    return await generateAdvertImage(
+      userId,
+      input.prompt,
+      input.platform,
+      input.format === "STORY" ? "STORY" : "POST",
+      input.caption,
+      { headline: input.headline || input.caption.slice(0, 90), offer: input.offer, supporting: input.supporting || input.caption, cta: input.cta, handle },
+    );
   } catch (err) {
     return { ok: false, error: reasonFor(err) };
   }
@@ -92,6 +121,7 @@ export async function saveDraftAction(input: {
   title?: string;
   about?: string;
   targetPlatforms?: Platform[];
+  creativeBrief?: Record<string, unknown>;
 }): Promise<ActionResult<{ postId: string; verdicts: PlatformVerdict[] }>> {
   const userId = await requireUser();
   try {
@@ -108,7 +138,7 @@ async function saveDraft(
   const media = Object.fromEntries(Object.entries(input.media ?? {}).filter(([p, id]) => id && (input.targetPlatforms ?? []).includes(p as Platform))) as Partial<Record<Platform, string>>;
   if (!input.title?.trim() && !input.caption.trim() && !input.mediaId && !Object.keys(media).length) return { ok: false, error: "add a title, caption or photo first." };
   if (input.id) {
-    const existing = await prisma.post.findFirst({ where: { id: input.id, status: "DRAFT", channelId: null } });
+    const existing = await prisma.post.findFirst({ where: { id: input.id, status: "DRAFT", channelId: null, authorId: userId } });
     if (!existing) return { ok: false, error: "this draft no longer exists (it may have been deleted)." };
   }
   const asset = input.mediaId ? await loadAsset(input.mediaId) : null;
@@ -137,9 +167,10 @@ async function saveDraft(
     title: input.title?.trim().slice(0, 120) || null,
     about: input.about?.trim().slice(0, 500) || null,
     targetPlatforms: chosen,
+    creativeBrief: input.creativeBrief ? (input.creativeBrief as object) : undefined,
   };
   const post = input.id
-    ? await prisma.post.update({ where: { id: input.id }, data: { ...data, interests: { set: interestIds.map((id) => ({ id })) } } })
+    ? await prisma.post.update({ where: { id: input.id, authorId: userId }, data: { ...data, interests: { set: interestIds.map((id) => ({ id })) } } })
     : await prisma.post.create({
         data: { ...data, status: "DRAFT", authorId: userId, interests: { connect: interestIds.map((id) => ({ id })) } },
       });

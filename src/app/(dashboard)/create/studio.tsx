@@ -12,7 +12,14 @@ import type { PlatformOutcome } from "@/lib/adverts";
 import { homeUrl, STILL_POSTING, waitUntilPosted } from "../admin/publish-progress";
 import { AdvertPreview } from "./preview";
 
-export type ChannelOption = { platform: Platform; label: string; handle: string; format: PostFormat; connected: boolean };
+export type ChannelOption = {
+  platform: Platform;
+  label: string;
+  handle: string;
+  format: PostFormat;
+  connected: boolean;
+  accountOptions: { id: string; displayName: string; handle: string | null }[];
+};
 export type DraftInput = {
   id: string;
   title: string;
@@ -24,6 +31,7 @@ export type DraftInput = {
   // Each platform's own photo
   photos: Partial<Record<Platform, GeneratedMedia>>;
   listed: boolean;
+  creativeBrief?: Record<string, unknown>;
 };
 
 type Photos = Partial<Record<Platform, GeneratedMedia>>;
@@ -72,6 +80,13 @@ export function Studio({
   const [title, setTitle] = useState(draft?.title ?? "");
   const [about, setAbout] = useState(draft?.about ?? "");
   const [caption, setCaption] = useState(draft?.caption ?? "");
+  const brief = (draft?.creativeBrief ?? {}) as { headline?: string; offer?: string; cta?: string; supporting?: string; handles?: Partial<Record<Platform, string>>; accountIds?: Partial<Record<Platform, string>> };
+  const [headline, setHeadline] = useState(brief.headline ?? draft?.title ?? "");
+  const [offer, setOffer] = useState(brief.offer ?? "");
+  const [supporting, setSupporting] = useState(brief.supporting ?? draft?.about ?? "");
+  const [cta, setCta] = useState(brief.cta ?? "Learn more");
+  const [manualHandles, setManualHandles] = useState<Partial<Record<Platform, string>>>(brief.handles ?? {});
+  const [accountIds, setAccountIds] = useState<Partial<Record<Platform, string>>>(brief.accountIds ?? {});
   const [topics, setTopics] = useState<string[]>(draft?.topics ?? []);
   const [towns, setTowns] = useState(draft?.towns ?? "");
   const [targetPlatforms, setTargetPlatforms] = useState<Platform[]>(draft?.targetPlatforms ?? defaultTargets(channels));
@@ -128,6 +143,7 @@ export function Studio({
     about,
     targetPlatforms,
     locations: towns.split(","),
+    creativeBrief: { headline, offer, supporting, cta, handles: manualHandles, accountIds },
   });
 
   // Creates each chosen platform's photo from the details (or the edited description), in that
@@ -145,7 +161,20 @@ export function Studio({
       await Promise.all(
         list.map(async (t) => {
           try {
-            const res = await generatePlatformImageAction({ platform: t.platform, format: t.format, prompt: platformImagePrompt(details, t.platform, t.format, base), caption });
+            const selectedAccountId = accountIds[t.platform];
+            const selectedHandle = selectedAccountId ? undefined : manualHandles[t.platform]?.trim() || t.handle?.trim() || undefined;
+            const res = await generatePlatformImageAction({
+              platform: t.platform,
+              format: t.format,
+              prompt: platformImagePrompt(details, t.platform, t.format, base),
+              caption,
+              headline: headline || title,
+              offer,
+              supporting: supporting || about,
+              cta,
+              handle: selectedHandle,
+              accountId: selectedAccountId,
+            });
             if (!res.ok) return setPhotoState((s) => ({ ...s, [t.platform]: { error: res.error, issues: res.issues } }));
             made[t.platform] = res.media;
             setPhotos((p) => ({ ...p, [t.platform]: res.media }));
@@ -362,6 +391,12 @@ export function Studio({
             <span className="block text-sm text-ink-soft">Shown to users, and used to create the photo.</span>
             <textarea value={about} onChange={(e) => setAbout(e.target.value)} rows={2} maxLength={500} placeholder="20% off smartphones at our Westlands shop, Friday to Sunday." className={`mt-2 ${field}`} />
           </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label><span className="text-sm font-medium">Advert headline</span><input value={headline} onChange={(e) => setHeadline(e.target.value)} maxLength={90} className={`mt-1 ${field}`} /></label>
+            <label><span className="text-sm font-medium">Promotional offer</span><input value={offer} onChange={(e) => setOffer(e.target.value)} maxLength={40} placeholder="30% off" className={`mt-1 ${field}`} /></label>
+            <label className="sm:col-span-2"><span className="text-sm font-medium">Supporting advert copy</span><textarea value={supporting} onChange={(e) => setSupporting(e.target.value)} rows={2} maxLength={180} className={`mt-1 ${field}`} /></label>
+            <label><span className="text-sm font-medium">Call to action</span><input value={cta} onChange={(e) => setCta(e.target.value)} maxLength={40} className={`mt-1 ${field}`} /></label>
+          </div>
           <fieldset>
             <legend className="font-medium">Target platforms</legend>
             {channels.some((c) => !c.connected) && (
@@ -396,6 +431,31 @@ export function Studio({
               </div>
             )}
           </fieldset>
+          {targets.length > 0 && (
+            <fieldset className="space-y-3 border-t border-line pt-4">
+              <legend className="font-medium">Social identity per platform</legend>
+              {targets.map((target) => (
+                <div key={target.platform} className="grid gap-2 sm:grid-cols-[150px_1fr] sm:items-center">
+                  <span className="text-sm font-medium">{platforms[target.platform].name}</span>
+                  {target.accountOptions.length > 0 ? (
+                    <select
+                      value={accountIds[target.platform] ?? ""}
+                      onChange={(e) => setAccountIds((values) => ({ ...values, [target.platform]: e.target.value || undefined }))}
+                      className={field}
+                    >
+                      <option value="">Use a manual brand handle</option>
+                      {target.accountOptions.map((account) => <option key={account.id} value={account.id}>{account.displayName}{account.handle ? ` · @${account.handle.replace(/^@/, "")}` : " · handle missing"}</option>)}
+                    </select>
+                  ) : (
+                    <p className="text-sm text-ink-soft">No connected account. A manual brand handle may be used.</p>
+                  )}
+                  {!accountIds[target.platform] && (
+                    <label className="sm:col-start-2"><span className="text-xs text-ink-soft">Manual brand handle</span><input value={manualHandles[target.platform] ?? target.handle ?? ""} onChange={(e) => setManualHandles((values) => ({ ...values, [target.platform]: e.target.value }))} placeholder="@brandname" className={`mt-1 ${field}`} /></label>
+                  )}
+                </div>
+              ))}
+            </fieldset>
+          )}
           {interests.length > 0 && (
             <fieldset>
               <legend className="font-medium">

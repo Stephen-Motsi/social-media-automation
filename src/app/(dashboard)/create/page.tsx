@@ -12,22 +12,23 @@ export const dynamic = "force-dynamic";
 
 // Create a new advert, or edit a saved draft with ?id=
 export default async function CreatePage({ searchParams }: { searchParams: Promise<{ id?: string; schedule?: string }> }) {
-  await pageViewer("staff");
+  const viewer = await pageViewer("staff");
   const { id, schedule } = await searchParams;
   await ensureAllContainers();
   const [interests, channelRows, accounts, advert] = await Promise.all([
     prisma.interest.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
     prisma.channel.findMany(),
     prisma.socialAccount.findMany(),
-    id ? prisma.post.findFirst({ where: { id, status: "DRAFT", channelId: null }, include: { interests: true } }) : null,
+    id ? prisma.post.findFirst({ where: { id, status: "DRAFT", channelId: null, authorId: viewer.id }, include: { interests: true } }) : null,
   ]);
   // Every platform is offered; each says whether its account is connected yet.
   const channels: ChannelOption[] = platformOrder.flatMap((p) => {
     const c = channelRows.find((ch) => ch.platform === p);
     if (!c) return [];
     const handle = displayHandle(p, c.handle);
+    const accountOptions = accounts.filter((a) => a.platform === p).map((a) => ({ id: a.id, displayName: a.displayName, handle: a.handle }));
     const connected = !!c.handle && accounts.some((a) => a.platform === p && handleMatches(p, c.handle, a));
-    return [{ platform: p, handle, label: handle ? `${platforms[p].name} · ${handle}` : platforms[p].name, format: c.format, connected }];
+    return [{ platform: p, handle, label: handle ? `${platforms[p].name} · ${handle}` : platforms[p].name, format: c.format, connected, accountOptions }];
   });
 
   let draft: DraftInput | undefined;
@@ -56,6 +57,7 @@ export default async function CreatePage({ searchParams }: { searchParams: Promi
       targetPlatforms: advert.targetPlatforms,
       photos,
       listed: !!advert.listedAt,
+      creativeBrief: advert.creativeBrief && typeof advert.creativeBrief === "object" ? (advert.creativeBrief as Record<string, unknown>) : undefined,
     };
   }
 
