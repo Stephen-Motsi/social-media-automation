@@ -54,6 +54,75 @@ export async function wahaConfigured() {
   return Boolean(await getWahaCredentials());
 }
 
+export type WahaConnectionTest = {
+  reachable: boolean;
+  authenticated: boolean;
+  version: string | null;
+  message: string;
+};
+
+export async function testWahaConnection(baseUrl: string, apiKey: string): Promise<WahaConnectionTest> {
+  const timeoutMs = wahaHttpTimeoutMs(process.env.WAHA_HTTP_TIMEOUT_MS, 15_000);
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/sessions`, {
+      headers: { accept: "application/json", "x-api-key": apiKey },
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    console.error(`[WAHA] connection test ${timedOut ? "timed out" : "failed"} after ${timeoutMs}ms`);
+    return {
+      reachable: !timedOut,
+      authenticated: false,
+      version: null,
+      message: timedOut
+        ? "The connection took too long. Your WAHA server may be offline or experiencing problems."
+        : "We cannot reach your WAHA server. Please check the server address and make sure WAHA is running.",
+    };
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return {
+      reachable: true,
+      authenticated: false,
+      version: null,
+      message: "The server is reachable, but the access key is incorrect. Please check your WAHA API Key.",
+    };
+  }
+  if (!response.ok) {
+    return {
+      reachable: true,
+      authenticated: false,
+      version: null,
+      message: "WAHA responded, but the connection could not be verified. Please check the server address and API key.",
+    };
+  }
+
+  let version: string | null = null;
+  try {
+    const status = await fetch(`${baseUrl.replace(/\/$/, "")}/api/server/status`, {
+      headers: { accept: "application/json", "x-api-key": apiKey },
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+    }).then((result) => result.ok ? result.json() as Promise<Record<string, unknown>> : null).catch(() => null);
+    if (typeof status?.version === "string") version = status.version;
+    else if (typeof status?.server === "string") version = status.server;
+  } catch {
+    // Version information is optional for a successful connection.
+  }
+
+  return {
+    reachable: true,
+    authenticated: true,
+    version,
+    message: version
+      ? `Your WAHA server is connected successfully (WAHA ${version}). You can now connect WhatsApp.`
+      : "Your WAHA server is connected successfully. You can now connect WhatsApp.",
+  };
+}
+
 export function wahaWebhookUrl() {
   const base = process.env.WAHA_WEBHOOK_URL?.trim()
     ?? (process.env.AUTH_URL ?? process.env.APP_URL ?? "http://host.docker.internal:3000").replace(/localhost:3000/, "host.docker.internal:3000");

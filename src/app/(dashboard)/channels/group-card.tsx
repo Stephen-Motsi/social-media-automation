@@ -7,6 +7,7 @@ import { groupNames, handleLabels } from "@/lib/handles";
 import {
   connectHandle, createWahaSessionAction, disconnectWahaSessionAction, disconnectAccount,
   getWahaStatusAction, getWahaConfigurationAction, reconnectWahaSessionAction, saveWahaConfigurationAction,
+  testWahaConfigurationAction,
   setHandle, type ActionState, type WahaConfigurationView, type WahaViewState,
 } from "./actions";
 import { SocialContainer, field, type ChannelView } from "./social-container";
@@ -59,6 +60,9 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
   const [showApiKey, setShowApiKey] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState("");
   const [configurationMessage, setConfigurationMessage] = useState<ActionState>();
+  const [setupStep, setSetupStep] = useState<1 | 2 | 3>(1);
+  const [testMessage, setTestMessage] = useState("");
+  const [tested, setTested] = useState(false);
   const [pending, start] = useTransition();
   const pollingInFlight = useRef(false);
   const reconnectPending = useRef(false);
@@ -127,8 +131,8 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
   const connected = state.status === "WORKING";
   const waiting = state.status === "SCAN_QR_CODE" || state.status === "STARTING";
   const progressLabel = connected ? "Connected"
-    : state.status === "STARTING" ? "Connecting…"
-      : state.status === "SCAN_QR_CODE" ? "Waiting for QR scan"
+    : state.status === "STARTING" ? "Preparing connection"
+      : state.status === "SCAN_QR_CODE" ? (state.qr ? "Waiting for you to scan" : "Generating QR code")
         : state.status === "FAILED" ? "Connection failed"
           : state.status === "LOGGED_OUT" ? "Authentication required"
             : state.status === "DISCONNECTED" ? "Reconnecting…"
@@ -137,54 +141,155 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
 
   return (
     <div className="mt-3 space-y-3 rounded-2xl border border-line bg-white/30 p-3 dark:bg-white/[0.03]">
-      {admin && <form
-        className="space-y-2 border-b border-line pb-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          start(async () => {
-            const result = await saveWahaConfigurationAction({ baseUrl, apiKey: apiKey || undefined });
-            setConfigurationMessage(result);
-            setConfiguration(result);
-            if (result.saved) setApiKey("");
-          });
-        }}
-      >
-        <p className="text-xs font-medium">WAHA configuration</p>
-        <p className="text-xs text-ink-soft">
-          {configuration.saved ? "Configuration saved" : configuration.configured ? "Configuration available" : "Not configured"}
-        </p>
-        <label className="block text-xs text-ink-soft">
-          WAHA Base URL
-          <input
-            type="url"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://waha.example.com"
-            className={`${field} mt-1 w-full text-sm`}
-          />
-        </label>
-        <label className="block text-xs text-ink-soft">
-          WAHA API Key
-          <div className="mt-1 flex gap-2">
-            <input
-              type={showApiKey ? "text" : "password"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={configuration.apiKeyConfigured ? "Saved key •••••••••••• (leave blank to keep)" : "Enter the WAHA API key"}
-              autoComplete="new-password"
-              className={`${field} min-w-0 flex-1 text-sm`}
-            />
-            <button type="button" onClick={() => setShowApiKey((value) => !value)} className="rounded-full border border-line px-2.5 text-xs text-ink-soft">
-              {showApiKey ? "Hide" : "Reveal"}
+      {admin && <div className="space-y-3 border-b border-line pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium">WAHA setup</p>
+            <p className="text-xs text-ink-soft">
+              {configuration.saved ? "Configuration saved" : configuration.configured ? "Configuration available" : "Not configured"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSetupStep((current) => current === 1 ? 1 : current === 2 ? 1 : 2)}
+            className="text-xs text-ink-soft underline underline-offset-2"
+          >
+            Edit setup
+          </button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2" aria-label="Setup progress">
+          {[1, 2, 3].map((step) => (
+            <button
+              key={step}
+              type="button"
+              onClick={() => setSetupStep(step as 1 | 2 | 3)}
+              className={`rounded-lg border px-2 py-1.5 text-[11px] ${setupStep === step ? "border-ink bg-white/70 font-medium dark:bg-white/10" : "border-line text-ink-soft"}`}
+            >
+              {step === 1 ? "Server" : step === 2 ? "Find key" : "Test"}
+            </button>
+          ))}
+        </div>
+        <div className="rounded-xl border border-line px-3 py-2 text-xs text-ink-soft" aria-label="Setup checklist">
+          <p className="mb-1 font-medium text-ink">Setup checklist</p>
+          <p>{configuration.saved ? "✓" : "○"} WAHA server configured</p>
+          <p>{tested ? "✓" : "○"} WAHA connection tested</p>
+          <p>{state.sessionName ? "✓" : "○"} WhatsApp session created</p>
+          <p>{state.status === "SCAN_QR_CODE" ? "✓" : "○"} QR authentication started</p>
+          <p>{connected ? "✓" : "○"} WhatsApp connected</p>
+        </div>
+
+        {setupStep === 1 && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">1. Connect the WAHA server</p>
+            <p className="text-xs text-ink-soft">WAHA is the service that lets this application connect to WhatsApp.</p>
+            <label className="block text-xs text-ink-soft">
+              WAHA Server Address
+              <input type="url" value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); setTested(false); }} placeholder="https://waha.example.com" className={`${field} mt-1 w-full text-sm`} />
+              <span className="mt-1 block">This is the web address of your WAHA service. Do not use localhost on a hosted production site.</span>
+            </label>
+            <label className="block text-xs text-ink-soft">
+              WAHA API Key
+              <div className="mt-1 flex gap-2">
+                <input
+                  type={showApiKey ? "text" : "password"}
+                  value={apiKey}
+                  onChange={(e) => { setApiKey(e.target.value); setTested(false); }}
+                  placeholder={configuration.apiKeyConfigured ? "Saved key •••••••••••• (leave blank to keep)" : "Paste the WAHA API key"}
+                  autoComplete="new-password"
+                  className={`${field} min-w-0 flex-1 text-sm`}
+                />
+                <button type="button" onClick={() => setShowApiKey((value) => !value)} className="rounded-full border border-line px-2.5 text-xs text-ink-soft">
+                  {showApiKey ? "Hide" : "Reveal"}
+                </button>
+              </div>
+              <span className="mt-1 block">This private key allows the application to communicate with WAHA. It is not your WhatsApp password.</span>
+            </label>
+            <details className="rounded-xl border border-line px-3 py-2">
+              <summary className="cursor-pointer text-xs font-medium">Where do I find the WAHA Server Address and API Key?</summary>
+              <div className="mt-2 space-y-2 text-xs text-ink-soft">
+                <p className="font-medium text-ink">Local Windows development</p>
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>Open File Explorer and go to <span className="font-mono">C:\waha</span>.</li>
+                  <li>Open the <span className="font-mono">.env</span> file in Notepad.</li>
+                  <li>Find the line beginning with <span className="font-mono">WAHA_API_KEY=</span>.</li>
+                  <li>Copy only the value after the equals sign. The dashboard username and password are not the API key.</li>
+                </ol>
+                <p>If the value begins with <span className="font-mono">sha512:</span>, it is a protected hash, not the original secret. Obtain the original key from whoever created the WAHA installation.</p>
+                <p>WAHA dashboard: <ExternalLink href="http://localhost:3001/dashboard">http://localhost:3001/dashboard</ExternalLink></p>
+                <p className="font-medium text-ink">Hosted production</p>
+                <p>Use the server address supplied by your hosting administrator and obtain the original key from your hosting provider or secure secrets manager. Do not use localhost.</p>
+              </div>
+            </details>
+            <button type="button" disabled={!baseUrl.trim() || (!apiKey.trim() && !configuration.apiKeyConfigured)} onClick={() => setSetupStep(2)} className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink">
+              Continue
             </button>
           </div>
-        </label>
-        <button type="submit" disabled={pending || !baseUrl.trim() || (!apiKey.trim() && !configuration.apiKeyConfigured)} className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink">
-          {pending ? "Saving…" : configuration.saved ? "Update configuration" : "Save configuration"}
-        </button>
-        {configurationMessage?.error && <p role="alert" className="text-xs text-danger">{configurationMessage.error}</p>}
-        {configurationMessage?.ok && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{configurationMessage.message}</p>}
-      </form>}
+        )}
+
+        {setupStep === 2 && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">2. Guided credential instructions</p>
+            <ol className="list-decimal space-y-1 rounded-xl border border-line p-3 pl-8 text-xs text-ink-soft">
+              <li>Open the WAHA installation folder or hosting secrets manager.</li>
+              <li>Find the WAHA API key configured for this server.</li>
+              <li>Copy only the original secret, not a <span className="font-mono">sha512:</span> hash.</li>
+              <li>Paste it into the WAHA API Key field and keep it private.</li>
+            </ol>
+            <div className="text-xs text-ink-soft">
+              <p><span className="font-medium text-ink">WAHA Server Address:</span> where this application sends WhatsApp connection requests.</p>
+              <p><span className="font-medium text-ink">WAHA API Key:</span> the private secret for that service.</p>
+              <p><span className="font-medium text-ink">Webhook Address:</span> created and managed automatically by the application.</p>
+            </div>
+            <button type="button" onClick={() => setSetupStep(3)} className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-ink">Continue to connection test</button>
+          </div>
+        )}
+
+        {setupStep === 3 && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">3. Test the connection</p>
+            <p className="text-xs text-ink-soft">The application will securely check the WAHA server and access key.</p>
+            <button
+              type="button"
+              disabled={pending || !baseUrl.trim() || (!apiKey.trim() && !configuration.apiKeyConfigured)}
+              onClick={() => start(async () => {
+                setTestMessage("");
+                const result = await testWahaConfigurationAction({ baseUrl, apiKey: apiKey || undefined });
+                setTested(Boolean(result.ok));
+                setTestMessage(result.message);
+                if (result.ok) {
+                  const saved = await saveWahaConfigurationAction({ baseUrl, apiKey: apiKey || undefined });
+                  setConfiguration(saved);
+                  setConfigurationMessage(saved);
+                  if (saved.saved) {
+                    setApiKey("");
+                    setTestMessage(saved.message ?? result.message);
+                  }
+                }
+              })}
+              className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink"
+            >
+              {pending ? "Testing…" : configuration.saved ? "Test and update configuration" : "Test WAHA Connection"}
+            </button>
+            {(testMessage || configurationMessage?.error) && (
+              <p role="status" className={`text-xs ${tested ? "text-emerald-700 dark:text-emerald-300" : "text-danger"}`}>
+                {testMessage || configurationMessage?.error}
+              </p>
+            )}
+          </div>
+        )}
+
+        <details className="rounded-xl border border-line px-3 py-2">
+          <summary className="cursor-pointer text-xs font-medium">Having trouble connecting?</summary>
+          <div className="mt-2 space-y-1 text-xs text-ink-soft">
+            <p><span className="font-medium text-ink">The QR code is not appearing:</span> WAHA may still be starting. The page checks automatically.</p>
+            <p><span className="font-medium text-ink">The QR code expired:</span> a new code will be generated automatically.</p>
+            <p><span className="font-medium text-ink">Connection failed:</span> wait for recovery, then reconnect if asked.</p>
+            <p><span className="font-medium text-ink">The server cannot be reached:</span> check that WAHA is running and verify the server address.</p>
+            <p><span className="font-medium text-ink">Invalid API key:</span> paste the original secret that matches the WAHA server.</p>
+          </div>
+        </details>
+      </div>}
       <div className="flex items-center justify-between gap-2">
         <div>
           <p className="text-xs font-medium">WhatsApp connection</p>
@@ -220,11 +325,18 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
         <p role="alert" className="text-xs text-danger">The paired WhatsApp account does not match the entered phone number.</p>
       )}
       {state.qr && (
-        <div className="flex justify-center rounded-xl bg-white p-3">
-          {/* WAHA returns the QR image only from the server; the browser never receives the WAHA API key. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={state.qr} alt="Scan this QR code with WhatsApp Linked Devices" className="size-56 rounded-lg" />
-          <span className="sr-only">Open WhatsApp, choose Linked Devices, and scan this code.</span>
+        <div className="space-y-2 rounded-xl bg-white p-3">
+          <div className="flex justify-center">
+            {/* WAHA returns the QR image only from the server; the browser never receives the WAHA API key. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={state.qr} alt="Scan this QR code with WhatsApp Linked Devices" className="size-56 rounded-lg" />
+          </div>
+          <div className="text-xs text-ink-soft">
+            <p className="font-medium text-ink">Open WhatsApp on your phone:</p>
+            <p>Android: tap the three dots, then Linked devices.</p>
+            <p>iPhone: open Settings, then Linked Devices.</p>
+            <p>Tap Link a device, then scan this QR code.</p>
+          </div>
         </div>
       )}
       <div className="flex flex-wrap gap-2">

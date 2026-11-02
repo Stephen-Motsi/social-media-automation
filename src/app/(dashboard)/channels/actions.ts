@@ -21,7 +21,7 @@ import { displayHandle, handleMatches, normalizeHandle, profileUrl, validateHand
 import { formatInZone, parseLocalDateTime, parseTime } from "@/lib/schedule";
 import { decrypt } from "@/lib/crypto";
 import {
-  normalizeWahaPhoneNumber, wahaConfigured,
+  normalizeWahaPhoneNumber, wahaConfigured, testWahaConnection, type WahaConnectionTest,
 } from "@/lib/waha";
 import {
   connectWahaSession,
@@ -52,6 +52,24 @@ export type WahaConfigurationView = {
   baseUrl: string | null;
   apiKeyConfigured: boolean;
 };
+
+export async function testWahaConfigurationAction(input: { baseUrl: string; apiKey?: string }): Promise<WahaConnectionTest & { ok?: boolean }> {
+  await requireAdmin();
+  const baseUrlInput = input.baseUrl.trim();
+  const existing = await prisma.wahaConfiguration.findUnique({ where: { id: "default" } });
+  const apiKey = input.apiKey?.trim() || (existing ? decrypt(existing.apiKeyEncrypted) : "");
+  if (!baseUrlInput) return { reachable: false, authenticated: false, version: null, message: "Enter the WAHA server address first." };
+  if (!apiKey) return { reachable: false, authenticated: false, version: null, message: "Enter the WAHA API Key first." };
+  let baseUrl: URL;
+  try { baseUrl = new URL(baseUrlInput); } catch {
+    return { reachable: false, authenticated: false, version: null, message: "Enter a valid HTTP or HTTPS WAHA server address." };
+  }
+  if (!["http:", "https:"].includes(baseUrl.protocol) || !baseUrl.hostname) {
+    return { reachable: false, authenticated: false, version: null, message: "Enter a valid HTTP or HTTPS WAHA server address." };
+  }
+  const result = await testWahaConnection(baseUrl.toString().replace(/\/$/, ""), apiKey);
+  return { ...result, ok: result.reachable && result.authenticated };
+}
 
 export async function getWahaConfigurationAction(): Promise<WahaConfigurationView> {
   await requireAdmin();
@@ -85,16 +103,9 @@ export async function saveWahaConfigurationAction(input: { baseUrl: string; apiK
   if (!apiKey) return { configured: false, saved: false, baseUrl: null, apiKeyConfigured: false, error: "WAHA API Key is required." };
   if (apiKey.length < 8) return { configured: existing !== null, saved: existing !== null, baseUrl: existing?.baseUrl ?? null, apiKeyConfigured: existing !== null, error: "WAHA API Key appears invalid or is too short." };
 
-  try {
-    const response = await fetch(`${normalizedBaseUrl}/api/sessions`, {
-      headers: { accept: "application/json", "x-api-key": apiKey },
-      cache: "no-store",
-    });
-    if (!response.ok) {
-      return { configured: false, saved: false, baseUrl: normalizedBaseUrl, apiKeyConfigured: false, error: "WAHA rejected the connection. Check the Base URL and API Key." };
-    }
-  } catch {
-    return { configured: false, saved: false, baseUrl: normalizedBaseUrl, apiKeyConfigured: false, error: "Could not connect to WAHA. Check that the server is reachable." };
+  const test = await testWahaConfigurationAction({ baseUrl: normalizedBaseUrl, apiKey });
+  if (!test.ok) {
+    return { configured: false, saved: false, baseUrl: normalizedBaseUrl, apiKeyConfigured: false, error: test.message };
   }
 
   const apiKeyEncrypted = encrypt(apiKey);
