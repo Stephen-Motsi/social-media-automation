@@ -5,7 +5,7 @@ import { reasonFor } from "@/lib/errors";
 import { connectByHandle, handleConnect } from "@/lib/connect-by-handle";
 import { z } from "zod";
 import type { Platform } from "@prisma/client";
-import { AccessError, logActivity, requireStaff } from "@/lib/session";
+import { AccessError, logActivity, requireStaff, requireViewer } from "@/lib/session";
 import { generateAdvertImage, refineAdvertImage, type ImageResult } from "@/lib/advert-images";
 import { publicMediaUrl } from "@/lib/media";
 import { proposeCampaign } from "@/lib/audience";
@@ -19,12 +19,17 @@ import { reviewContent } from "@/lib/policy/review";
 import { formatSupport, type PlatformVerdict } from "@/lib/policy/rules";
 import { displayHandle, handleMatches, normalizeHandle, profileUrl, validateHandle } from "@/lib/handles";
 import { formatInZone, parseLocalDateTime, parseTime } from "@/lib/schedule";
-import { randomBytes } from "node:crypto";
 import { decrypt } from "@/lib/crypto";
 import {
-  createWahaSession, deleteWahaSession, getWahaMe, getWahaQr, getWahaSession,
-  logoutWahaSession, startWahaSession, stopWahaSession, wahaConfigured,
+  normalizeWahaPhoneNumber, wahaConfigured,
 } from "@/lib/waha";
+import {
+  connectWahaSession,
+  deleteWahaSession as deleteManagedWahaSession,
+  disconnectWahaSession,
+  getWahaView,
+  reconnectWahaSession,
+} from "@/lib/waha-lifecycle";
 
 // note: saved, but something after the save can't happen yet (shown as a follow-up, not a failure).
 export type ActionState = { ok?: boolean; error?: string; message?: string; note?: string; verdict?: PlatformVerdict } | undefined;
@@ -430,106 +435,68 @@ function connectHowTo(platform: Platform, handle: string | null) {
 
 export type WahaViewState = {
   status: string;
+  sessionName: string | null;
   account: string | null;
   phone: string | null;
   qr: string | null;
+  qrExpiresAt?: string | null;
+  pairingMismatch?: boolean;
   error?: string;
 };
 
-async function syncWahaSession(userId: string, sessionName: string) {
-  const session = await getWahaSession(sessionName).catch(() => null) as { status?: string } | null;
-  const status = typeof session?.status === "string" ? session.status : "STOPPED";
-  let account: Record<string, unknown> | null = null;
-  if (status === "WORKING") {
-    const me = await getWahaMe(sessionName).catch(() => null) as Record<string, unknown> | null;
-    account = me;
-  }
-  const id = account?.id ?? account?.jid ?? account?.phone;
-  const data = {
-    status,
-    lastStatusAt: new Date(),
-    ...(status === "WORKING" ? {
-      ...(account ? { accountInfo: account as object } : {}),
-      accountId: typeof id === "string" ? id : null,
-      accountPhone: typeof account?.pushname === "string" ? String(account.pushname) : (typeof account?.phone === "string" ? account.phone : null),
-      accountPushName: typeof account?.pushName === "string" ? account.pushName as string : (typeof account?.pushname === "string" ? account.pushname as string : null),
-      accountName: typeof account?.pushName === "string" ? account.pushName as string : (typeof account?.pushname === "string" ? account.pushname as string : null),
-    } : {}),
-  };
-  await prisma.whatsappSession.update({ where: { userId }, data });
-  return { status, account };
-}
-
 export async function getWahaStatusAction(): Promise<WahaViewState> {
-  const viewer = await requireAdmin();
-  const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
-  if (!existing) return { status: "NOT_CREATED", account: null, phone: null, qr: null };
+  const viewer = await requireViewer();
+  return getWahaView(viewer.id);
+}
+
+export async function createWahaSessionAction(phoneNumber?: string): Promise<WahaViewState> {
+  const viewer = await requireViewer();
+  if (!(await wahaConfigured())) return { status: "NOT_CONFIGURED", sessionName: null, account: null, phone: null, qr: null, error: "Save the WAHA Base URL and API Key in Channels before creating a session." };
+  if (phoneNumber !== undefined) {
+    try {
+      normalizeWahaPhoneNumber(phoneNumber);
+    } catch (err) {
+      return { status: "NOT_CONFIGURED", sessionName: null, account: null, phone: null, qr: null, error: err instanceof Error ? err.message : "Enter a valid WhatsApp phone number." };
+    }
+  }
   try {
-    const synced = await syncWahaSession(viewer.id, existing.sessionName);
-    let qr: string | null = null;
-    if (synced.status === "SCAN_QR_CODE") qr = (await getWahaQr(existing.sessionName)).qr;
-    return {
-      status: synced.status,
-      account: typeof synced.account?.pushName === "string" ? synced.account.pushName : (typeof synced.account?.pushname === "string" ? String(synced.account.pushname) : null),
-      phone: typeof synced.account?.phone === "string" ? String(synced.account.phone) : null,
-      qr,
-    };
+    return await connectWahaSession(viewer.id, phoneNumber);
   } catch (err) {
-    return { status: existing.status, account: existing.accountName, phone: existing.accountPhone, qr: null, error: err instanceof Error ? err.message : "Could not reach WAHA." };
+    return { status: "CONNECTION_ERROR", sessionName: null, account: null, phone: phoneNumber ?? null, qr: null, error: err instanceof Error ? err.message : "Could not start the WhatsApp session." };
   }
 }
 
-export async function createWahaSessionAction(): Promise<WahaViewState> {
-  const viewer = await requireAdmin();
-  if (!(await wahaConfigured())) return { status: "NOT_CONFIGURED", account: null, phone: null, qr: null, error: "Save the WAHA Base URL and API Key in Channels before creating a session." };
-  let existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
-  if (!existing) {
-    const sessionName = `whatsapp-user-${viewer.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-    const webhookSecret = randomBytes(32).toString("hex");
-    const created = await createWahaSession(sessionName, webhookSecret).catch((err) => {
-      throw err;
-    });
-    existing = await prisma.whatsappSession.create({
-      data: { userId: viewer.id, sessionName, status: "STOPPED", webhookSecretEncrypted: created.secretEncrypted },
-    });
+export async function reconnectWahaSessionAction(phoneNumber?: string): Promise<WahaViewState> {
+  const viewer = await requireViewer();
+  if (phoneNumber !== undefined) {
+    try {
+      normalizeWahaPhoneNumber(phoneNumber);
+    } catch (err) {
+      return { status: "CONNECTION_ERROR", sessionName: null, account: null, phone: null, qr: null, error: err instanceof Error ? err.message : "Enter a valid WhatsApp phone number." };
+    }
   }
-  await startWahaSession(existing.sessionName);
-  await prisma.whatsappSession.update({ where: { userId: viewer.id }, data: { status: "STARTING", lastStatusAt: new Date() } });
-  return getWahaStatusAction();
-}
-
-export async function reconnectWahaSessionAction(): Promise<WahaViewState> {
-  const viewer = await requireAdmin();
-  const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
-  if (!existing) return createWahaSessionAction();
-  await startWahaSession(existing.sessionName);
-  await prisma.whatsappSession.update({ where: { userId: viewer.id }, data: { status: "STARTING", accountId: null, accountPhone: null, accountName: null, lastStatusAt: new Date() } });
-  return getWahaStatusAction();
+  try {
+    return await reconnectWahaSession(viewer.id, phoneNumber);
+  } catch (err) {
+    return { status: "CONNECTION_ERROR", sessionName: null, account: null, phone: phoneNumber ?? null, qr: null, error: err instanceof Error ? err.message : "Could not reconnect the WhatsApp session." };
+  }
 }
 
 export async function disconnectWahaSessionAction(): Promise<WahaViewState> {
-  const viewer = await requireAdmin();
-  const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
-  if (!existing) return { status: "NOT_CREATED", account: null, phone: null, qr: null };
-  await logoutWahaSession(existing.sessionName).catch(async () => stopWahaSession(existing.sessionName));
-  await prisma.whatsappSession.update({
-    where: { userId: viewer.id },
-    data: { status: "STOPPED", accountId: null, accountPhone: null, accountName: null, accountPushName: null, lastStatusAt: new Date() },
-  });
-  await logAdmin(viewer.id, "WHATSAPP_DISCONNECTED", { session: existing.sessionName });
+  const viewer = await requireViewer();
+  const result = await disconnectWahaSession(viewer.id);
+  await logAdmin(viewer.id, "WHATSAPP_DISCONNECTED", { session: result.sessionName });
   refresh();
-  return { status: "STOPPED", account: null, phone: null, qr: null };
+  return result;
 }
 
 export async function deleteWahaSessionAction(): Promise<WahaViewState> {
-  const viewer = await requireAdmin();
+  const viewer = await requireViewer();
   const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
   if (existing) {
-    await logoutWahaSession(existing.sessionName).catch(async () => stopWahaSession(existing.sessionName)).catch(() => null);
-    await deleteWahaSession(existing.sessionName).catch(() => null);
-    await prisma.whatsappSession.delete({ where: { userId: viewer.id } });
     await logAdmin(viewer.id, "WHATSAPP_SESSION_DELETED", { session: existing.sessionName });
   }
+  const result = await deleteManagedWahaSession(viewer.id);
   refresh();
-  return { status: "NOT_CREATED", account: null, phone: null, qr: null };
+  return result;
 }

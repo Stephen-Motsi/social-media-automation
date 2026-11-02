@@ -11,13 +11,14 @@ import { proposeAll } from "@/lib/audience";
 import { expireUnconfirmed } from "@/lib/policy/subscriptions";
 import { publishPagePost, publishPageStory } from "@/lib/meta/facebook";
 import { publishImage } from "@/lib/meta/instagram";
-import { normalizeWahaChatId, sendWahaImage, sendWahaText, sendWahaVideo } from "@/lib/waha";
+import { normalizeWahaChatId, sendWahaImage, sendWahaText, sendWahaVideo, wahaPhonePairMatches } from "@/lib/waha";
 import { xCreatePost, xUploadImage } from "@/lib/x";
 import { tiktokPublishPhoto } from "@/lib/tiktok";
 import { loadImage, type LoadedImage } from "@/lib/media";
 import { reviewContent, type Formats } from "@/lib/policy/review";
 import { accessTokenFor } from "@/lib/tokens";
 import { runDueChannels } from "@/lib/channels";
+import { recoverWahaSessions } from "@/lib/waha-lifecycle";
 
 type Job = {
   account: SocialAccount;
@@ -114,8 +115,15 @@ async function publish(postId: string) {
     : null;
   const wahaSession = await prisma.whatsappSession.findUnique({
     where: { userId: post.authorId },
-    select: { sessionName: true, status: true },
+    select: { sessionName: true, status: true, phoneNumber: true, accountPhone: true },
   });
+  if (
+    wahaSession?.status === "WORKING"
+    && wahaSession.phoneNumber
+    && !wahaPhonePairMatches(wahaSession.phoneNumber, wahaSession.accountPhone)
+  ) {
+    throw new Error("Publishing blocked: the paired WhatsApp account does not match the entered phone number.");
+  }
 
   for (const target of post.targets.filter((t) => t.status !== "PUBLISHED")) {
     const verdict = verdicts.find((v) => v.platform === target.account.platform);
@@ -213,6 +221,7 @@ let ticks = 0;
 async function tick() {
   try {
     const ran = await runDueChannels();
+    await recoverWahaSessions().catch(() => null);
     if (ran) console.log(`Scheduler: ${ran} channel run(s) started`);
     const handles = await deliverToHandles();
     if (handles) console.log(`Subscribers: ${handles} advert(s) sent to their X / Instagram handles`);

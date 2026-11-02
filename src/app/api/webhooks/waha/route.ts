@@ -1,14 +1,23 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
+import { getWahaQr, wahaQrExpiryMs } from "@/lib/waha";
 
-function validHmac(raw: string, secret: string, supplied: string | null) {
+function validHmac(raw: string, secret: string, supplied: string | null, algorithmHeader: string | null) {
   if (!supplied) return false;
-  const header = supplied.replace(/^sha256=/i, "").trim().toLowerCase();
-  const expected = createHmac("sha256", secret).update(raw).digest("hex");
-  if (header.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(header), Buffer.from(expected));
+  const header = supplied.replace(/^sha(256|512)=/i, "").trim().toLowerCase();
+  const algorithmValue = algorithmHeader?.trim().toLowerCase();
+  const algorithms = algorithmValue === "sha256" || algorithmValue === "sha512"
+    ? [algorithmValue]
+    : ["sha512", "sha256"];
+  for (const algorithm of algorithms) {
+    const expected = createHmac(algorithm, secret).update(raw).digest("hex");
+    if (header.length === expected.length && timingSafeEqual(Buffer.from(header), Buffer.from(expected))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function POST(req: NextRequest) {
@@ -38,10 +47,15 @@ export async function POST(req: NextRequest) {
   const supplied = req.headers.get("x-webhook-hmac")
     ?? req.headers.get("x-webhook-signature")
     ?? req.headers.get("x-hub-signature-256");
-  if (!validHmac(raw, secret, supplied)) return new NextResponse("Invalid signature", { status: 401 });
+  const algorithmHeader = req.headers.get("x-webhook-hmac-algorithm");
+  if (!validHmac(raw, secret, supplied, algorithmHeader)) return new NextResponse("Invalid signature", { status: 401 });
+
+  const fingerprint = createHash("sha256").update(raw).digest("hex");
+  const duplicate = await prisma.webhookEvent.findUnique({ where: { fingerprint } });
+  if (duplicate) return NextResponse.json({ received: true, duplicate: true });
 
   const event = await prisma.webhookEvent.create({
-    data: { object: "waha", payload: payload as object },
+    data: { object: "waha", payload: payload as object, fingerprint },
   });
 
   const eventName = typeof payload.event === "string" ? payload.event : "";
@@ -52,10 +66,51 @@ export async function POST(req: NextRequest) {
         ? String((payload.payload as Record<string, unknown>).status)
         : null;
     if (status) {
+      const normalized = status.trim().toUpperCase().replace(/[\s-]+/g, "_");
       await prisma.whatsappSession.update({
         where: { id: session.id },
-        data: { status, lastStatusAt: new Date() },
+        data: {
+          status: normalized,
+          previousStatus: session.status === normalized ? session.previousStatus : session.status,
+          lastStatusAt: new Date(),
+          stateVersion: { increment: 1 },
+          ...(normalized !== "SCAN_QR_CODE" ? { qrGeneratedAt: null, qrExpiresAt: null } : {}),
+          ...(normalized === "WORKING" ? { recoveryAttemptCount: 0, lastRecoveryAt: null, lastError: null } : {}),
+        },
       });
+      if (normalized === "SCAN_QR_CODE") {
+        const generation = session.qrGenerationCount + 1;
+        const freshQr = await getWahaQr(session.sessionName).catch((error: unknown) => {
+          console.error(`[WAHA] QR retrieval failed for ${session.sessionName}:`, error instanceof Error ? error.message : error);
+          return { qr: null };
+        });
+        await prisma.whatsappSession.update({
+          where: { id: session.id },
+          data: {
+            qrGeneratedAt: freshQr.qr ? new Date() : null,
+            qrExpiresAt: freshQr.qr ? new Date(Date.now() + wahaQrExpiryMs(generation)) : null,
+            qrGenerationCount: generation,
+            lastError: freshQr.qr ? null : "WAHA has not produced a QR code yet.",
+          },
+        });
+      }
+      if (normalized === "WORKING" && typeof payload.me === "object" && payload.me) {
+        const me = payload.me as Record<string, unknown>;
+        const id = typeof me.id === "string" ? me.id : null;
+        const phone = id?.split("@")[0] ?? null;
+        await prisma.whatsappSession.update({
+          where: { id: session.id },
+          data: {
+            accountId: id,
+            accountPhone: phone?.replace(/\D/g, "") || null,
+            accountName: typeof me.pushName === "string" ? me.pushName : null,
+            accountPushName: typeof me.pushName === "string" ? me.pushName : null,
+            accountInfo: me as object,
+            qrGeneratedAt: null,
+            qrExpiresAt: null,
+          },
+        });
+      }
     }
   }
 

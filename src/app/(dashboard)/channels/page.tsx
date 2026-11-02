@@ -95,7 +95,7 @@ function connectFor(kind: GroupKind): ConnectView {
 }
 
 export default async function ChannelsPage({ searchParams }: { searchParams: Promise<Params> }) {
-  await pageViewer("staff");
+  await pageViewer("user");
   // Meta (Facebook, Instagram, WhatsApp), X and TikTok are always here
   await ensureAllContainers();
   const [params, session, groups, accounts, whatsappConfigured] = await Promise.all([

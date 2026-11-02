@@ -111,7 +111,9 @@ model WhatsappSession {
   userId                 String    @unique
   user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   sessionName            String    @unique
+  phoneNumber            String?
   status                 String    @default("STOPPED")
+  previousStatus         String?
   accountName            String?
   accountId              String?
   accountPhone           String?
@@ -119,6 +121,14 @@ model WhatsappSession {
   accountInfo            Json?
   webhookSecretEncrypted String
   lastStatusAt           DateTime?
+  qrGeneratedAt          DateTime?
+  qrExpiresAt            DateTime?
+  qrGenerationCount      Int       @default(0)
+  lastError              String?
+  recoveryEnabled        Boolean   @default(false)
+  recoveryAttemptCount   Int       @default(0)
+  lastRecoveryAt         DateTime?
+  stateVersion           Int       @default(0)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 }
@@ -225,6 +235,7 @@ model WebhookEvent {
   id          String    @id @default(cuid())
   object      String // "page", "instagram", "whatsapp_business_account"
   payload     Json
+  fingerprint String?   @unique
   processedAt DateTime?
   receivedAt  DateTime  @default(now())
 }

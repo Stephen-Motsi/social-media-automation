@@ -11,7 +11,7 @@ import {
 } from "@/lib/audience";
 import { evaluateSubscription } from "@/lib/policy/subscriptions";
 import { loadImage } from "@/lib/media";
-import { normalizeWahaChatId, sendWahaImage, sendWahaText, sendWahaVideo } from "@/lib/waha";
+import { normalizeWahaChatId, sendWahaImage, sendWahaText, sendWahaVideo, wahaPhonePairMatches } from "@/lib/waha";
 import { reviewContent } from "@/lib/policy/review";
 import { mediaFor } from "@/lib/advert-media";
 
@@ -35,6 +35,10 @@ export async function sendCampaign(campaignId: string) {
   if (!session || session.status !== "WORKING") {
     await fail("No connected WAHA WhatsApp session. Connect WhatsApp from the Channels dashboard.");
     return { sent: 0, failed: 0, skipped: 0, error: "No WhatsApp number connected." };
+  }
+  if (!wahaPhonePairMatches(session.phoneNumber, session.accountPhone)) {
+    await fail("WhatsApp sending blocked: the entered number does not match the paired WhatsApp account.");
+    return { sent: 0, failed: 0, skipped: 0, error: "WhatsApp account number mismatch." };
   }
 
   // Same rule as everywhere else: check the advert against WhatsApp's rules right before sending.

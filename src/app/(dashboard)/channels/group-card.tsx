@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import type { GroupKind, Platform } from "@prisma/client";
 import { PlatformBadge, platforms } from "@/components/platforms";
 import { groupNames, handleLabels } from "@/lib/handles";
@@ -51,34 +51,93 @@ function MetaMark() {
   );
 }
 
-function WhatsAppConnection({ envReady }: { envReady: boolean }) {
-  const [state, setState] = useState<WahaViewState>({ status: "NOT_CREATED", account: null, phone: null, qr: null });
+function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boolean }) {
+  const [state, setState] = useState<WahaViewState>({ status: "NOT_CREATED", sessionName: null, account: null, phone: null, qr: null });
   const [configuration, setConfiguration] = useState<WahaConfigurationView>({ configured: envReady, saved: false, baseUrl: null, apiKeyConfigured: false });
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [configurationMessage, setConfigurationMessage] = useState<ActionState>();
   const [pending, start] = useTransition();
+  const pollingInFlight = useRef(false);
+  const reconnectPending = useRef(false);
+  const qrTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    void getWahaConfigurationAction().then((value) => {
-      setConfiguration(value);
-      setBaseUrl(value.baseUrl ?? "");
+    if (admin) {
+      void getWahaConfigurationAction().then((value) => {
+        setConfiguration(value);
+        setBaseUrl(value.baseUrl ?? "");
+      });
+    }
+    const refresh = () => getWahaStatusAction().then((value) => {
+      setState(value);
+      if (value.phone) setPhoneNumber(value.phone.replace(/[^\d]/g, ""));
     });
-    let active = true;
-    const refresh = () => getWahaStatusAction().then((value) => { if (active) setState(value); });
     void refresh();
-    const timer = window.setInterval(refresh, 4000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, []);
+  }, [admin]);
 
-  const run = (fn: () => Promise<WahaViewState>) => start(async () => setState(await fn()));
+  useEffect(() => {
+    if (["WORKING", "STOPPED", "NOT_CREATED", "LOGGED_OUT"].includes(state.status)) return;
+    const pairing = ["STARTING", "SCAN_QR_CODE"].includes(state.status);
+    const timer = window.setInterval(() => {
+      if (pollingInFlight.current) return;
+      pollingInFlight.current = true;
+      void getWahaStatusAction().then((value) => {
+        setState(value);
+        if (value.phone) setPhoneNumber(value.phone.replace(/[^\d]/g, ""));
+      }).catch(() => {
+        setState((current) => ({ ...current, status: "CONNECTION_ERROR", error: "Could not refresh WAHA connection status." }));
+      }).finally(() => {
+        pollingInFlight.current = false;
+      });
+    }, pairing ? 1500 : 5000);
+    return () => window.clearInterval(timer);
+  }, [state.status]);
+
+  useEffect(() => {
+    if (qrTimer.current) window.clearTimeout(qrTimer.current);
+    if (state.status !== "SCAN_QR_CODE" || !state.qrExpiresAt) return;
+    const remaining = new Date(state.qrExpiresAt).getTime() - Date.now();
+    if (remaining <= 0) {
+      setState((current) => ({ ...current, qr: null, error: "The QR code expired. Waiting for the next QR code." }));
+      return;
+    }
+    qrTimer.current = window.setTimeout(() => {
+      setState((current) => ({ ...current, qr: null, error: "The QR code expired. Waiting for the next QR code." }));
+    }, remaining);
+    return () => {
+      if (qrTimer.current) window.clearTimeout(qrTimer.current);
+      qrTimer.current = null;
+    };
+  }, [state.status, state.qr, state.qrExpiresAt]);
+
+  const run = (fn: () => Promise<WahaViewState>, reconnect = false) => {
+    if (reconnect && reconnectPending.current) return;
+    if (reconnect) reconnectPending.current = true;
+    start(async () => {
+      try {
+        setState(await fn());
+      } finally {
+        reconnectPending.current = false;
+      }
+    });
+  };
   const connected = state.status === "WORKING";
   const waiting = state.status === "SCAN_QR_CODE" || state.status === "STARTING";
+  const progressLabel = connected ? "Connected"
+    : state.status === "STARTING" ? "Connecting…"
+      : state.status === "SCAN_QR_CODE" ? "Waiting for QR scan"
+        : state.status === "FAILED" ? "Connection failed"
+          : state.status === "LOGGED_OUT" ? "Authentication required"
+            : state.status === "DISCONNECTED" ? "Reconnecting…"
+              : state.status === "CONNECTION_ERROR" ? "Connection error"
+                : state.status.replaceAll("_", " ").toLowerCase();
 
   return (
     <div className="mt-3 space-y-3 rounded-2xl border border-line bg-white/30 p-3 dark:bg-white/[0.03]">
-      <form
+      {admin && <form
         className="space-y-2 border-b border-line pb-3"
         onSubmit={(e) => {
           e.preventDefault();
@@ -125,21 +184,40 @@ function WhatsAppConnection({ envReady }: { envReady: boolean }) {
         </button>
         {configurationMessage?.error && <p role="alert" className="text-xs text-danger">{configurationMessage.error}</p>}
         {configurationMessage?.ok && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{configurationMessage.message}</p>}
-      </form>
+      </form>}
       <div className="flex items-center justify-between gap-2">
         <div>
           <p className="text-xs font-medium">WhatsApp connection</p>
-          <p className="text-xs text-ink-soft">{connected ? "Connected" : waiting ? "Waiting for QR scan" : state.status.replaceAll("_", " ").toLowerCase()}</p>
+          <p className="text-xs text-ink-soft">{progressLabel}</p>
         </div>
         <span className={`size-2.5 rounded-full ${connected ? "bg-emerald-500" : waiting ? "bg-amber-500" : "bg-slate-400"}`} aria-label={state.status} />
       </div>
       {!configuration.saved && !envReady && <p role="alert" className="text-xs text-danger">Save WAHA configuration before creating a session.</p>}
       {state.error && <p role="alert" className="text-xs text-danger">{state.error}</p>}
+      <label className="block text-xs text-ink-soft">
+        WhatsApp phone number
+        <input
+          type="tel"
+          value={phoneNumber}
+          onChange={(e) => setPhoneNumber(e.target.value)}
+          placeholder="254712345678"
+          disabled={connected || pending}
+          className={`${field} mt-1 w-full text-sm`}
+        />
+      </label>
+      {state.sessionName && (
+        <div className="text-xs text-ink-soft">
+          <p>Session name: <span className="font-mono">{state.sessionName}</span></p>
+        </div>
+      )}
       {connected && (
         <div className="text-xs text-ink-soft">
           {state.account && <p>Account: {state.account}</p>}
           {state.phone && <p>Phone: {state.phone}</p>}
         </div>
+      )}
+      {state.pairingMismatch && (
+        <p role="alert" className="text-xs text-danger">The paired WhatsApp account does not match the entered phone number.</p>
       )}
       {state.qr && (
         <div className="flex justify-center rounded-xl bg-white p-3">
@@ -151,8 +229,15 @@ function WhatsAppConnection({ envReady }: { envReady: boolean }) {
       )}
       <div className="flex flex-wrap gap-2">
         {!connected && (
-          <button type="button" disabled={pending || (!configuration.saved && !envReady)} onClick={() => run(state.status === "NOT_CREATED" ? createWahaSessionAction : reconnectWahaSessionAction)} className="blend-whatsapp rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
-            {pending ? "Connecting…" : state.status === "NOT_CREATED" ? "Create session & show QR" : "Reconnect"}
+          <button
+            type="button"
+            disabled={pending || (!configuration.saved && !envReady) || !/^\d{8,15}$/.test(phoneNumber.replace(/\D/g, ""))}
+            onClick={() => run(state.status === "NOT_CREATED"
+              ? () => createWahaSessionAction(phoneNumber)
+              : () => reconnectWahaSessionAction(phoneNumber), true)}
+            className="blend-whatsapp rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+          >
+            {pending ? "Connecting…" : state.status === "NOT_CREATED" ? "Connect WhatsApp" : "Reconnect"}
           </button>
         )}
         {connected && (
@@ -314,7 +399,7 @@ function Settings({
             item={i}
             admin={admin}
             extra={
-              admin && i === wa ? <WhatsAppConnection envReady={whatsappEnvReady} /> : undefined
+              i === wa ? <WhatsAppConnection envReady={whatsappEnvReady} admin={admin} /> : undefined
             }
           />
         ))}

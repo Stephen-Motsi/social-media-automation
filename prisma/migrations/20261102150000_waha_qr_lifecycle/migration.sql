@@ -1,0 +1,2 @@
+ALTER TABLE "WhatsappSession"
+ADD COLUMN "qrGenerationCount" INTEGER NOT NULL DEFAULT 0;
