@@ -50,7 +50,7 @@ export async function deliverToHandles(now = new Date(), only?: { advertId: stri
     where: {
       ...(only ?? {}),
       platform: { in: HANDLE_PLATFORMS },
-      advert: { listedAt: { not: null }, OR: [{ sendAt: null }, { sendAt: { lte: now } }] },
+      advert: { listedAt: { not: null }, reviewStatus: "APPROVED", OR: [{ sendAt: null }, { sendAt: { lte: now } }] },
       user: { disabledAt: null, socials: { some: { platform: { in: HANDLE_PLATFORMS } } } },
     },
     include: { user: { select: { socials: true } } },
@@ -74,6 +74,10 @@ export async function deliverToHandles(now = new Date(), only?: { advertId: stri
   const accounts = new Map<Platform, SocialAccount | null>();
   let sent = 0;
   for (const d of due) {
+    if (d.advert.reviewStatus !== "APPROVED") {
+      await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: "SKIPPED", error: "Blocked: the advert has not been approved." } });
+      continue;
+    }
     // Still subscribed, and still the same handle? Otherwise don't send.
     const current = d.user.socials.find((s) => s.platform === d.platform)?.handle;
     const stillSubscribed = d.user.subscriptions.some((s) => s.advertId === d.advertId && s.platform === d.platform);

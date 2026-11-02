@@ -52,6 +52,12 @@ enum PostStatus {
   FAILED
 }
 
+enum AdvertReviewStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
 enum MediaSource {
   GENERATED
   UPLOADED
@@ -95,7 +101,26 @@ model User {
   media MediaAsset[]
 
   approvedCampaigns Campaign[]
-  addedSubscribers  Subscriber[] @relation("AddedSubscribers")
+  advertReviews     Post[]           @relation("AdvertReviews")
+  addedSubscribers  Subscriber[]     @relation("AddedSubscribers")
+  whatsappSession   WhatsappSession?
+}
+
+model WhatsappSession {
+  id                     String    @id @default(cuid())
+  userId                 String    @unique
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionName            String    @unique
+  status                 String    @default("STOPPED")
+  accountName            String?
+  accountId              String?
+  accountPhone           String?
+  accountPushName        String?
+  accountInfo            Json?
+  webhookSecretEncrypted String
+  lastStatusAt           DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 }
 
 // A connected Facebook Page, Instagram account, WhatsApp number, X account or TikTok account.
@@ -155,6 +180,11 @@ model Post {
   about            String?
   targetPlatforms  Platform[]
   listedAt         DateTime?
+  reviewStatus     AdvertReviewStatus   @default(PENDING_REVIEW)
+  reviewedAt       DateTime?
+  reviewedById     String?
+  reviewedBy       User?                @relation("AdvertReviews", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewReason     String?
   // When a published advert goes out (posted on its platforms, sent to WhatsApp subscribers)
   sendAt           DateTime?
   // Publishing counts as approval: WhatsApp subscribers get it automatically (false = approve each send)
@@ -168,6 +198,8 @@ model Post {
   advertPosts    Post[]  @relation("AdvertPosts")
 
   targets PostTarget[]
+
+  @@index([reviewStatus])
 }
 
 // One row per (post, account) so each platform succeeds or fails independently.
@@ -402,6 +434,15 @@ model Setting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+model WahaConfiguration {
+  id              String   @id @default("default")
+  baseUrl         String
+  apiKeyEncrypted String
+  updatedById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 // ---- Accounts, sessions and activity -------------------------------------------------

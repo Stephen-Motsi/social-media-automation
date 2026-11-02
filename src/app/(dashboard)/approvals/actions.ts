@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireStaff } from "@/lib/session";
+import { logActivity, requireStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { whatsappNotReady } from "@/lib/audience";
 import { formatWhen, reasonFor } from "@/lib/errors";
@@ -17,6 +17,39 @@ const refresh = () => {
   revalidatePath("/approvals");
   revalidatePath("/", "layout");
 };
+
+export async function approveAdvertReview(id: string): Promise<ApprovalState> {
+  const viewer = await requireStaff();
+  const result = await prisma.post.updateMany({
+    where: { id, status: "DRAFT", channelId: null, reviewStatus: "PENDING_REVIEW" },
+    data: { reviewStatus: "APPROVED", reviewedAt: new Date(), reviewedById: viewer.id, reviewReason: null },
+  });
+  if (result.count === 0) return { error: "This advert is no longer waiting for review." };
+  await logActivity(viewer.id, "ADVERT_APPROVED", { advert: id }, viewer.id).catch(() => null);
+  refresh();
+  return { ok: true, message: "Advert approved. It can now be published or scheduled." };
+}
+
+export async function rejectAdvertReview(id: string, reason: string): Promise<ApprovalState> {
+  const viewer = await requireStaff();
+  const cleanReason = reason.trim();
+  if (!cleanReason) return { error: "Enter a reason for rejection." };
+  const result = await prisma.post.updateMany({
+    where: { id, status: "DRAFT", channelId: null, reviewStatus: "PENDING_REVIEW" },
+    data: {
+      reviewStatus: "REJECTED",
+      reviewedAt: new Date(),
+      reviewedById: viewer.id,
+      reviewReason: cleanReason.slice(0, 1000),
+      listedAt: null,
+      sendAt: null,
+    },
+  });
+  if (result.count === 0) return { error: "This advert is no longer waiting for review." };
+  await logActivity(viewer.id, "ADVERT_REJECTED", { advert: id, reason: cleanReason.slice(0, 1000) }, viewer.id).catch(() => null);
+  refresh();
+  return { ok: true, message: "Advert rejected and blocked from publishing." };
+}
 
 export async function approveCampaign(id: string): Promise<ApprovalState> {
   const userId = await requireAdmin();

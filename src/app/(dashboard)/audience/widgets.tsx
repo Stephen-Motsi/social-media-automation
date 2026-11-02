@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState, useTransition } from "react";
-import { addInterest, deleteInterest, deleteSubscriber, saveTemplate, setSubscriberStatus } from "./actions";
+import { addInterest, deleteInterest, deleteSubscriber, saveTemplate, setSubscriberStatus, type AudienceState } from "./actions";
 
 const field = "w-full rounded-xl border border-line bg-white/55 px-3 py-2 dark:bg-white/5";
 
@@ -31,6 +31,7 @@ export function CopyLink({ url }: { url: string }) {
 export function Topics({ topics, admin }: { topics: { id: string; name: string; count: number }[]; admin: boolean }) {
   const [state, action, pending] = useActionState(addInterest, undefined);
   const [removing, start] = useTransition();
+  const [removeState, setRemoveState] = useState<{ ok?: boolean; error?: string; message?: string }>();
   return (
     <div>
       <ul className="flex flex-wrap gap-2">
@@ -45,7 +46,7 @@ export function Topics({ topics, admin }: { topics: { id: string; name: string; 
                 aria-label={`Remove ${t.name}`}
                 onClick={() => {
                   if (confirm(`Remove the topic "${t.name}"? Subscribers and adverts keep their other topics.`)) {
-                    start(async () => void (await deleteInterest(t.id)));
+                    start(async () => setRemoveState(await deleteInterest(t.id)));
                   }
                 }}
                 className="ml-1 size-6 rounded-full text-ink-soft hover:bg-danger/10 hover:text-danger"
@@ -64,8 +65,11 @@ export function Topics({ topics, admin }: { topics: { id: string; name: string; 
             {pending ? "Adding…" : "Add topic"}
           </button>
           {state?.error && <p role="alert" className="w-full text-sm text-danger">{state.error}</p>}
+          {state?.ok && <p role="status" className="w-full text-sm text-emerald-700 dark:text-emerald-300">{state.message}</p>}
         </form>
       )}
+      {removeState?.error && <p role="alert" className="mt-2 text-sm text-danger">{removeState.error}</p>}
+      {removeState?.ok && <p role="status" className="mt-2 text-sm text-emerald-700 dark:text-emerald-300">Topic removed ✓</p>}
     </div>
   );
 }
@@ -97,13 +101,14 @@ export function TemplateForm({ template, lang, admin }: { template: string; lang
 
 export function SubscriberActions({ id, name, active }: { id: string; name: string; active: boolean }) {
   const [pending, start] = useTransition();
+  const [state, setState] = useState<AudienceState>();
   return (
     <div className="flex justify-end gap-1">
       {active && (
         <button
           type="button"
           disabled={pending}
-          onClick={() => start(async () => void (await setSubscriberStatus(id, false)))}
+          onClick={() => start(async () => setState(await setSubscriberStatus(id, false)))}
           className="rounded-full px-2.5 py-1 text-xs text-ink-soft hover:bg-white/50 hover:text-ink dark:hover:bg-white/10"
         >
           Unsubscribe
@@ -113,12 +118,14 @@ export function SubscriberActions({ id, name, active }: { id: string; name: stri
         type="button"
         disabled={pending}
         onClick={() => {
-          if (confirm(`Delete ${name}'s data? This can't be undone.`)) start(async () => void (await deleteSubscriber(id)));
+          if (confirm(`Delete ${name}'s data? This can't be undone.`)) start(async () => setState(await deleteSubscriber(id)));
         }}
         className="rounded-full px-2.5 py-1 text-xs text-ink-soft hover:bg-danger/10 hover:text-danger"
       >
         Delete
       </button>
+      {state?.error && <span role="alert" className="text-xs text-danger">{state.error}</span>}
+      {state?.ok && <span role="status" className="text-xs text-emerald-700 dark:text-emerald-300">Updated ✓</span>}
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { platforms } from "@/components/platforms";
 import { displayHandle, groupOrder, groupPlatforms, handleMatches, profileUrl } from "@/lib/handles";
 import { GroupCard, type ConnectView } from "./group-card";
 import { uploadHint } from "@/lib/policy/rules";
+import { wahaConfigured } from "@/lib/waha";
 
 export const dynamic = "force-dynamic";
 
@@ -97,11 +98,12 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
   await pageViewer("staff");
   // Meta (Facebook, Instagram, WhatsApp), X and TikTok are always here
   await ensureAllContainers();
-  const [params, session, groups, accounts] = await Promise.all([
+  const [params, session, groups, accounts, whatsappConfigured] = await Promise.all([
     searchParams,
     auth(),
     prisma.channelGroup.findMany({ include: { channels: { include: { advert: true } } } }),
     prisma.socialAccount.findMany({ orderBy: { createdAt: "asc" } }),
+    wahaConfigured(),
   ]);
   // Each social container's advert photo (and the prompt it was made from)
   const mediaIds = groups.flatMap((g) => g.channels.map((c) => c.advert?.mediaUrls[0]?.match(/\/api\/media\/([a-z0-9]+)$/i)?.[1])).filter((x): x is string => !!x);
@@ -218,7 +220,7 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
                 items={items}
                 admin={admin}
                 connect={connectFor(g.kind)}
-                whatsappEnvReady={Boolean(process.env.WHATSAPP_ACCESS_TOKEN)}
+                whatsappEnvReady={whatsappConfigured}
               />
             );
           })}

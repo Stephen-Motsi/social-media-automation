@@ -36,7 +36,7 @@ export async function deleteInterest(id: string): Promise<AudienceState> {
   await requireAdmin();
   await prisma.interest.delete({ where: { id } }).catch(() => null);
   refresh();
-  return { ok: true };
+  return { ok: true, message: "Topic removed." };
 }
 
 export async function saveTemplate(_prev: AudienceState, formData: FormData): Promise<AudienceState> {
@@ -59,7 +59,7 @@ export async function setSubscriberStatus(id: string, active: boolean): Promise<
   if (active) return { error: "Only the subscriber can subscribe again, using their manage link or the subscribe page." };
   await prisma.subscriber.update({ where: { id }, data: { status: "UNSUBSCRIBED", unsubscribedAt: new Date() } });
   refresh();
-  return { ok: true };
+  return { ok: true, message: "Subscriber unsubscribed." };
 }
 
 // For data-removal requests: deletes the subscriber and their delivery history.
@@ -68,7 +68,7 @@ export async function deleteSubscriber(id: string): Promise<AudienceState> {
   await prisma.subscriber.delete({ where: { id } }).catch(() => null);
   refresh();
   revalidatePath("/approvals");
-  return { ok: true };
+  return { ok: true, message: "Subscriber data deleted." };
 }
 
 // ---- Adding people (admin) ----------------------------------------------------------

@@ -11,24 +11,28 @@ import { tiktokConfigured, tiktokGetUser, tiktokRefresh } from "@/lib/tiktok";
 // Connecting an account from its handle alone. Platforms only let an app post for an account the
 // owner has authorised, so the business authorises once (credentials in .env); after that admins
 // just type a Page, @handle or number and the backend finds that account and links it.
-//   Facebook, Instagram, WhatsApp: META_SYSTEM_USER_TOKEN (a Business Settings system user with
-//     access to the Pages, Instagram accounts and WhatsApp numbers). WHATSAPP_ACCESS_TOKEN also works.
+//   Facebook, Instagram: META_SYSTEM_USER_TOKEN (a Business Settings system user with
+//     access to the Pages and Instagram accounts). WhatsApp uses per-user WAHA sessions.
 //   X: X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET (developer portal, "Keys and tokens").
 //   TikTok: TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET and TIKTOK_REFRESH_TOKEN (from one sign-in by the owner).
 
 export type ConnectResult = { ok: true; message: string } | { ok: false; error: string };
 
-const metaToken = () => process.env.META_SYSTEM_USER_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN || "";
+const metaToken = () => process.env.META_SYSTEM_USER_TOKEN || "";
 
 // Whether this platform can be connected from the handle, and if not, what to add to .env.
 export function handleConnect(platform: Platform): { ready: boolean; setup: string } {
   switch (platform) {
     case "FACEBOOK":
     case "INSTAGRAM":
-    case "WHATSAPP":
       return {
         ready: Boolean(metaToken()),
         setup: "add META_SYSTEM_USER_TOKEN to .env (Meta Business Settings → System users → Generate token, with access to your Pages, Instagram accounts and WhatsApp numbers)",
+      };
+    case "WHATSAPP":
+      return {
+        ready: false,
+        setup: "use the WAHA QR connection workflow in Channels. WhatsApp Cloud credentials are not supported",
       };
     case "X":
       return {
@@ -90,17 +94,7 @@ export async function connectByHandle(platform: Platform): Promise<ConnectResult
     }
 
     if (platform === "WHATSAPP") {
-      const token = metaToken();
-      const wabaIds = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID ? [process.env.WHATSAPP_BUSINESS_ACCOUNT_ID] : (await inspectToken(token)).wabaIds;
-      const found = await findWhatsAppNumber(wabaIds, token, want);
-      if (!found.number || !found.waba) {
-        return { ok: false, error: `The Meta token doesn't include ${who}.${found.shared.length ? ` It has: ${found.shared.map((n) => n.display_phone_number).join(", ")}.` : ""} Give the system user access to the number in Business Settings, or check it.` };
-      }
-      const number = await getWhatsAppNumber(found.number.id, token);
-      await subscribeAppToWaba(found.waba, token);
-      const handle = normalizeHandle("WHATSAPP", number.display_phone_number);
-      await save("WHATSAPP", number.id, { displayName: `${number.verified_name} (${number.display_phone_number})`, token, handle });
-      return { ok: true, message: `Connected ${number.verified_name} (${number.display_phone_number}).` };
+      return { ok: false, error: "Use the WAHA QR connection workflow in Channels instead of WhatsApp Cloud credentials." };
     }
 
     if (platform === "X") {

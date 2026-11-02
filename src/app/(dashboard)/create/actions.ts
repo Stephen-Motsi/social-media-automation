@@ -168,6 +168,12 @@ async function saveDraft(
     about: input.about?.trim().slice(0, 500) || null,
     targetPlatforms: chosen,
     creativeBrief: input.creativeBrief ? (input.creativeBrief as object) : undefined,
+    reviewStatus: "PENDING_REVIEW" as const,
+    reviewedAt: null,
+    reviewedById: null,
+    reviewReason: null,
+    listedAt: null,
+    sendAt: null,
   };
   const post = input.id
     ? await prisma.post.update({ where: { id: input.id, authorId: userId }, data: { ...data, interests: { set: interestIds.map((id) => ({ id })) } } })

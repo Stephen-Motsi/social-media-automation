@@ -3,13 +3,14 @@ import { prisma } from "@/lib/db";
 import { DashboardShell } from "@/components/dashboard-shell";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const [session, pendingSends, flaggedSubscriptions, unread] = await Promise.all([
+  const [session, pendingSends, flaggedSubscriptions, pendingAdvertReviews, unread] = await Promise.all([
     auth(),
     prisma.campaign.count({ where: { status: "PENDING_APPROVAL" } }),
     prisma.subscriber.count({ where: { status: "NEEDS_REVIEW" } }),
+    prisma.post.count({ where: { status: "DRAFT", channelId: null, reviewStatus: "PENDING_REVIEW" } }),
     prisma.notification.count({ where: { readAt: null } }),
   ]);
-  const pendingApprovals = pendingSends + flaggedSubscriptions;
+  const pendingApprovals = pendingSends + flaggedSubscriptions + pendingAdvertReviews;
 
   return (
     <DashboardShell

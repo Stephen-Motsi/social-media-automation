@@ -19,6 +19,12 @@ import { reviewContent } from "@/lib/policy/review";
 import { formatSupport, type PlatformVerdict } from "@/lib/policy/rules";
 import { displayHandle, handleMatches, normalizeHandle, profileUrl, validateHandle } from "@/lib/handles";
 import { formatInZone, parseLocalDateTime, parseTime } from "@/lib/schedule";
+import { randomBytes } from "node:crypto";
+import { decrypt } from "@/lib/crypto";
+import {
+  createWahaSession, deleteWahaSession, getWahaMe, getWahaQr, getWahaSession,
+  logoutWahaSession, startWahaSession, stopWahaSession, wahaConfigured,
+} from "@/lib/waha";
 
 // note: saved, but something after the save can't happen yet (shown as a follow-up, not a failure).
 export type ActionState = { ok?: boolean; error?: string; message?: string; note?: string; verdict?: PlatformVerdict } | undefined;
@@ -35,6 +41,68 @@ function refresh() {
   revalidatePath("/");
 }
 
+export type WahaConfigurationView = {
+  configured: boolean;
+  saved: boolean;
+  baseUrl: string | null;
+  apiKeyConfigured: boolean;
+};
+
+export async function getWahaConfigurationAction(): Promise<WahaConfigurationView> {
+  await requireAdmin();
+  const saved = await prisma.wahaConfiguration.findUnique({ where: { id: "default" } });
+  if (!saved) return { configured: false, saved: false, baseUrl: null, apiKeyConfigured: false };
+  return {
+    configured: true,
+    saved: true,
+    baseUrl: saved.baseUrl,
+    apiKeyConfigured: true,
+  };
+}
+
+export async function saveWahaConfigurationAction(input: { baseUrl: string; apiKey?: string }): Promise<WahaConfigurationView & ActionState> {
+  const admin = await requireAdmin();
+  const baseUrlInput = input.baseUrl.trim();
+  if (!baseUrlInput) return { configured: false, saved: false, baseUrl: null, apiKeyConfigured: false, error: "WAHA Base URL is required." };
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(baseUrlInput);
+  } catch {
+    return { configured: false, saved: false, baseUrl: null, apiKeyConfigured: false, error: "Enter a valid HTTP or HTTPS WAHA Base URL." };
+  }
+  if (!["http:", "https:"].includes(baseUrl.protocol) || !baseUrl.hostname) {
+    return { configured: false, saved: false, baseUrl: null, apiKeyConfigured: false, error: "WAHA Base URL must be a valid HTTP or HTTPS URL." };
+  }
+  const normalizedBaseUrl = baseUrl.toString().replace(/\/$/, "");
+
+  const existing = await prisma.wahaConfiguration.findUnique({ where: { id: "default" } });
+  const apiKey = input.apiKey?.trim() || (existing ? decrypt(existing.apiKeyEncrypted) : "");
+  if (!apiKey) return { configured: false, saved: false, baseUrl: null, apiKeyConfigured: false, error: "WAHA API Key is required." };
+  if (apiKey.length < 8) return { configured: existing !== null, saved: existing !== null, baseUrl: existing?.baseUrl ?? null, apiKeyConfigured: existing !== null, error: "WAHA API Key appears invalid or is too short." };
+
+  try {
+    const response = await fetch(`${normalizedBaseUrl}/api/sessions`, {
+      headers: { accept: "application/json", "x-api-key": apiKey },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return { configured: false, saved: false, baseUrl: normalizedBaseUrl, apiKeyConfigured: false, error: "WAHA rejected the connection. Check the Base URL and API Key." };
+    }
+  } catch {
+    return { configured: false, saved: false, baseUrl: normalizedBaseUrl, apiKeyConfigured: false, error: "Could not connect to WAHA. Check that the server is reachable." };
+  }
+
+  const apiKeyEncrypted = encrypt(apiKey);
+  await prisma.wahaConfiguration.upsert({
+    where: { id: "default" },
+    update: { baseUrl: normalizedBaseUrl, apiKeyEncrypted, updatedById: admin.id },
+    create: { id: "default", baseUrl: normalizedBaseUrl, apiKeyEncrypted, updatedById: admin.id },
+  });
+  await logAdmin(admin.id, "WAHA_CONFIGURATION_SAVED", { baseUrl: normalizedBaseUrl });
+  refresh();
+  return { configured: true, saved: true, baseUrl: normalizedBaseUrl, apiKeyConfigured: true, ok: true, message: "WAHA configuration saved." };
+}
+
 // ---- Containers --------------------------------------------------------------------
 // Meta (Facebook, Instagram, WhatsApp), X and TikTok always exist (ensureAllContainers in
 // src/lib/channels.ts). Admins set each platform's handle in Settings (setHandle below).
@@ -47,77 +115,6 @@ export async function disconnectAccount(id: string): Promise<ActionState> {
   if (removed) await logAdmin(admin.id, "ACCOUNT_DISCONNECTED", { platform: removed.platform, account: removed.displayName });
   refresh();
   return { ok: true };
-}
-
-const whatsappSchema = z.object({
-  phoneNumberId: z.string().trim().regex(/^\d{5,20}$/, "The phone number ID is the long number under API Setup, not the phone number itself."),
-  accessToken: z.string().trim().min(20, "Paste the full access token."),
-});
-
-async function saveWhatsApp(phoneNumberId: string, accessToken: string): Promise<ActionState> {
-  try {
-    // Confirms the ID and token work together, and that it's the number this container names.
-    const number = await getWhatsAppNumber(phoneNumberId, accessToken);
-    const handle = normalizeHandle("WHATSAPP", number.display_phone_number);
-    const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
-    if (!handleMatches("WHATSAPP", channel?.handle, { handle, displayName: number.verified_name, externalId: number.id })) {
-      return {
-        error: `These details are for ${number.display_phone_number}, but this container is for ${displayHandle("WHATSAPP", channel?.handle)}. Use that number's phone number ID, or edit the container.`,
-      };
-    }
-    const displayName = `${number.verified_name} (${number.display_phone_number})`;
-    const data = { displayName, accessTokenEncrypted: encrypt(accessToken), handle, profileUrl: profileUrl("WHATSAPP", handle) };
-    await prisma.socialAccount.upsert({
-      where: { platform_externalId: { platform: "WHATSAPP", externalId: number.id } },
-      update: data,
-      create: { platform: "WHATSAPP", externalId: number.id, ...data },
-    });
-    refresh();
-    return { ok: true, message: `Connected ${displayName}.` };
-  } catch (err) {
-    if (err instanceof GraphApiError) return { error: `Meta didn't accept these details: ${err.message}` };
-    throw err;
-  }
-}
-
-export async function connectWhatsApp(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireAdmin();
-  const parsed = whatsappSchema.safeParse({
-    phoneNumberId: formData.get("phoneNumberId"),
-    accessToken: formData.get("accessToken"),
-  });
-  if (!parsed.success) return { error: parsed.error.issues[0].message };
-  return saveWhatsApp(parsed.data.phoneNumberId, parsed.data.accessToken);
-}
-
-// Uses the permanent (system-user) token in .env. The backend looks up the phone number ID of the
-// number typed in this container, so nothing else needs copying from Meta.
-export async function connectWhatsAppFromEnv(): Promise<ActionState> {
-  await requireAdmin();
-  const token = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!token) return { error: "WHATSAPP_ACCESS_TOKEN isn't set in .env." };
-  let phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  if (!phoneNumberId) {
-    const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
-    if (!channel?.handle) return { error: "Enter the WhatsApp number in Settings first." };
-    try {
-      const wabaIds = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID
-        ? [process.env.WHATSAPP_BUSINESS_ACCOUNT_ID]
-        : (await inspectToken(token)).wabaIds;
-      const found = await findWhatsAppNumber(wabaIds, token, channel.handle);
-      if (!found.number || !found.waba) {
-        return {
-          error: `That token doesn't include ${displayHandle("WHATSAPP", channel.handle)}.${found.shared.length ? ` It has: ${found.shared.map((n) => n.display_phone_number).join(", ")}.` : ""} Check the number, or give the system user access to it in Meta Business settings.`,
-        };
-      }
-      phoneNumberId = found.number.id;
-      await subscribeAppToWaba(found.waba, token);
-    } catch (err) {
-      if (err instanceof GraphApiError) return { error: `Meta didn't accept the token: ${err.message}` };
-      throw err;
-    }
-  }
-  return saveWhatsApp(phoneNumberId, token);
 }
 
 // Change one platform's handle from Settings: a phone number, @handle or profile link.
@@ -429,4 +426,110 @@ function connectHowTo(platform: Platform, handle: string | null) {
     return `connect ${who}: in this container's Settings, press Connect next to the handle (or sign in with Facebook as an admin of that Page).`;
   }
   return `connect ${who}: in this container's Settings, press Connect next to the handle (or sign in as ${who}).`;
+}
+
+export type WahaViewState = {
+  status: string;
+  account: string | null;
+  phone: string | null;
+  qr: string | null;
+  error?: string;
+};
+
+async function syncWahaSession(userId: string, sessionName: string) {
+  const session = await getWahaSession(sessionName).catch(() => null) as { status?: string } | null;
+  const status = typeof session?.status === "string" ? session.status : "STOPPED";
+  let account: Record<string, unknown> | null = null;
+  if (status === "WORKING") {
+    const me = await getWahaMe(sessionName).catch(() => null) as Record<string, unknown> | null;
+    account = me;
+  }
+  const id = account?.id ?? account?.jid ?? account?.phone;
+  const data = {
+    status,
+    lastStatusAt: new Date(),
+    ...(status === "WORKING" ? {
+      ...(account ? { accountInfo: account as object } : {}),
+      accountId: typeof id === "string" ? id : null,
+      accountPhone: typeof account?.pushname === "string" ? String(account.pushname) : (typeof account?.phone === "string" ? account.phone : null),
+      accountPushName: typeof account?.pushName === "string" ? account.pushName as string : (typeof account?.pushname === "string" ? account.pushname as string : null),
+      accountName: typeof account?.pushName === "string" ? account.pushName as string : (typeof account?.pushname === "string" ? account.pushname as string : null),
+    } : {}),
+  };
+  await prisma.whatsappSession.update({ where: { userId }, data });
+  return { status, account };
+}
+
+export async function getWahaStatusAction(): Promise<WahaViewState> {
+  const viewer = await requireAdmin();
+  const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
+  if (!existing) return { status: "NOT_CREATED", account: null, phone: null, qr: null };
+  try {
+    const synced = await syncWahaSession(viewer.id, existing.sessionName);
+    let qr: string | null = null;
+    if (synced.status === "SCAN_QR_CODE") qr = (await getWahaQr(existing.sessionName)).qr;
+    return {
+      status: synced.status,
+      account: typeof synced.account?.pushName === "string" ? synced.account.pushName : (typeof synced.account?.pushname === "string" ? String(synced.account.pushname) : null),
+      phone: typeof synced.account?.phone === "string" ? String(synced.account.phone) : null,
+      qr,
+    };
+  } catch (err) {
+    return { status: existing.status, account: existing.accountName, phone: existing.accountPhone, qr: null, error: err instanceof Error ? err.message : "Could not reach WAHA." };
+  }
+}
+
+export async function createWahaSessionAction(): Promise<WahaViewState> {
+  const viewer = await requireAdmin();
+  if (!(await wahaConfigured())) return { status: "NOT_CONFIGURED", account: null, phone: null, qr: null, error: "Save the WAHA Base URL and API Key in Channels before creating a session." };
+  let existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
+  if (!existing) {
+    const sessionName = `whatsapp-user-${viewer.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+    const webhookSecret = randomBytes(32).toString("hex");
+    const created = await createWahaSession(sessionName, webhookSecret).catch((err) => {
+      throw err;
+    });
+    existing = await prisma.whatsappSession.create({
+      data: { userId: viewer.id, sessionName, status: "STOPPED", webhookSecretEncrypted: created.secretEncrypted },
+    });
+  }
+  await startWahaSession(existing.sessionName);
+  await prisma.whatsappSession.update({ where: { userId: viewer.id }, data: { status: "STARTING", lastStatusAt: new Date() } });
+  return getWahaStatusAction();
+}
+
+export async function reconnectWahaSessionAction(): Promise<WahaViewState> {
+  const viewer = await requireAdmin();
+  const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
+  if (!existing) return createWahaSessionAction();
+  await startWahaSession(existing.sessionName);
+  await prisma.whatsappSession.update({ where: { userId: viewer.id }, data: { status: "STARTING", accountId: null, accountPhone: null, accountName: null, lastStatusAt: new Date() } });
+  return getWahaStatusAction();
+}
+
+export async function disconnectWahaSessionAction(): Promise<WahaViewState> {
+  const viewer = await requireAdmin();
+  const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
+  if (!existing) return { status: "NOT_CREATED", account: null, phone: null, qr: null };
+  await logoutWahaSession(existing.sessionName).catch(async () => stopWahaSession(existing.sessionName));
+  await prisma.whatsappSession.update({
+    where: { userId: viewer.id },
+    data: { status: "STOPPED", accountId: null, accountPhone: null, accountName: null, accountPushName: null, lastStatusAt: new Date() },
+  });
+  await logAdmin(viewer.id, "WHATSAPP_DISCONNECTED", { session: existing.sessionName });
+  refresh();
+  return { status: "STOPPED", account: null, phone: null, qr: null };
+}
+
+export async function deleteWahaSessionAction(): Promise<WahaViewState> {
+  const viewer = await requireAdmin();
+  const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
+  if (existing) {
+    await logoutWahaSession(existing.sessionName).catch(async () => stopWahaSession(existing.sessionName)).catch(() => null);
+    await deleteWahaSession(existing.sessionName).catch(() => null);
+    await prisma.whatsappSession.delete({ where: { userId: viewer.id } });
+    await logAdmin(viewer.id, "WHATSAPP_SESSION_DELETED", { session: existing.sessionName });
+  }
+  refresh();
+  return { status: "NOT_CREATED", account: null, phone: null, qr: null };
 }

@@ -59,6 +59,13 @@ export default async function AdvertsPage() {
                       <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${a.listedAt ? "bg-wa/15 text-emerald-700 dark:text-emerald-300" : "bg-ink/10 text-ink-soft"}`}>
                         {a.listedAt ? "Published" : "Draft"}
                       </span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        a.reviewStatus === "APPROVED" ? "bg-wa/15 text-emerald-700 dark:text-emerald-300" :
+                        a.reviewStatus === "REJECTED" ? "bg-danger/15 text-danger" :
+                        "bg-amber-400/20 text-amber-800 dark:text-amber-200"
+                      }`}>
+                        {a.reviewStatus === "APPROVED" ? "Approved" : a.reviewStatus === "REJECTED" ? "Rejected" : "Pending review"}
+                      </span>
                       {a.listedAt && a.sendAt && a.sendAt > new Date() && <span className="text-xs text-ink-soft">goes out {formatWhen(a.sendAt)}</span>}
                     </div>
                     {a.about && <p className="text-sm text-ink-soft">{a.about}</p>}
@@ -87,7 +94,7 @@ export default async function AdvertsPage() {
                         ))}
                       </ul>
                     )}
-                    <AdvertButtons id={a.id} listed={!!a.listedAt} />
+                    <AdvertButtons id={a.id} listed={!!a.listedAt} reviewStatus={a.reviewStatus} reviewReason={a.reviewReason} />
                   </div>
                 </article>
               </li>

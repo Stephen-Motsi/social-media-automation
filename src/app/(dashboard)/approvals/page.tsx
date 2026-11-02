@@ -2,7 +2,7 @@ import { isStaff, pageViewer } from "@/lib/session";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import type { PlatformVerdict } from "@/lib/policy/rules";
-import { Decision } from "./decision";
+import { AdvertReviewDecision, Decision } from "./decision";
 import { ReviewDecision } from "../audience/add-people";
 import type { SubscriptionCheck } from "@/lib/policy/subscriptions";
 
@@ -38,7 +38,7 @@ function tally<T extends string>(values: T[]) {
 
 export default async function ApprovalsPage() {
   await pageViewer("staff");
-  const [session, pending, history, toReview, waiting] = await Promise.all([
+  const [session, pending, history, toReview, waiting, pendingAdverts] = await Promise.all([
     auth(),
     prisma.campaign.findMany({
       where: { status: "PENDING_APPROVAL" },
@@ -56,6 +56,11 @@ export default async function ApprovalsPage() {
     }),
     prisma.subscriber.findMany({ where: { status: "NEEDS_REVIEW" }, orderBy: { createdAt: "asc" }, include: { interests: true, addedBy: true } }),
     prisma.subscriber.count({ where: { status: "PENDING" } }),
+    prisma.post.findMany({
+      where: { status: "DRAFT", channelId: null, reviewStatus: "PENDING_REVIEW" },
+      orderBy: { createdAt: "asc" },
+      include: { interests: true, reviewedBy: true },
+    }),
   ]);
   const admin = isStaff(session?.user?.role);
 
@@ -68,6 +73,60 @@ export default async function ApprovalsPage() {
           subscribers automatically. You only decide on flagged subscriptions and approve each send.
         </p>
       </div>
+
+      <section className="glass rounded-[32px] p-6">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-lg font-semibold">Adverts pending review</h2>
+          <p className="text-sm text-ink-soft">{pendingAdverts.length} waiting</p>
+        </div>
+        {pendingAdverts.length === 0 ? (
+          <p className="mt-3 text-ink-soft">No adverts are waiting for approval.</p>
+        ) : (
+          <ul className="mt-4 space-y-5">
+            {pendingAdverts.map((advert) => {
+              const media = advert.mediaUrls[0];
+              const isVideo = !!media && /\.(mp4|webm|mov)(?:\?|$)/i.test(media);
+              return (
+                <li key={advert.id}>
+                  <article className="grid gap-5 rounded-[24px] border border-line bg-white/30 p-5 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] dark:bg-white/[0.03]">
+                    <div>
+                      {media && (isVideo
+                        ? <video src={media} controls className="aspect-square w-full rounded-2xl object-cover" />
+                        : <img src={media} alt={advert.title ?? "Advert creative"} className="aspect-square w-full rounded-2xl object-cover" />)}
+                      <p className="mt-3 whitespace-pre-wrap text-sm">{advert.content || "No caption"}</p>
+                    </div>
+                    <div className="space-y-4">
+                      <div>
+                        <h3 className="text-xl font-semibold">{advert.title ?? "Untitled advert"}</h3>
+                        {advert.about && <p className="mt-1 text-sm text-ink-soft">{advert.about}</p>}
+                      </div>
+                      <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                        <div>
+                          <dt className="text-xs text-ink-soft">Target platforms</dt>
+                          <dd className="mt-1 font-medium">{advert.targetPlatforms.length ? advert.targetPlatforms.join(", ") : "None selected"}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-ink-soft">Scheduled posting</dt>
+                          <dd className="mt-1 font-medium">{advert.sendAt ? when.format(advert.sendAt) : "Publish when approved / now"}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-ink-soft">Campaign topics</dt>
+                          <dd className="mt-1">{advert.interests.length ? advert.interests.map((interest) => interest.name).join(", ") : "None"}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-ink-soft">Audience locations</dt>
+                          <dd className="mt-1">{advert.targetLocations.length ? advert.targetLocations.join(", ") : "All locations"}</dd>
+                        </div>
+                      </dl>
+                      {admin && <AdvertReviewDecision id={advert.id} />}
+                    </div>
+                  </article>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       <section className="glass rounded-[32px] p-6">
         <div className="flex flex-wrap items-baseline justify-between gap-2">

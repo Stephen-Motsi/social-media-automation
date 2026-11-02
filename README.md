@@ -19,7 +19,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 | **Meta, X and TikTok containers** | The Channels page has one parent container per provider (`ChannelGroup.kind` is unique): **Meta** (holding any of Facebook, Instagram, WhatsApp), **X** and **TikTok**. Each has Settings (connect/disconnect only) and one social container per platform (`Channel`, unique per platform) with format, advert and schedule. |
 | **Handles decide which real account is used** | Admins enter the handle for each platform (Page username, @handle, WhatsApp number). Connecting only links the account the platform reports for that handle, and posts only go to accounts matching it (`src/lib/handles.ts`). A handle alone can't grant posting rights: the account owner still signs in and approves. |
 | **Only what each API supports** | Stories exist only on Facebook and Instagram. WhatsApp's Business API can't post **Status**, and the X and TikTok APIs can't post stories, so those options are shown disabled with the reason (`formatSupport` in `rules.ts`). |
-| **WhatsApp is messaging, not a feed** | "Publishing" to WhatsApp means sending a message to recipients. Free-form text only works within 24h of the recipient's last message; otherwise a pre-approved **template** is required (`sendTemplate`). |
+| **WhatsApp is messaging, not a feed** | "Publishing" to WhatsApp means sending a message to recipients. WAHA sends approved text and supported media to configured recipients; comply with WhatsApp usage restrictions. |
 | **Instagram needs media** | The Instagram API cannot post text-only. Images must be at a **public URL** that Meta can fetch. |
 | **Tokens encrypted at rest** | All platform access and refresh tokens are stored with AES-256-GCM (`src/lib/crypto.ts`). X and TikTok tokens are refreshed automatically before they expire (`src/lib/tokens.ts`). |
 | **AI images go through platform checks** | Images are generated with OpenAI's GPT image API. Every prompt, image and caption is checked against each platform's rules before it can be saved or published (see [Image generation & platform checks](#image-generation--platform-checks)). |
@@ -30,7 +30,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 - **Auth.js (NextAuth v5)**: Google and Facebook for users, email/password for staff; signed cookies backed by a database session record checked on every request
 - **PostgreSQL** + **Prisma** ORM
 - **Redis** + **BullMQ** for scheduled publishing jobs
-- **Meta Graph API** (Facebook Pages API, Instagram Content Publishing API, WhatsApp Cloud API)
+- **Meta Graph API** (Facebook Pages API and Instagram Content Publishing API) and **WAHA** (WhatsApp)
 - **X API v2** (OAuth 2.0 + PKCE, posts, media upload) and **TikTok** Login Kit + Content Posting API (photo posts)
 - **OpenAI** GPT image generation + `omni-moderation-latest` content moderation
 
@@ -300,7 +300,8 @@ The **Channels** page (`/channels`) is where adverts get posted automatically.
 
   | Platform | Set once in `.env` | Then |
   | --- | --- | --- |
-  | Facebook, Instagram, WhatsApp | `META_SYSTEM_USER_TOKEN`: Meta Business Settings → System users → Generate token (permissions in [Meta app setup](#meta-app-setup-connecting-real-accounts)), with the Pages, Instagram accounts and WhatsApp numbers assigned to that system user. `WHATSAPP_ACCESS_TOKEN` also works | Any of those accounts connects from its handle or number |
+  | Facebook, Instagram | `META_SYSTEM_USER_TOKEN`: Meta Business Settings → System users → Generate a token with the Pages and Instagram accounts assigned to that system user. | Each account connects from its handle |
+  | WhatsApp | Saved from the Channels UI | Each admin uses the QR workflow in Channels |
   | X | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET`: X developer portal → your app → Keys and tokens (app permissions **Read, write and Direct Messages**, generated while signed in as the account you post from). Requests are signed with OAuth 1.0a (`xAuthHeader` in `src/lib/x.ts`) | The handle connects if it's that account; another handle is refused, naming both |
   | TikTok | `TIKTOK_REFRESH_TOKEN` (with `TIKTOK_CLIENT_KEY` / `TIKTOK_CLIENT_SECRET`). TikTok has no portal tokens: the owner signs in once | The handle connects if it's that account |
 
@@ -374,8 +375,8 @@ See [`.env.example`](.env.example) for the full list with comments. The main one
 | `META_APP_ID`, `META_APP_SECRET` | Meta app credentials (the secret also verifies webhook signatures) |
 | `META_GRAPH_API_VERSION` | Graph API version, e.g. `v23.0`. Check the [changelog](https://developers.facebook.com/docs/graph-api/changelog) and update it as needed |
 | `META_WEBHOOK_VERIFY_TOKEN` | Must match the token set in the Meta webhook config |
-| `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_ACCESS_TOKEN` | WhatsApp Cloud API |
-| `META_SYSTEM_USER_TOKEN` | Connect Facebook, Instagram and WhatsApp from their handles ([Channels](#channels-and-scheduling)) |
+| `WAHA_BASE_URL`, `WAHA_API_KEY` | Optional backward-compatible WAHA fallback; the UI configuration is preferred |
+| `META_SYSTEM_USER_TOKEN` | Connect Facebook and Instagram from their handles ([Channels](#channels-and-scheduling)) |
 | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | Connect X from its handle (OAuth 1.0a keys from the developer portal) |
 | `TIKTOK_REFRESH_TOKEN` | Connect TikTok from its handle (from one sign-in by the owner) |
 
@@ -396,17 +397,10 @@ Accounts are connected from each container's **Settings** on the Channels page. 
 
 **Development mode:** without App Review, only people with a role on the Meta app (admin, developer or tester) can connect, and only Pages they manage. That's enough to connect your own accounts. To let other businesses connect, submit those permissions for **App Review** (Advanced Access) and complete **Business Verification**.
 
-### 3. WhatsApp (connected automatically)
-In the Meta container's **Settings**, type the WhatsApp number (any format: `0748 493 651`, `+254 748 493 651`, or a `wa.me` link) and press **Connect**. One Facebook sign-in also requests `whatsapp_business_management` and `whatsapp_business_messaging`; the backend then reads which WhatsApp Business Accounts were shared (`debug_token` granular scopes), finds the typed number in them (`/{waba}/phone_numbers`), stores its **phone number ID** with the sign-in's token, and subscribes the app to that account's messages (`/{waba}/subscribed_apps`). Settings shows when that token expires ("reconnect before …"; Facebook user tokens last about 60 days; use a Login for Business configuration with a system-user token, `META_LOGIN_CONFIG_ID`, for one that doesn't expire).
+### 3. WhatsApp with WAHA
+In **Channels → WhatsApp Settings**, save the WAHA Base URL and API Key as an Admin or Super Admin. The application persists this configuration in the database and encrypts the API key with `TOKEN_ENCRYPTION_KEY`; the API key is never returned to the browser. For backward compatibility, server-side `WAHA_BASE_URL` and `WAHA_API_KEY` may still be used until a UI configuration is saved. On Channels, use the WAHA QR connection workflow for your WhatsApp session. The app creates and starts one isolated WAHA session per admin user; scan the QR in WhatsApp → Linked Devices. Status, account details, disconnect, and reconnect are managed on the same page. Configure WAHA to send session status, message, and acknowledgement webhooks to `AUTH_URL/api/webhooks/waha` with the per-session HMAC secret generated by this app. WAHA API requests and credentials remain server-side.
 
-Alternatively, put a permanent **system-user token** in `.env` as `WHATSAPP_ACCESS_TOKEN` (optionally `WHATSAPP_BUSINESS_ACCOUNT_ID`) and press **Connect using the server's WhatsApp token**: the backend looks up the typed number's phone number ID itself. `WHATSAPP_PHONE_NUMBER_ID` is only needed to skip that lookup. The manual "phone number ID and token" form remains under **Advanced**.
-
-Every handle (number, @handle or link) can be changed directly in Settings with **Change**; accounts that don't match the new entry are disconnected.
-
-#### Manual setup (if you prefer)
-1. Add the **WhatsApp** product. Under **API Setup**, note the **Phone number ID** and **WhatsApp Business Account ID**. Add and verify your real business number to replace the test number.
-2. For a permanent token, go to **Business settings → System users**, create a system user, assign it the app and the WhatsApp account, and generate a token with `whatsapp_business_messaging` and `whatsapp_business_management`. The temporary token on API Setup expires in 24 hours.
-3. In the Meta container's Settings (with WhatsApp ticked and its number as the handle), enter the phone number ID and token. The app checks them with Meta before saving. Alternatively, set `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` in `.env` and use "Add number from server settings", so the token never goes through a browser.
+Every Facebook or Instagram handle can be changed directly in Settings with **Change**; accounts that don't match the new entry are disconnected. WhatsApp uses the separate WAHA connection workflow and does not use Meta Phone Number IDs or Meta access tokens.
 
 ### 4. Webhooks (optional for now)
 Callback URL `https://social.yet-kenya.com/api/webhooks/meta`, verify token = `META_WEBHOOK_VERIFY_TOKEN` from `.env`. Subscribe to `page`, `instagram` and `whatsapp_business_account` fields as needed.
@@ -474,7 +468,7 @@ Suggested order:
 
 - Facebook Pages API: https://developers.facebook.com/docs/pages-api
 - Instagram content publishing: https://developers.facebook.com/docs/instagram-platform/content-publishing
-- WhatsApp Cloud API: https://developers.facebook.com/docs/whatsapp/cloud-api
+- WAHA API: https://waha.devlike.pro/docs/
 - X API: https://docs.x.com/x-api
 - TikTok Content Posting API: https://developers.tiktok.com/doc/content-posting-api-get-started
 - Meta webhooks: https://developers.facebook.com/docs/graph-api/webhooks

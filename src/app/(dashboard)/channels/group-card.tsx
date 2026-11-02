@@ -1,10 +1,14 @@
 "use client";
 
-import { useActionState, useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import type { GroupKind, Platform } from "@prisma/client";
 import { PlatformBadge, platforms } from "@/components/platforms";
 import { groupNames, handleLabels } from "@/lib/handles";
-import { connectHandle, connectWhatsApp, connectWhatsAppFromEnv, disconnectAccount, setHandle, type ActionState } from "./actions";
+import {
+  connectHandle, createWahaSessionAction, disconnectWahaSessionAction, disconnectAccount,
+  getWahaStatusAction, getWahaConfigurationAction, reconnectWahaSessionAction, saveWahaConfigurationAction,
+  setHandle, type ActionState, type WahaConfigurationView, type WahaViewState,
+} from "./actions";
 import { SocialContainer, field, type ChannelView } from "./social-container";
 
 export type AccountView = {
@@ -47,46 +51,117 @@ function MetaMark() {
   );
 }
 
-// Fallbacks for WhatsApp when the Facebook sign-in isn't used.
-function WhatsAppAdvanced({ envReady }: { envReady: boolean }) {
-  const [state, action, pending] = useActionState(connectWhatsApp, undefined);
-  const [envState, setEnvState] = useState<ActionState>();
-  const [envPending, startEnv] = useTransition();
-  const result = envState ?? state;
+function WhatsAppConnection({ envReady }: { envReady: boolean }) {
+  const [state, setState] = useState<WahaViewState>({ status: "NOT_CREATED", account: null, phone: null, qr: null });
+  const [configuration, setConfiguration] = useState<WahaConfigurationView>({ configured: envReady, saved: false, baseUrl: null, apiKeyConfigured: false });
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [configurationMessage, setConfigurationMessage] = useState<ActionState>();
+  const [pending, start] = useTransition();
+
+  useEffect(() => {
+    void getWahaConfigurationAction().then((value) => {
+      setConfiguration(value);
+      setBaseUrl(value.baseUrl ?? "");
+    });
+    let active = true;
+    const refresh = () => getWahaStatusAction().then((value) => { if (active) setState(value); });
+    void refresh();
+    const timer = window.setInterval(refresh, 4000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+
+  const run = (fn: () => Promise<WahaViewState>) => start(async () => setState(await fn()));
+  const connected = state.status === "WORKING";
+  const waiting = state.status === "SCAN_QR_CODE" || state.status === "STARTING";
+
   return (
-    <div className="mt-2 space-y-2">
-      {envReady && (
-        <button
-          type="button"
-          disabled={envPending}
-          onClick={() => startEnv(async () => setEnvState(await connectWhatsAppFromEnv()))}
-          className="blend-whatsapp rounded-full px-4 py-2 text-sm font-medium text-white shadow-md disabled:opacity-60"
-        >
-          {envPending ? "Looking up the number…" : "Connect using the server's WhatsApp token"}
+    <div className="mt-3 space-y-3 rounded-2xl border border-line bg-white/30 p-3 dark:bg-white/[0.03]">
+      <form
+        className="space-y-2 border-b border-line pb-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          start(async () => {
+            const result = await saveWahaConfigurationAction({ baseUrl, apiKey: apiKey || undefined });
+            setConfigurationMessage(result);
+            setConfiguration(result);
+            if (result.saved) setApiKey("");
+          });
+        }}
+      >
+        <p className="text-xs font-medium">WAHA configuration</p>
+        <p className="text-xs text-ink-soft">
+          {configuration.saved ? "Configuration saved" : configuration.configured ? "Configuration available" : "Not configured"}
+        </p>
+        <label className="block text-xs text-ink-soft">
+          WAHA Base URL
+          <input
+            type="url"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://waha.example.com"
+            className={`${field} mt-1 w-full text-sm`}
+          />
+        </label>
+        <label className="block text-xs text-ink-soft">
+          WAHA API Key
+          <div className="mt-1 flex gap-2">
+            <input
+              type={showApiKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={configuration.apiKeyConfigured ? "Saved key •••••••••••• (leave blank to keep)" : "Enter the WAHA API key"}
+              autoComplete="new-password"
+              className={`${field} min-w-0 flex-1 text-sm`}
+            />
+            <button type="button" onClick={() => setShowApiKey((value) => !value)} className="rounded-full border border-line px-2.5 text-xs text-ink-soft">
+              {showApiKey ? "Hide" : "Reveal"}
+            </button>
+          </div>
+        </label>
+        <button type="submit" disabled={pending || !baseUrl.trim() || (!apiKey.trim() && !configuration.apiKeyConfigured)} className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink">
+          {pending ? "Saving…" : configuration.saved ? "Update configuration" : "Save configuration"}
         </button>
+        {configurationMessage?.error && <p role="alert" className="text-xs text-danger">{configurationMessage.error}</p>}
+        {configurationMessage?.ok && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{configurationMessage.message}</p>}
+      </form>
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-medium">WhatsApp connection</p>
+          <p className="text-xs text-ink-soft">{connected ? "Connected" : waiting ? "Waiting for QR scan" : state.status.replaceAll("_", " ").toLowerCase()}</p>
+        </div>
+        <span className={`size-2.5 rounded-full ${connected ? "bg-emerald-500" : waiting ? "bg-amber-500" : "bg-slate-400"}`} aria-label={state.status} />
+      </div>
+      {!configuration.saved && !envReady && <p role="alert" className="text-xs text-danger">Save WAHA configuration before creating a session.</p>}
+      {state.error && <p role="alert" className="text-xs text-danger">{state.error}</p>}
+      {connected && (
+        <div className="text-xs text-ink-soft">
+          {state.account && <p>Account: {state.account}</p>}
+          {state.phone && <p>Phone: {state.phone}</p>}
+        </div>
       )}
-      <details className="text-sm">
-        <summary className="cursor-pointer text-xs text-ink-soft hover:text-ink">Advanced: enter the phone number ID and token yourself</summary>
-        <form action={action} className="mt-2 space-y-2">
-          <label className="block">
-            <span className="text-xs font-medium">Phone number ID</span>
-            <input name="phoneNumberId" inputMode="numeric" autoComplete="off" required className={field} />
-          </label>
-          <label className="block">
-            <span className="text-xs font-medium">Access token</span>
-            <input name="accessToken" type="password" autoComplete="off" required className={field} />
-          </label>
-          <button
-            type="submit"
-            disabled={pending}
-            className="rounded-full border border-line bg-white/50 px-4 py-1.5 font-medium hover:bg-white/80 disabled:opacity-60 dark:bg-white/10"
-          >
-            {pending ? "Checking with Meta…" : "Connect number"}
+      {state.qr && (
+        <div className="flex justify-center rounded-xl bg-white p-3">
+          {/* WAHA returns the QR image only from the server; the browser never receives the WAHA API key. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={state.qr} alt="Scan this QR code with WhatsApp Linked Devices" className="size-56 rounded-lg" />
+          <span className="sr-only">Open WhatsApp, choose Linked Devices, and scan this code.</span>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {!connected && (
+          <button type="button" disabled={pending || (!configuration.saved && !envReady)} onClick={() => run(state.status === "NOT_CREATED" ? createWahaSessionAction : reconnectWahaSessionAction)} className="blend-whatsapp rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
+            {pending ? "Connecting…" : state.status === "NOT_CREATED" ? "Create session & show QR" : "Reconnect"}
           </button>
-        </form>
-      </details>
-      {result?.error && <p role="alert" className="text-sm text-danger">{result.error}</p>}
-      {result?.ok && <p className="text-sm text-emerald-700 dark:text-emerald-300">{result.message}</p>}
+        )}
+        {connected && (
+          <button type="button" disabled={pending} onClick={() => run(disconnectWahaSessionAction)} className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium hover:bg-white/60 disabled:opacity-60">
+            {pending ? "Disconnecting…" : "Disconnect"}
+          </button>
+        )}
+      </div>
+      {waiting && <p className="text-xs text-ink-soft">In WhatsApp: Settings → Linked Devices → Link a device.</p>}
     </div>
   );
 }
@@ -172,6 +247,7 @@ function HandleRow({ item, admin, extra }: { item: PlatformView; admin: boolean;
 
 function AccountList({ accounts, admin }: { accounts: AccountView[]; admin: boolean }) {
   const [pending, start] = useTransition();
+  const [result, setResult] = useState<{ id: string; state: ActionState }>();
   if (accounts.length === 0) return <p className="mt-2 pl-9 text-xs text-ink-soft">Not connected yet.</p>;
   return (
     <ul className="mt-2 space-y-1.5 pl-9">
@@ -189,12 +265,17 @@ function AccountList({ accounts, admin }: { accounts: AccountView[]; admin: bool
             <button
               type="button"
               disabled={pending}
-              onClick={() => start(async () => void (await disconnectAccount(a.id)))}
+              onClick={() => {
+                if (!confirm(`Disconnect ${a.displayName}? It will stop posting to this account.`)) return;
+                start(async () => setResult({ id: a.id, state: await disconnectAccount(a.id) }));
+              }}
               className="rounded-full px-2.5 py-1 text-xs text-ink-soft hover:bg-danger/10 hover:text-danger"
             >
               Disconnect
             </button>
           )}
+          {result?.id === a.id && result.state?.error && <span role="alert" className="text-xs text-danger">{result.state.error}</span>}
+          {result?.id === a.id && result.state?.ok && <span role="status" className="text-xs text-emerald-700 dark:text-emerald-300">Disconnected ✓</span>}
         </li>
       ))}
     </ul>
@@ -233,7 +314,7 @@ function Settings({
             item={i}
             admin={admin}
             extra={
-              admin && i === wa && !i.accounts.some((a) => a.matches) ? <WhatsAppAdvanced envReady={whatsappEnvReady} /> : undefined
+              admin && i === wa ? <WhatsAppConnection envReady={whatsappEnvReady} /> : undefined
             }
           />
         ))}

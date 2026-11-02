@@ -20,6 +20,9 @@ export const computeNextRun = (c: Channel, after = new Date()) => nextRun(schedu
 export async function runChannel(channelId: string): Promise<string> {
   const channel = await prisma.channel.findUniqueOrThrow({ where: { id: channelId }, include: { advert: true } });
   if (!channel.advert) throw new Error("No advert chosen for this channel.");
+  if (channel.advert.reviewStatus !== "APPROVED") {
+    throw new Error("This advert must be approved before the channel can publish or schedule it.");
+  }
 
   // Only post to accounts matching the handle set on this social container.
   const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } })).filter((a) =>

@@ -50,6 +50,9 @@ const checksOf = (advert: { checks: unknown }) => (advert.checks as PlatformVerd
 // it goes to subscribers' own numbers. Every post still goes through the platform checks in the worker.
 export async function postAdvertToPlatforms(advertId: string, at?: Date | null): Promise<PlatformOutcome[]> {
   const advert = await prisma.post.findUniqueOrThrow({ where: { id: advertId } });
+  if (advert.reviewStatus !== "APPROVED") {
+    throw new Error("This advert must be approved before it can be published or scheduled.");
+  }
   const when = at && at > new Date() ? at : null;
   const outcomes: PlatformOutcome[] = [];
   for (const platform of advert.targetPlatforms.filter((p) => p !== "WHATSAPP")) {
@@ -130,6 +133,13 @@ export async function publishAdvert(advertId: string, opts: { sendAt?: Date | nu
   try {
     const advert = await prisma.post.findFirst({ where: { id: advertId, status: "DRAFT", channelId: null } });
     if (!advert) return { ok: false, error: "this advert no longer exists." };
+    if (advert.reviewStatus !== "APPROVED") return {
+      ok: false,
+      error: advert.reviewStatus === "REJECTED"
+        ? `this advert was rejected${advert.reviewReason ? `: ${advert.reviewReason}` : "."}`
+        : "this advert is pending review and must be approved before publishing or scheduling.",
+    };
+    if (advert.listedAt) return { ok: false, error: "this advert is already published. Use Post to platforms again now to retry or republish it." };
     if (!advert.title) return { ok: false, error: "give the advert a title." };
     if (advert.targetPlatforms.length === 0) return { ok: false, error: "choose at least one target platform." };
     if (!advert.content.trim() && !advert.mediaUrls[0]) return { ok: false, error: "add a caption or a photo." };

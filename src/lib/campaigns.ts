@@ -3,7 +3,6 @@ import {
   CONSENT_TEXT,
   newManageToken,
   proposeAll,
-  getAudienceTemplate,
   manageUrl,
   MIN_HOURS_BETWEEN_MESSAGES,
   proposeForSubscriber,
@@ -11,11 +10,9 @@ import {
   templateText,
 } from "@/lib/audience";
 import { evaluateSubscription } from "@/lib/policy/subscriptions";
-import { handleMatches } from "@/lib/handles";
 import { loadImage } from "@/lib/media";
-import { sendTemplate, sendText } from "@/lib/meta/whatsapp";
+import { normalizeWahaChatId, sendWahaImage, sendWahaText, sendWahaVideo } from "@/lib/waha";
 import { reviewContent } from "@/lib/policy/review";
-import { accessTokenFor } from "@/lib/tokens";
 import { mediaFor } from "@/lib/advert-media";
 
 // Sends an approved campaign to its subscribers over WhatsApp (run by the worker).
@@ -25,19 +22,20 @@ export async function sendCampaign(campaignId: string) {
     where: { id: campaignId },
     include: { advert: true, deliveries: { where: { status: "PENDING" }, include: { subscriber: true } } },
   });
-  if (!campaign || !["APPROVED", "SENDING"].includes(campaign.status)) return;
+  if (!campaign || !["APPROVED", "SENDING"].includes(campaign.status)) return { sent: 0, failed: 0, skipped: 0 };
+  if (campaign.advert.reviewStatus !== "APPROVED") {
+    await prisma.campaign.update({ where: { id: campaignId }, data: { status: "FAILED", error: "Publishing blocked: the advert has not been approved." } });
+    return { sent: 0, failed: 0, skipped: 0, error: "Publishing blocked: the advert has not been approved." };
+  }
   // Never early (the scheduler's safety net queues it again when it's due).
-  if (campaign.sendAt && campaign.sendAt.getTime() > Date.now() + 5_000) return;
+  if (campaign.sendAt && campaign.sendAt.getTime() > Date.now() + 5_000) return { sent: 0, failed: 0, skipped: 0, pending: true };
   const fail = (error: string) => prisma.campaign.update({ where: { id: campaignId }, data: { status: "FAILED", error } });
 
-  const template = await getAudienceTemplate();
-  if (!template) return fail("No WhatsApp template set. Add one on the Audience page.");
-
-  const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
-  const account = (await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP" } })).find((a) =>
-    handleMatches("WHATSAPP", channel?.handle, a),
-  );
-  if (!account) return fail("No WhatsApp number connected. Connect it in the Meta container on Channels.");
+  const session = await prisma.whatsappSession.findUnique({ where: { userId: campaign.advert.authorId } });
+  if (!session || session.status !== "WORKING") {
+    await fail("No connected WAHA WhatsApp session. Connect WhatsApp from the Channels dashboard.");
+    return { sent: 0, failed: 0, skipped: 0, error: "No WhatsApp number connected." };
+  }
 
   // Same rule as everywhere else: check the advert against WhatsApp's rules right before sending.
   const advert = campaign.advert;
@@ -47,14 +45,21 @@ export async function sendCampaign(campaignId: string) {
   const { verdicts } = await reviewContent({ caption: advert.content, image }, ["WHATSAPP"]);
   const blockers = verdicts[0].issues.filter((i) => i.severity === "block");
   await prisma.campaign.update({ where: { id: campaignId }, data: { status: "SENDING", checks: verdicts } });
-  if (blockers.length) return fail(`Blocked by policy check: ${blockers.map((b) => b.message).join(" ")}`);
+  if (blockers.length) {
+    const error = `Blocked by policy check: ${blockers.map((b) => b.message).join(" ")}`;
+    await fail(error);
+    return { sent: 0, failed: 0, skipped: 0, error };
+  }
 
-  const token = await accessTokenFor(account);
   const cutoff = new Date(Date.now() - MIN_HOURS_BETWEEN_MESSAGES * 60 * 60 * 1000);
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
   for (const d of campaign.deliveries) {
     const sub = d.subscriber;
     if (sub.status !== "ACTIVE") {
       await prisma.delivery.update({ where: { id: d.id }, data: { status: "SKIPPED", error: "Unsubscribed" } });
+      skipped++;
       continue;
     }
     if (sub.lastSentAt && sub.lastSentAt > cutoff) {
@@ -63,41 +68,41 @@ export async function sendCampaign(campaignId: string) {
         where: { id: d.id },
         data: { status: "SKIPPED", error: `Already messaged in the last ${MIN_HOURS_BETWEEN_MESSAGES} hours` },
       });
+      skipped++;
       continue;
     }
     try {
-      const res = await sendTemplate({
-        phoneNumberId: account.externalId,
-        accessToken: token,
-        to: sub.phone,
-        templateName: template.name,
-        languageCode: template.lang,
-        components: [
-          ...(imageUrl ? [{ type: "header", parameters: [{ type: "image", image: { link: imageUrl } }] }] : []),
-          {
-            type: "body",
-            parameters: [
-              { type: "text", text: templateText(sub.name.split(" ")[0] || sub.name, 60) },
-              { type: "text", text: templateText(advert.content) },
-            ],
-          },
-        ],
-      });
+      const chatId = normalizeWahaChatId(sub.phone);
+      const text = `${templateText(sub.name.split(" ")[0] || sub.name, 60)}\n\n${templateText(advert.content)}`;
+      const lowerUrl = imageUrl?.toLowerCase() ?? "";
+      const res = lowerUrl.match(/\.(mp4|mov|webm)(?:\?|$)/)
+        ? await sendWahaVideo(session.sessionName, chatId, imageUrl!, text)
+        : imageUrl
+          ? await sendWahaImage(session.sessionName, chatId, imageUrl, text)
+          : await sendWahaText(session.sessionName, chatId, text);
+      const externalId = typeof res.id === "string"
+        ? res.id
+        : typeof (res as { _data?: { id?: string } })._data?.id === "string"
+          ? (res as { _data: { id: string } })._data.id
+          : JSON.stringify(res).slice(0, 200);
       await prisma.$transaction([
         prisma.delivery.update({
           where: { id: d.id },
-          data: { status: "SENT", externalId: res.messages[0].id, sentAt: new Date(), error: null },
+          data: { status: "PENDING", externalId, sentAt: new Date(), error: null },
         }),
         prisma.subscriber.update({ where: { id: sub.id }, data: { lastSentAt: new Date() } }),
       ]);
+      sent++;
     } catch (err) {
       await prisma.delivery.update({
         where: { id: d.id },
         data: { status: "FAILED", error: err instanceof Error ? err.message : String(err) },
       });
+      failed++;
     }
   }
   await prisma.campaign.update({ where: { id: campaignId }, data: { status: "SENT" } });
+  return { sent, failed, skipped };
 }
 
 // WhatsApp webhooks from subscribers:
@@ -115,15 +120,13 @@ const STOP_WORDS = /^\s*(stop|unsubscribe|stop all|cancel|end|quit)\s*$/i;
 const JOIN = /^\s*join\s*([a-z0-9]{6})?\s*$/i;
 const MANAGE = /^\s*(manage|menu|settings|my subscription)\s*$/i;
 
-async function replier() {
-  const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
-  const account = (await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP" } })).find((a) =>
-    handleMatches("WHATSAPP", channel?.handle, a),
-  );
-  if (!account) return async () => {};
-  const token = await accessTokenFor(account);
+async function replier(sessionName?: string) {
+  const session = sessionName
+    ? await prisma.whatsappSession.findUnique({ where: { sessionName } })
+    : await prisma.whatsappSession.findFirst({ where: { status: "WORKING" } });
+  if (!session || session.status !== "WORKING") return async () => {};
   return async (to: string, body: string) => {
-    await sendText({ phoneNumberId: account.externalId, accessToken: token, to, body }).catch((err) =>
+    await sendWahaText(session.sessionName, normalizeWahaChatId(to), body).catch((err) =>
       console.error("WhatsApp reply failed:", err instanceof Error ? err.message : err),
     );
   };

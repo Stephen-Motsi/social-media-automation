@@ -1,6 +1,7 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import { QueueUnavailable, withTimeout } from "@/lib/errors";
+import { prisma } from "@/lib/db";
 
 export const PUBLISH_QUEUE = "publish-post";
 
@@ -40,6 +41,13 @@ async function addJob<T>(queue: Queue<T>, name: string, data: T, jobId: string, 
 
 // Enqueue a post to publish at `scheduledAt` (or immediately if omitted/past).
 export async function schedulePost(postId: string, scheduledAt?: Date | null) {
+  const post = await prisma.post.findUnique({
+    where: { id: postId },
+    select: { sourceAdvertId: true, sourceAdvert: { select: { reviewStatus: true } } },
+  });
+  if (post?.sourceAdvertId && post.sourceAdvert?.reviewStatus !== "APPROVED") {
+    throw new Error("The source advert must be approved before this post can be scheduled.");
+  }
   await addJob(publishQueue(), "publish", { postId }, postId, scheduledAt);
 }
 
@@ -51,6 +59,13 @@ let campaignQueue: Queue<CampaignJob> | undefined;
 
 // Sends at `sendAt` (or straight away if omitted/past).
 export async function queueCampaign(campaignId: string, sendAt?: Date | null) {
+  const campaign = await prisma.campaign.findUnique({
+    where: { id: campaignId },
+    select: { advert: { select: { reviewStatus: true } } },
+  });
+  if (campaign?.advert.reviewStatus !== "APPROVED") {
+    throw new Error("The advert must be approved before its campaign can be queued.");
+  }
   campaignQueue ??= new Queue<CampaignJob>(CAMPAIGN_QUEUE, { connection: redisConnection() });
   await addJob(campaignQueue, "send", { campaignId }, `campaign-${campaignId}`, sendAt);
 }
@@ -62,6 +77,10 @@ export type DeliverJob = { advertId: string; userId: string };
 let deliverQueue: Queue<DeliverJob> | undefined;
 
 export async function queueDelivery(advertId: string, userId: string, at?: Date | null) {
+  const advert = await prisma.post.findUnique({ where: { id: advertId }, select: { reviewStatus: true } });
+  if (advert?.reviewStatus !== "APPROVED") {
+    throw new Error("The advert must be approved before delivery can be queued.");
+  }
   deliverQueue ??= new Queue<DeliverJob>(DELIVER_QUEUE, { connection: redisConnection() });
   await addJob(deliverQueue, "deliver", { advertId, userId }, `deliver-${advertId}-${userId}`, at);
 }

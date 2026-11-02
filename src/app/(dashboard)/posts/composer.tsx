@@ -241,15 +241,20 @@ export function PostComposer({ choices }: { choices: PlatformChoice[] }) {
 export function CancelPost({ id }: { id: string }) {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string>();
+  const [cancelled, setCancelled] = useState(false);
   return (
     <span className="flex items-center gap-2">
       <button
         type="button"
         disabled={pending}
-        onClick={() => confirm("Cancel this scheduled post?") && start(async () => setError((await cancelPost(id)).error))}
+        onClick={() => confirm("Cancel this scheduled post?") && start(async () => {
+          const res = await cancelPost(id);
+          setError(res.error);
+          if (res.ok) setCancelled(true);
+        })}
         className="text-xs text-ink-soft hover:text-danger"
       >
-        {pending ? "Cancelling…" : "Cancel"}
+        {pending ? "Cancelling…" : cancelled ? "Cancelled ✓" : "Cancel"}
       </button>
       {error && <span role="alert" className="text-xs text-danger">{error}</span>}
     </span>

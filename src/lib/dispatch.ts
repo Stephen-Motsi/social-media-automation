@@ -9,7 +9,7 @@ const GRACE_MS = 60_000;
 export async function requeueMissed(now = new Date()) {
   const before = new Date(now.getTime() - GRACE_MS);
   const [posts, campaigns] = await Promise.all([
-    prisma.post.findMany({ where: { status: "SCHEDULED", scheduledAt: { lte: before } }, select: { id: true } }),
+    prisma.post.findMany({ where: { status: { in: ["SCHEDULED", "PUBLISHING"] }, scheduledAt: { lte: before } }, select: { id: true } }),
     prisma.campaign.findMany({
       where: { status: "APPROVED", approvedAt: { lte: before }, OR: [{ sendAt: null }, { sendAt: { lte: before } }] },
       select: { id: true },

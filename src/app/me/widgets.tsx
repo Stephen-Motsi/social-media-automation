@@ -163,14 +163,23 @@ export function SessionButtons({ id, current }: { id?: string; current?: boolean
     return current ? (
       <span className="text-xs text-emerald-700 dark:text-emerald-300">This device</span>
     ) : (
-      <button
-        type="button"
-        disabled={pending}
-        onClick={() => start(async () => void (await revokeSession(id)))}
-        className="rounded-full px-2.5 py-1 text-xs text-ink-soft hover:bg-danger/10 hover:text-danger"
-      >
-        Sign out
-      </button>
+      <span className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => start(async () => {
+            const res = await revokeSession(id).catch(() => ({ error: "The server didn't respond. Try again." }));
+            if (!res) setMsg("The server didn't respond. Try again.");
+            else if (res.error) setMsg(res.error);
+            else if ("message" in res && res.message) setMsg(res.message);
+            else setMsg("Signed out.");
+          })}
+          className="rounded-full px-2.5 py-1 text-xs text-ink-soft hover:bg-danger/10 hover:text-danger"
+        >
+          Sign out
+        </button>
+        {msg && <span className="text-xs text-ink-soft">{msg}</span>}
+      </span>
     );
   }
   return (
@@ -178,7 +187,13 @@ export function SessionButtons({ id, current }: { id?: string; current?: boolean
       <button
         type="button"
         disabled={pending}
-        onClick={() => start(async () => setMsg((await revokeOtherSessions())?.message))}
+        onClick={() => start(async () => {
+          const res = await revokeOtherSessions().catch(() => ({ error: "The server didn't respond. Try again." }));
+          if (!res) setMsg("The server didn't respond. Try again.");
+          else if ("error" in res && res.error) setMsg(res.error);
+          else if ("message" in res && res.message) setMsg(res.message);
+          else setMsg("Signed out.");
+        })}
         className="rounded-full border border-line px-3 py-1.5 text-xs font-medium hover:bg-white/60 dark:hover:bg-white/10"
       >
         Sign out all other devices

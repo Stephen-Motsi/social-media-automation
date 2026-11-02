@@ -71,13 +71,15 @@ function PostButton({ id, label, task, className }: { id: string; label: string;
   );
 }
 
-export function AdvertButtons({ id, listed }: { id: string; listed: boolean }) {
+export function AdvertButtons({ id, listed, reviewStatus = "APPROVED", reviewReason }: { id: string; listed: boolean; reviewStatus?: "PENDING_REVIEW" | "APPROVED" | "REJECTED"; reviewReason?: string | null }) {
   const { state, pending, run } = useAction();
   return (
     <div className="flex flex-wrap items-center gap-2">
       <a href={`/create?id=${id}`} className={ghost}>
         {listed ? "Edit" : "Edit draft"}
       </a>
+      {reviewStatus === "PENDING_REVIEW" && <a href="/approvals" className="blend-meta rounded-full px-3.5 py-1.5 text-xs font-medium text-white">Pending review</a>}
+      {reviewStatus === "REJECTED" && <span className="text-xs text-danger">Rejected{reviewReason ? `: ${reviewReason}` : ""}</span>}
       {listed ? (
         <>
           <PostButton id={id} label="Post to platforms again now" task={() => postNow(id)} className={ghost} />
@@ -87,10 +89,14 @@ export function AdvertButtons({ id, listed }: { id: string; listed: boolean }) {
         </>
       ) : (
         <>
-          <PostButton id={id} label="Post now" task={() => publish(id)} className="blend-meta rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-50" />
-          <a href={`/create?id=${id}&schedule=1`} className={ghost}>
-            Schedule…
-          </a>
+          {reviewStatus === "APPROVED" && (
+            <>
+              <PostButton id={id} label="Post now" task={() => publish(id)} className="blend-meta rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-50" />
+              <a href={`/create?id=${id}&schedule=1`} className={ghost}>
+                Schedule…
+              </a>
+            </>
+          )}
         </>
       )}
       <Feedback state={state} />
