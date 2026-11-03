@@ -124,6 +124,11 @@ model WhatsappSession {
   qrGeneratedAt          DateTime?
   qrExpiresAt            DateTime?
   qrGenerationCount      Int       @default(0)
+  qrData                 String?   @db.Text
+  authMethod             String?
+  pairingCode            String?
+  pairingCodeRequestedAt DateTime?
+  pairingCodeExpiresAt   DateTime?
   lastError              String?
   recoveryEnabled        Boolean   @default(false)
   recoveryAttemptCount   Int       @default(0)

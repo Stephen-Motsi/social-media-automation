@@ -75,10 +75,13 @@ export async function POST(req: NextRequest) {
           lastStatusAt: new Date(),
           stateVersion: { increment: 1 },
           ...(normalized !== "SCAN_QR_CODE" ? { qrGeneratedAt: null, qrExpiresAt: null } : {}),
-          ...(normalized === "WORKING" ? { recoveryAttemptCount: 0, lastRecoveryAt: null, lastError: null } : {}),
+          ...(normalized !== "SCAN_QR_CODE" ? { qrData: null } : {}),
+          ...(normalized === "WORKING"
+            ? { recoveryAttemptCount: 0, lastRecoveryAt: null, lastError: null, pairingCode: null, pairingCodeRequestedAt: null, pairingCodeExpiresAt: null }
+            : {}),
         },
       });
-      if (normalized === "SCAN_QR_CODE") {
+      if (normalized === "SCAN_QR_CODE" && session.authMethod !== "PHONE") {
         const generation = session.qrGenerationCount + 1;
         const freshQr = await getWahaQr(session.sessionName).catch((error: unknown) => {
           console.error(`[WAHA] QR retrieval failed for ${session.sessionName}:`, error instanceof Error ? error.message : error);
@@ -90,12 +93,18 @@ export async function POST(req: NextRequest) {
             qrGeneratedAt: freshQr.qr ? new Date() : null,
             qrExpiresAt: freshQr.qr ? new Date(Date.now() + wahaQrExpiryMs(generation)) : null,
             qrGenerationCount: generation,
+            qrData: freshQr.qr,
             lastError: freshQr.qr ? null : "WAHA has not produced a QR code yet.",
           },
         });
       }
-      if (normalized === "WORKING" && typeof payload.me === "object" && payload.me) {
-        const me = payload.me as Record<string, unknown>;
+      const nestedPayload = typeof payload.payload === "object" && payload.payload
+        ? payload.payload as Record<string, unknown>
+        : null;
+      if (normalized === "WORKING" && ((typeof payload.me === "object" && payload.me) || (nestedPayload && typeof nestedPayload.me === "object" && nestedPayload.me))) {
+        const me = (typeof payload.me === "object" && payload.me
+          ? payload.me
+          : nestedPayload?.me) as Record<string, unknown>;
         const id = typeof me.id === "string" ? me.id : null;
         const phone = id?.split("@")[0] ?? null;
         await prisma.whatsappSession.update({

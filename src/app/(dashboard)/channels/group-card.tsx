@@ -7,6 +7,7 @@ import { groupNames, handleLabels } from "@/lib/handles";
 import {
   connectHandle, createWahaSessionAction, disconnectWahaSessionAction, disconnectAccount,
   getWahaStatusAction, getWahaConfigurationAction, reconnectWahaSessionAction, saveWahaConfigurationAction,
+  refreshWahaQrAction, requestWahaPairingCodeAction, setWahaAuthMethodAction,
   testWahaConfigurationAction,
   setHandle, type ActionState, type WahaConfigurationView, type WahaViewState,
 } from "./actions";
@@ -59,6 +60,10 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [countryCode, setCountryCode] = useState("254");
+  const localPhone = phoneNumber.replace(/\D/g, "").replace(/^0/, "");
+  const fullPhoneNumber = localPhone ? `${countryCode}${localPhone}` : "";
+  const [authMethod, setAuthMethod] = useState<"QR" | "PHONE">("QR");
   const [configurationMessage, setConfigurationMessage] = useState<ActionState>();
   const [setupStep, setSetupStep] = useState<1 | 2 | 3>(1);
   const [testMessage, setTestMessage] = useState("");
@@ -67,6 +72,7 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
   const [pending, start] = useTransition();
   const pollingInFlight = useRef(false);
   const reconnectPending = useRef(false);
+  const pairingPending = useRef(false);
   const qrTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -78,7 +84,17 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
     }
     const refresh = () => getWahaStatusAction().then((value) => {
       setState(value);
-      if (value.phone) setPhoneNumber(value.phone.replace(/[^\d]/g, ""));
+      if (value.authMethod) setAuthMethod(value.authMethod);
+      if (value.phone) {
+        const digits = value.phone.replace(/[^\d]/g, "");
+        const country = ["971", "966", "255", "256", "250", "260", "263", "234", "233", "254", "27", "44", "91", "1"].find((code) => digits.startsWith(code));
+        if (country) {
+          setCountryCode(country);
+          setPhoneNumber(digits.slice(country.length).replace(/^0/, ""));
+        } else {
+          setPhoneNumber(digits);
+        }
+      }
     });
     void refresh();
   }, [admin]);
@@ -91,7 +107,17 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
       pollingInFlight.current = true;
       void getWahaStatusAction().then((value) => {
         setState(value);
-        if (value.phone) setPhoneNumber(value.phone.replace(/[^\d]/g, ""));
+        if (value.authMethod) setAuthMethod(value.authMethod);
+        if (value.phone) {
+          const digits = value.phone.replace(/[^\d]/g, "");
+          const country = ["971", "966", "255", "256", "250", "260", "263", "234", "233", "254", "27", "44", "91", "1"].find((code) => digits.startsWith(code));
+          if (country) {
+            setCountryCode(country);
+            setPhoneNumber(digits.slice(country.length).replace(/^0/, ""));
+          } else {
+            setPhoneNumber(digits);
+          }
+        }
       }).catch(() => {
         setState((current) => ({ ...current, status: "CONNECTION_ERROR", error: "Could not refresh WAHA connection status." }));
       }).finally(() => {
@@ -139,7 +165,6 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
             : state.status === "DISCONNECTED" ? "Reconnecting…"
               : state.status === "CONNECTION_ERROR" ? "Connection error"
                 : state.status.replaceAll("_", " ").toLowerCase();
-
   return (
     <div className="mt-3 space-y-3 rounded-2xl border border-line bg-white/30 p-3 dark:bg-white/[0.03]">
       {admin && <div className="space-y-3 border-b border-line pb-3">
@@ -348,18 +373,45 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
       </div>
       {!configuration.saved && !envReady && <p role="alert" className="text-xs text-danger">Save WAHA configuration before creating a session.</p>}
       {state.error && <p role="alert" className="text-xs text-danger">{state.error}</p>}
-      <label className="block text-xs text-ink-soft">
-        WhatsApp phone number
-        <input
-          id="whatsapp-connect"
-          type="tel"
-          value={phoneNumber}
-          onChange={(e) => setPhoneNumber(e.target.value)}
-          placeholder="254712345678"
-          disabled={connected || pending}
-          className={`${field} mt-1 w-full text-sm`}
-        />
-      </label>
+      {!connected && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" aria-label="WhatsApp authentication method">
+          <button type="button" aria-pressed={authMethod === "QR"} onClick={() => { setAuthMethod("QR"); setCopyMessage(""); start(async () => setState(await setWahaAuthMethodAction("QR"))); }} disabled={pending} className={`rounded-lg border px-3 py-2 text-xs font-medium ${authMethod === "QR" ? "border-black bg-black text-white" : "border-line text-ink-soft"}`}>Scan QR Code</button>
+          <button type="button" aria-pressed={authMethod === "PHONE"} onClick={() => { setAuthMethod("PHONE"); setCopyMessage(""); start(async () => setState(await setWahaAuthMethodAction("PHONE"))); }} disabled={pending} className={`rounded-lg border px-3 py-2 text-xs font-medium ${authMethod === "PHONE" ? "border-black bg-black text-white" : "border-line text-ink-soft"}`}>Connect Using Phone Number</button>
+        </div>
+      )}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[145px_minmax(0,1fr)]">
+        <label className="block text-xs text-ink-soft">
+          Country
+          <select value={countryCode} onChange={(e) => setCountryCode(e.target.value)} disabled={connected || pending} className={`${field} mt-1 w-full min-w-0 px-3 py-2.5 text-sm`}>
+            <option value="254">Kenya +254</option>
+            <option value="255">Tanzania +255</option>
+            <option value="256">Uganda +256</option>
+            <option value="250">Rwanda +250</option>
+            <option value="260">Zambia +260</option>
+            <option value="263">Zimbabwe +263</option>
+            <option value="27">South Africa +27</option>
+            <option value="234">Nigeria +234</option>
+            <option value="233">Ghana +233</option>
+            <option value="1">USA/Canada +1</option>
+            <option value="44">UK +44</option>
+            <option value="91">India +91</option>
+            <option value="971">UAE +971</option>
+            <option value="966">Saudi Arabia +966</option>
+          </select>
+        </label>
+        <label className="block text-xs text-ink-soft">
+          WhatsApp phone number
+          <input
+            id="whatsapp-connect"
+            type="tel"
+            value={phoneNumber}
+            onChange={(e) => setPhoneNumber(e.target.value)}
+            placeholder={authMethod === "PHONE" ? "712345678" : "712345678"}
+            disabled={connected || pending}
+            className={`${field} mt-1 w-full min-w-0 px-3 py-2.5 text-sm`}
+          />
+        </label>
+      </div>
       {state.sessionName && (
         <div className="text-xs text-ink-soft">
           <p>Session name: <span className="font-mono">{state.sessionName}</span></p>
@@ -374,7 +426,57 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
       {state.pairingMismatch && (
         <p role="alert" className="text-xs text-danger">The paired WhatsApp account does not match the entered phone number.</p>
       )}
-      {state.qr && (
+      {authMethod === "PHONE" && state.pairingCode && (
+        <div className="space-y-3 rounded-xl border border-line bg-white/50 p-3 dark:bg-white/[0.04]">
+          <div>
+            <p className="text-xs font-medium">Your device-linking code</p>
+            <p className="mt-1 font-mono text-2xl font-bold tracking-widest text-ink">{state.pairingCode}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              void navigator.clipboard.writeText(state.pairingCode ?? "")
+                .then(() => setCopyMessage("Pairing code copied."))
+                .catch(() => setCopyMessage("Could not copy automatically. Select the code and copy it manually."));
+            }}
+            className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium"
+          >
+            Copy Code
+          </button>
+          {copyMessage && <p className="text-xs text-emerald-700 dark:text-emerald-300">{copyMessage}</p>}
+          <div className="text-xs text-ink-soft">
+            <p className="font-medium text-ink">Enter the code in WhatsApp:</p>
+            <ol className="mt-1 list-decimal space-y-1 pl-4">
+              <li>Open WhatsApp on the phone.</li>
+              <li>Go to Settings → Linked Devices.</li>
+              <li>Tap Link a Device, then Link with Phone Number Instead.</li>
+              <li>Enter this pairing code to link this WhatsApp account.</li>
+            </ol>
+            <p>This is a device-linking code, not an SMS OTP.</p>
+          </div>
+        </div>
+      )}
+      {authMethod === "PHONE" && !connected && !state.pairingCode && (
+        <button
+          type="button"
+          disabled={pending || pairingPending.current || (!configuration.saved && !envReady) || !/^\d{8,15}$/.test(fullPhoneNumber)}
+          onClick={() => {
+            if (pairingPending.current) return;
+            pairingPending.current = true;
+            start(async () => {
+              try {
+                setState(await requestWahaPairingCodeAction(fullPhoneNumber));
+              } finally {
+                pairingPending.current = false;
+              }
+            });
+          }}
+          className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink"
+        >
+          {pending ? "Generating pairing code…" : "Connect Using Phone Number"}
+        </button>
+      )}
+      {authMethod === "QR" && state.qr && (
         <div className="space-y-2 rounded-xl bg-white p-3">
           <div className="flex justify-center">
             {/* WAHA returns the QR image only from the server; the browser never receives the WAHA API key. */}
@@ -390,23 +492,23 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
         </div>
       )}
       <div className="flex flex-wrap gap-2">
-        {state.status === "SCAN_QR_CODE" && (
+        {authMethod === "QR" && state.status === "SCAN_QR_CODE" && (
           <button
             type="button"
             disabled={pending}
-            onClick={() => run(getWahaStatusAction)}
+            onClick={() => run(refreshWahaQrAction)}
             className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium disabled:opacity-60"
           >
             Refresh QR code
           </button>
         )}
-        {!connected && (
+        {!connected && authMethod === "QR" && (
           <button
             type="button"
-            disabled={pending || (!configuration.saved && !envReady) || !/^\d{8,15}$/.test(phoneNumber.replace(/\D/g, ""))}
+            disabled={pending || (!configuration.saved && !envReady)}
             onClick={() => run(state.status === "NOT_CREATED"
-              ? () => createWahaSessionAction(phoneNumber)
-              : () => reconnectWahaSessionAction(phoneNumber), true)}
+              ? () => createWahaSessionAction()
+              : () => reconnectWahaSessionAction(), true)}
             className="blend-whatsapp rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
           >
             {pending ? "Connecting…" : state.status === "NOT_CREATED" ? "Connect WhatsApp" : "Reconnect"}
@@ -418,7 +520,9 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
           </button>
         )}
       </div>
-      {waiting && <p className="text-xs text-ink-soft">In WhatsApp: Settings → Linked Devices → Link a device.</p>}
+      {waiting && <p className="text-xs text-ink-soft">{authMethod === "PHONE"
+        ? "In WhatsApp: Linked Devices → Link a Device → Link with Phone Number Instead."
+        : "In WhatsApp: Settings → Linked Devices → Link a device."}</p>}
     </div>
   );
 }

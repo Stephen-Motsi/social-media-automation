@@ -11,8 +11,11 @@ import {
   logoutWahaSession,
   normalizeWahaPhoneNumber,
   restartWahaSession,
+  requestWahaPairingCode as requestWahaPairingCodeFromClient,
   startWahaSession,
   stopWahaSession,
+  updateWahaSession,
+  wahaWebhookUrl,
   WahaApiError,
   shouldFetchWahaQr,
   wahaQrExpiryMs,
@@ -26,6 +29,9 @@ export type WahaLifecycleView = {
   qr: string | null;
   qrExpiresAt?: string | null;
   pairingMismatch?: boolean;
+  authMethod?: "QR" | "PHONE";
+  pairingCode?: string | null;
+  pairingCodeExpiresAt?: string | null;
   error?: string;
 };
 
@@ -64,7 +70,8 @@ async function updateLifecycleStatus(userId: string, status: string, error?: str
       lastError: error ?? (["WORKING", "SCAN_QR_CODE", "STARTING"].includes(status) ? null : existing.lastError),
       stateVersion: { increment: 1 },
       ...(status !== "SCAN_QR_CODE" ? { qrGeneratedAt: null, qrExpiresAt: null } : {}),
-      ...(status === "WORKING" ? { recoveryAttemptCount: 0, lastRecoveryAt: null } : {}),
+      ...(status !== "SCAN_QR_CODE" ? { qrData: null } : {}),
+      ...(status === "WORKING" ? { recoveryAttemptCount: 0, lastRecoveryAt: null, pairingCode: null, pairingCodeExpiresAt: null } : {}),
     },
   });
 }
@@ -73,8 +80,18 @@ export async function syncWahaSession(userId: string, sessionName: string): Prom
   let status = "CONNECTION_ERROR";
   let account: Record<string, unknown> | null = null;
   try {
-    const response = await getWahaSession(sessionName) as { status?: string } | null;
+    const response = await getWahaSession(sessionName) as { status?: string; config?: { webhooks?: Array<{ url?: string }> } } | null;
     status = normalizeStatus(response?.status);
+    const desiredWebhookUrl = wahaWebhookUrl();
+    const webhooks = response?.config?.webhooks ?? [];
+    if (!webhooks.some((webhook) => webhook.url === desiredWebhookUrl)) {
+      const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
+      if (existing?.webhookSecretEncrypted) {
+        await updateWahaSession(sessionName, decrypt(existing.webhookSecretEncrypted)).catch((error: unknown) => {
+          console.error("[WAHA] webhook configuration update failed:", error instanceof Error ? error.message : error);
+        });
+      }
+    }
     if (status === "WORKING") account = await getWahaMe(sessionName).catch(() => null) as Record<string, unknown> | null;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not reach WAHA.";
@@ -119,7 +136,12 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
             status: "STARTING",
             qrGeneratedAt: null,
             qrExpiresAt: null,
+            qrData: null,
             qrGenerationCount: 0,
+            authMethod: null,
+            pairingCode: null,
+            pairingCodeRequestedAt: null,
+            pairingCodeExpiresAt: null,
             recoveryAttemptCount: { increment: 1 },
             lastStatusAt: new Date(),
             lastError: null,
@@ -133,7 +155,15 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
       return { status: "FAILED", sessionName: existing.sessionName, account: null, phone: existing.phoneNumber, qr: null, qrExpiresAt: null, error: qrError };
     }
   }
-  if (shouldFetchWahaQr(synced.status, existing.qrGenerationCount)) {
+  const qrNeedsRefresh = !expired && existing.qrExpiresAt && existing.qrExpiresAt.getTime() > Date.now();
+  if (synced.status === "SCAN_QR_CODE" && existing.qrData && existing.qrExpiresAt && !expired && existing.authMethod !== "PHONE") {
+    qr = existing.qrData;
+  }
+  if (
+    existing.authMethod !== "PHONE"
+    && shouldFetchWahaQr(synced.status, existing.qrGenerationCount)
+    && (!qrNeedsRefresh || expired)
+  ) {
     try {
       const fresh = await getWahaQr(existing.sessionName);
       qr = fresh.qr;
@@ -150,6 +180,7 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
             qrGeneratedAt: new Date(),
             qrExpiresAt,
             qrGenerationCount: generation,
+            qrData: qr,
             lastError: null,
           },
         });
@@ -161,6 +192,45 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
       await updateLifecycleStatus(userId, synced.status, qrError);
     }
   }
+
+  // Phone pairing is challenge generation, not an authentication timeout. Generate once,
+  // cache the code, and leave status polling responsible only for detecting WORKING.
+  if (
+    synced.status === "SCAN_QR_CODE"
+    && existing.authMethod === "PHONE"
+    && existing.phoneNumber
+    && !existing.pairingCode
+  ) {
+    const requestedRecently = existing.pairingCodeRequestedAt
+      && existing.pairingCodeRequestedAt.getTime() > Date.now() - 3_000;
+    if (!requestedRecently) {
+      try {
+        await withSessionLock(existing.sessionName, async () => {
+          const latest = await prisma.whatsappSession.findUnique({ where: { userId } });
+          if (!latest?.pairingCode && latest?.authMethod === "PHONE" && latest.status !== "WORKING") {
+            await prisma.whatsappSession.update({
+              where: { userId },
+              data: { pairingCodeRequestedAt: new Date(), lastError: null },
+            });
+            const result = await requestWahaPairingCodeFromClient(existing.sessionName, latest.phoneNumber ?? existing.phoneNumber!);
+            await prisma.whatsappSession.update({
+              where: { userId },
+              data: {
+                pairingCode: result.code,
+                pairingCodeRequestedAt: new Date(),
+                pairingCodeExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+                lastError: null,
+              },
+            });
+          }
+        });
+      } catch (error) {
+        qrError = error instanceof Error ? error.message : "Pairing-code generation failed.";
+        await updateLifecycleStatus(userId, synced.status, qrError);
+      }
+    }
+  }
+
   const refreshed = await prisma.whatsappSession.findUnique({ where: { userId } });
   const actualPhone = typeof synced.account?.phone === "string"
     ? String(synced.account.phone)
@@ -183,8 +253,186 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
     qr,
     qrExpiresAt: qr && refreshed?.qrExpiresAt ? refreshed.qrExpiresAt.toISOString() : null,
     pairingMismatch: mismatch,
+    authMethod: refreshed?.authMethod === "PHONE" ? "PHONE" : "QR",
+    pairingCode: refreshed?.pairingCode
+      ? refreshed.pairingCode
+      : null,
+    pairingCodeExpiresAt: refreshed?.pairingCode && refreshed.pairingCodeExpiresAt
+      ? refreshed.pairingCodeExpiresAt.toISOString()
+      : null,
     error: qrError ?? (mismatch ? "The paired WhatsApp account does not match the entered phone number. Disconnect and pair the correct account." : refreshed?.lastError ?? undefined),
   };
+}
+
+export async function requestWahaPairingCode(userId: string, phoneNumber: string): Promise<WahaLifecycleView> {
+  const normalizedPhone = normalizeWahaPhoneNumber(phoneNumber);
+  let existing = await prisma.whatsappSession.findUnique({ where: { userId } });
+  if (!existing) {
+    await connectWahaSession(userId, normalizedPhone);
+    existing = await prisma.whatsappSession.findUnique({ where: { userId } });
+  }
+  if (!existing) {
+    return { status: "CONNECTION_ERROR", sessionName: null, account: null, phone: normalizedPhone, qr: null, authMethod: "PHONE", error: "Could not create the WhatsApp session." };
+  }
+  if (
+    existing.authMethod === "PHONE"
+    && existing.phoneNumber === normalizedPhone
+    && existing.pairingCode
+  ) {
+    const status = normalizeStatus(existing.status);
+    return {
+      status,
+      sessionName: existing.sessionName,
+      account: existing.accountName,
+      phone: normalizedPhone,
+      qr: null,
+      authMethod: "PHONE",
+      pairingCode: existing.pairingCode,
+      pairingCodeExpiresAt: existing.pairingCodeExpiresAt?.toISOString() ?? null,
+      error: "The current pairing code is still active.",
+    };
+  }
+
+  await prisma.whatsappSession.update({
+    where: { userId },
+    data: {
+      phoneNumber: normalizedPhone,
+      authMethod: "PHONE",
+      qrGeneratedAt: null,
+      qrExpiresAt: null,
+      ...(existing.phoneNumber !== normalizedPhone ? {
+        pairingCode: null,
+        pairingCodeRequestedAt: null,
+        pairingCodeExpiresAt: null,
+      } : {}),
+    },
+  });
+
+  return withSessionLock(existing.sessionName, async () => {
+    const current = await getWahaSession(existing.sessionName).catch((error: unknown) => {
+      if (error instanceof WahaApiError && error.status === 404) return null;
+      throw error;
+    }) as { status?: string } | null;
+    const status = normalizeStatus(current?.status);
+
+    if (status === "WORKING") {
+      await updateLifecycleStatus(userId, "WORKING");
+      return getWahaView(userId);
+    }
+    if (status === "STARTING" || status === "STOPPED") {
+      if (status === "STOPPED") {
+        try {
+          await startWahaSession(existing.sessionName);
+          await updateLifecycleStatus(userId, "STARTING");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not start the WAHA session.";
+          if (error instanceof WahaApiError && error.status === 504) {
+            await updateLifecycleStatus(userId, "STARTING", "WAHA browser startup is still in progress. Checking pairing readiness automatically.");
+          } else {
+            await updateLifecycleStatus(userId, "CONNECTION_ERROR", message);
+          }
+        }
+      }
+      return {
+        status: "STARTING",
+        sessionName: existing.sessionName,
+        account: existing.accountName,
+        phone: normalizedPhone,
+        qr: null,
+        authMethod: "PHONE",
+        pairingCode: null,
+        error: "Session is starting. Request the pairing code again when WAHA reports SCAN_QR_CODE.",
+      };
+    }
+    if (status === "FAILED") {
+      try {
+        await restartWahaSession(existing.sessionName);
+        await updateLifecycleStatus(userId, "STARTING");
+        return {
+          status: "STARTING",
+          sessionName: existing.sessionName,
+          account: existing.accountName,
+          phone: normalizedPhone,
+          qr: null,
+          authMethod: "PHONE",
+          pairingCode: null,
+          error: "WAHA is restarting. Request the pairing code again when pairing is ready.",
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "WAHA restart failed.";
+        if (error instanceof WahaApiError && error.status === 504) {
+          await updateLifecycleStatus(userId, "STARTING", "WAHA restart is in progress. Checking pairing readiness automatically.");
+        } else {
+          await updateLifecycleStatus(userId, "FAILED", message);
+        }
+        if (error instanceof WahaApiError && error.status === 504) {
+          return {
+            status: "STARTING",
+            sessionName: existing.sessionName,
+            account: existing.accountName,
+            phone: normalizedPhone,
+            qr: null,
+            authMethod: "PHONE",
+            pairingCode: null,
+            error: "Restart is still starting. The next status check will request the code when WAHA is ready.",
+          };
+        }
+        return { status: "FAILED", sessionName: existing.sessionName, account: existing.accountName, phone: normalizedPhone, qr: null, authMethod: "PHONE", pairingCode: null, error: message };
+      }
+    }
+    if (status !== "SCAN_QR_CODE") {
+      return { status, sessionName: existing.sessionName, account: existing.accountName, phone: normalizedPhone, qr: null, authMethod: "PHONE", pairingCode: null, error: "Phone-number pairing is not available in the current session state. QR authentication remains available." };
+    }
+
+    if (
+      existing.phoneNumber === normalizedPhone
+      && existing.pairingCode
+    ) {
+      return {
+        status,
+        sessionName: existing.sessionName,
+        account: existing.accountName,
+        phone: normalizedPhone,
+        qr: null,
+        authMethod: "PHONE",
+        pairingCode: existing.pairingCode,
+        pairingCodeExpiresAt: existing.pairingCodeExpiresAt?.toISOString() ?? null,
+        error: "The current pairing code is still active.",
+      };
+    }
+
+    try {
+      const result = await requestWahaPairingCodeFromClient(existing.sessionName, normalizedPhone);
+      const expiresAt = new Date(Date.now() + 60_000);
+      await prisma.whatsappSession.update({
+        where: { userId },
+        data: {
+          pairingCode: result.code,
+          pairingCodeRequestedAt: new Date(),
+          pairingCodeExpiresAt: expiresAt,
+          authMethod: "PHONE",
+          lastError: null,
+        },
+      });
+      return {
+        status,
+        sessionName: existing.sessionName,
+        account: existing.accountName,
+        phone: normalizedPhone,
+        qr: null,
+        authMethod: "PHONE",
+        pairingCode: result.code,
+        pairingCodeExpiresAt: expiresAt.toISOString(),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Phone-number pairing is unavailable.";
+      await updateLifecycleStatus(userId, status, message);
+      if (error instanceof WahaApiError && error.status === 422) {
+        return { status, sessionName: existing.sessionName, account: existing.accountName, phone: normalizedPhone, qr: null, authMethod: "PHONE", pairingCode: null, error: "WAHA is not ready to issue a pairing code yet. It will retry when the session is ready." };
+      }
+      return { status, sessionName: existing.sessionName, account: existing.accountName, phone: normalizedPhone, qr: null, authMethod: "PHONE", pairingCode: null, error: message };
+    }
+  });
 }
 
 export async function connectWahaSession(userId: string, phoneNumber?: string): Promise<WahaLifecycleView> {
@@ -217,7 +465,19 @@ export async function connectWahaSession(userId: string, phoneNumber?: string): 
   if (normalizedPhone && existing.phoneNumber !== normalizedPhone) {
     existing = await prisma.whatsappSession.update({
       where: { userId },
-      data: { phoneNumber: normalizedPhone },
+      data: {
+        phoneNumber: normalizedPhone,
+        authMethod: "QR",
+        pairingCode: null,
+        pairingCodeExpiresAt: null,
+        qrGenerationCount: 0,
+      },
+    });
+  }
+  if (!normalizedPhone || existing.phoneNumber === normalizedPhone) {
+    existing = await prisma.whatsappSession.update({
+      where: { userId },
+      data: { authMethod: "QR", pairingCode: null, pairingCodeExpiresAt: null, ...(normalizedPhone ? { phoneNumber: normalizedPhone } : {}) },
     });
   }
   return startWahaSessionRecord(userId, existing.sessionName, false);
@@ -225,6 +485,14 @@ export async function connectWahaSession(userId: string, phoneNumber?: string): 
 
 async function startWahaSessionRecord(userId: string, sessionName: string, newSession: boolean): Promise<WahaLifecycleView> {
   return withSessionLock(sessionName, async () => {
+    const lifecycleRecord = await prisma.whatsappSession.findUnique({ where: { userId } });
+    if (lifecycleRecord?.webhookSecretEncrypted) {
+      try {
+        await updateWahaSession(sessionName, decrypt(lifecycleRecord.webhookSecretEncrypted));
+      } catch (error) {
+        console.error("[WAHA] Could not update session webhook configuration:", error instanceof Error ? error.message : error);
+      }
+    }
     const current = await getWahaSession(sessionName).catch((error: unknown) => {
       if (error instanceof WahaApiError && error.status === 404) return null;
       throw error;
