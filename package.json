@@ -8,7 +8,7 @@
     "dev:tunnel": "next dev -p 3100",
     "build": "next build",
     "start": "next start",
-    "worker": "tsx --env-file-if-exists=.env src/worker/index.ts",
+    "worker": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local src/worker/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx src/lib/policy/review.test.ts && tsx src/lib/schedule.test.ts && tsx src/lib/handles.test.ts && tsx src/lib/audience.test.ts && tsx src/lib/policy/subscriptions.test.ts && tsx src/lib/advert-prompt.test.ts && tsx src/lib/x.test.ts && tsx src/lib/dashboard-series.test.ts && tsx src/lib/session.test.ts && tsx src/lib/audit.test.ts && tsx src/lib/advert-compositor.test.ts && tsx src/lib/waha.test.ts",
     "db:generate": "prisma generate",
