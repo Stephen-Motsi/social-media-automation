@@ -138,14 +138,18 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
       const fresh = await getWahaQr(existing.sessionName);
       qr = fresh.qr;
       if (qr) {
-        const nextGeneration = existing.qrGenerationCount || 1;
-        const alreadyTracked = existing.qrGeneratedAt && existing.qrExpiresAt && existing.qrExpiresAt.getTime() > Date.now();
+        const imageExpired = !existing.qrExpiresAt || existing.qrExpiresAt.getTime() <= Date.now();
+        const nextGeneration = imageExpired ? existing.qrGenerationCount + 1 : existing.qrGenerationCount;
+        const generation = nextGeneration > 0 ? nextGeneration : 1;
+        const qrExpiresAt = imageExpired
+          ? new Date(Date.now() + wahaQrExpiryMs(generation))
+          : existing.qrExpiresAt;
         await prisma.whatsappSession.update({
           where: { userId },
           data: {
             qrGeneratedAt: new Date(),
-            qrExpiresAt: alreadyTracked ? existing.qrExpiresAt : new Date(Date.now() + wahaQrExpiryMs(nextGeneration)),
-            qrGenerationCount: nextGeneration,
+            qrExpiresAt,
+            qrGenerationCount: generation,
             lastError: null,
           },
         });

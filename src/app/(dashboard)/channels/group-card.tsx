@@ -63,6 +63,7 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
   const [setupStep, setSetupStep] = useState<1 | 2 | 3>(1);
   const [testMessage, setTestMessage] = useState("");
   const [tested, setTested] = useState(false);
+  const [copyMessage, setCopyMessage] = useState("");
   const [pending, start] = useTransition();
   const pollingInFlight = useRef(false);
   const reconnectPending = useRef(false);
@@ -163,8 +164,9 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
             <button
               key={step}
               type="button"
+              aria-pressed={setupStep === step}
               onClick={() => setSetupStep(step as 1 | 2 | 3)}
-              className={`rounded-lg border px-2 py-1.5 text-[11px] ${setupStep === step ? "border-ink bg-white/70 font-medium dark:bg-white/10" : "border-line text-ink-soft"}`}
+              className={`rounded-lg border px-2 py-1.5 text-[11px] ${setupStep === step ? "border-black bg-black font-medium text-white" : "border-line text-ink-soft"}`}
             >
               {step === 1 ? "Server" : step === 2 ? "Find key" : "Test"}
             </button>
@@ -221,7 +223,22 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
                 <p>Use the server address supplied by your hosting administrator and obtain the original key from your hosting provider or secure secrets manager. Do not use localhost.</p>
               </div>
             </details>
-            <button type="button" disabled={!baseUrl.trim() || (!apiKey.trim() && !configuration.apiKeyConfigured)} onClick={() => setSetupStep(2)} className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink">
+            <button
+              type="button"
+              disabled={!baseUrl.trim() || (!apiKey.trim() && !configuration.apiKeyConfigured)}
+              onClick={() => {
+                try {
+                  const url = new URL(baseUrl.trim());
+                  if (!["http:", "https:"].includes(url.protocol)) throw new Error();
+                } catch {
+                  setConfigurationMessage({ error: "Enter a valid HTTP or HTTPS WAHA server address." });
+                  return;
+                }
+                setConfigurationMessage(undefined);
+                setSetupStep(2);
+              }}
+              className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink"
+            >
               Continue
             </button>
           </div>
@@ -241,7 +258,17 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
               <p><span className="font-medium text-ink">WAHA API Key:</span> the private secret for that service.</p>
               <p><span className="font-medium text-ink">Webhook Address:</span> created and managed automatically by the application.</p>
             </div>
-            <button type="button" onClick={() => setSetupStep(3)} className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-ink">Continue to connection test</button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => setSetupStep(1)} className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium">Back</button>
+              <button type="button" onClick={() => {
+                if (baseUrl) void navigator.clipboard.writeText(baseUrl).then(() => {
+                  setCopyMessage("WAHA server address copied.");
+                  window.setTimeout(() => setCopyMessage(""), 2500);
+                }).catch(() => setCopyMessage("Copy failed. Select and copy the address manually."));
+              }} className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium">Copy server address</button>
+              <button type="button" onClick={() => setSetupStep(3)} className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-ink">Continue to connection test</button>
+            </div>
+            {copyMessage && <p role="status" className="text-xs text-ink-soft">{copyMessage}</p>}
           </div>
         )}
 
@@ -257,20 +284,42 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
                 const result = await testWahaConfigurationAction({ baseUrl, apiKey: apiKey || undefined });
                 setTested(Boolean(result.ok));
                 setTestMessage(result.message);
-                if (result.ok) {
-                  const saved = await saveWahaConfigurationAction({ baseUrl, apiKey: apiKey || undefined });
-                  setConfiguration(saved);
-                  setConfigurationMessage(saved);
-                  if (saved.saved) {
-                    setApiKey("");
-                    setTestMessage(saved.message ?? result.message);
-                  }
-                }
               })}
               className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink"
             >
               {pending ? "Testing…" : configuration.saved ? "Test and update configuration" : "Test WAHA Connection"}
             </button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => setSetupStep(2)} className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium">Back</button>
+              {tested && (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => start(async () => {
+                    const saved = await saveWahaConfigurationAction({ baseUrl, apiKey: apiKey || undefined });
+                    setConfiguration(saved);
+                    setConfigurationMessage(saved);
+                    if (saved.saved) {
+                      setApiKey("");
+                      setTested(true);
+                      setTestMessage(saved.message ?? "WAHA configuration saved.");
+                    }
+                  })}
+                  className="rounded-full bg-ink px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60 dark:bg-white dark:text-ink"
+                >
+                  {pending ? "Saving…" : "Save configuration"}
+                </button>
+              )}
+              {configuration.saved && (
+                <button
+                  type="button"
+                  onClick={() => document.getElementById("whatsapp-connect")?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                  className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium"
+                >
+                  Continue to WhatsApp
+                </button>
+              )}
+            </div>
             {(testMessage || configurationMessage?.error) && (
               <p role="status" className={`text-xs ${tested ? "text-emerald-700 dark:text-emerald-300" : "text-danger"}`}>
                 {testMessage || configurationMessage?.error}
@@ -302,6 +351,7 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
       <label className="block text-xs text-ink-soft">
         WhatsApp phone number
         <input
+          id="whatsapp-connect"
           type="tel"
           value={phoneNumber}
           onChange={(e) => setPhoneNumber(e.target.value)}
@@ -340,6 +390,16 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
         </div>
       )}
       <div className="flex flex-wrap gap-2">
+        {state.status === "SCAN_QR_CODE" && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => run(getWahaStatusAction)}
+            className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium disabled:opacity-60"
+          >
+            Refresh QR code
+          </button>
+        )}
         {!connected && (
           <button
             type="button"

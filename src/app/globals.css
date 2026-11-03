@@ -190,6 +190,44 @@ button,
 :is(button, a):not(:disabled):active {
   transform: translateY(0) scale(0.97);
 }
+
+/* Keep pressed buttons readable: pressed and selected primary controls use
+   black backgrounds with white labels instead of switching to white surfaces. */
+button:not(:disabled):active,
+a[role="button"]:not(:disabled):active {
+  background-color: #000 !important;
+  color: #fff !important;
+}
+
+/* Never leave a button on a white background with white text. Buttons that
+   explicitly use a white utility class become a visible light-violet surface. */
+button[class*="bg-white"]:not(:disabled),
+a[role="button"][class*="bg-white"]:not(:disabled) {
+  background-color: #ede9fe !important;
+  color: #1c1538 !important;
+}
+
+button[class*="bg-white"]:not(:disabled) *,
+a[role="button"][class*="bg-white"]:not(:disabled) * {
+  color: #1c1538 !important;
+}
+
+/* Keep button labels visible after mouse clicks and for selected button states.
+   This is intentionally stronger than component utility classes so dark-mode
+   "white" backgrounds cannot make button labels disappear. */
+button[aria-pressed="true"]:not(:disabled),
+button[aria-selected="true"]:not(:disabled),
+[role="tab"][aria-selected="true"] {
+  background-color: #000 !important;
+  color: #fff !important;
+}
+button:not(:disabled):active *,
+button:not(:disabled):focus *,
+button[aria-pressed="true"]:not(:disabled) *,
+button[aria-selected="true"]:not(:disabled) *,
+[role="tab"][aria-selected="true"] * {
+  color: #fff !important;
+}
 /* Outline buttons get a soft lift too */
 button.border:not(:disabled):hover,
 a.border:hover {
