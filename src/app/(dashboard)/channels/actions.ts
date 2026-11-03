@@ -29,6 +29,7 @@ import {
   disconnectWahaSession,
   getWahaView,
   reconnectWahaSession,
+  requestWahaPairingCode,
 } from "@/lib/waha-lifecycle";
 
 // note: saved, but something after the save can't happen yet (shown as a follow-up, not a failure).
@@ -452,11 +453,44 @@ export type WahaViewState = {
   qr: string | null;
   qrExpiresAt?: string | null;
   pairingMismatch?: boolean;
+  authMethod?: "QR" | "PHONE";
+  pairingCode?: string | null;
+  pairingCodeExpiresAt?: string | null;
   error?: string;
 };
 
 export async function getWahaStatusAction(): Promise<WahaViewState> {
   const viewer = await requireViewer();
+  return getWahaView(viewer.id);
+}
+
+export async function refreshWahaQrAction(): Promise<WahaViewState> {
+  const viewer = await requireViewer();
+  await prisma.whatsappSession.updateMany({
+    where: { userId: viewer.id },
+    data: { qrGeneratedAt: null, qrExpiresAt: null, qrData: null },
+  });
+  return getWahaView(viewer.id);
+}
+
+export async function setWahaAuthMethodAction(method: "QR" | "PHONE"): Promise<WahaViewState> {
+  const viewer = await requireViewer();
+  await prisma.whatsappSession.updateMany({
+    where: { userId: viewer.id },
+    data: method === "QR"
+      ? {
+          authMethod: "QR",
+          pairingCode: null,
+          pairingCodeRequestedAt: null,
+          pairingCodeExpiresAt: null,
+        }
+      : {
+          authMethod: "PHONE",
+          qrGeneratedAt: null,
+          qrExpiresAt: null,
+          qrData: null,
+        },
+  });
   return getWahaView(viewer.id);
 }
 
@@ -490,6 +524,24 @@ export async function reconnectWahaSessionAction(phoneNumber?: string): Promise<
     return await reconnectWahaSession(viewer.id, phoneNumber);
   } catch (err) {
     return { status: "CONNECTION_ERROR", sessionName: null, account: null, phone: phoneNumber ?? null, qr: null, error: err instanceof Error ? err.message : "Could not reconnect the WhatsApp session." };
+  }
+}
+
+export async function requestWahaPairingCodeAction(phoneNumber: string): Promise<WahaViewState> {
+  const viewer = await requireViewer();
+  try {
+    const normalizedPhone = normalizeWahaPhoneNumber(phoneNumber);
+    return await requestWahaPairingCode(viewer.id, normalizedPhone);
+  } catch (err) {
+    return {
+      status: "CONNECTION_ERROR",
+      sessionName: null,
+      account: null,
+      phone: phoneNumber ?? null,
+      qr: null,
+      authMethod: "PHONE",
+      error: err instanceof Error ? err.message : "Enter a valid international WhatsApp phone number.",
+    };
   }
 }
 

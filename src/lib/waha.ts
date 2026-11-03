@@ -46,8 +46,29 @@ export function wahaHttpTimeoutMs(value: string | undefined, fallback = 15_000) 
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+export function wahaPairingTimeoutMs(value: string | undefined, fallback = 10_000) {
+  return wahaHttpTimeoutMs(value, fallback);
+}
+
+export function wahaSessionControlTimeoutMs(value: string | undefined, fallback = 5_000) {
+  return wahaHttpTimeoutMs(value, fallback);
+}
+
 export function canStartReconnect(pending: boolean, status: string) {
   return !pending && !["WORKING", "STARTING", "SCAN_QR_CODE"].includes(status);
+}
+
+export function canRequestWahaPairingCode(status: string, pending = false, existingCodeExpiresAt?: Date | null) {
+  if (pending || status !== "SCAN_QR_CODE") return false;
+  return !existingCodeExpiresAt || existingCodeExpiresAt.getTime() <= Date.now();
+}
+
+export function formatWahaPairingCode(code: unknown) {
+  if (typeof code !== "string") return null;
+  const normalized = code.trim().toUpperCase();
+  return /^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(normalized)
+    ? normalized.includes("-") ? normalized : `${normalized.slice(0, 4)}-${normalized.slice(4)}`
+    : null;
 }
 
 export async function wahaConfigured() {
@@ -136,9 +157,9 @@ async function credentials() {
   return config;
 }
 
-async function request(path: string, init: RequestInit = {}) {
+async function request(path: string, init: RequestInit = {}, timeoutOverrideMs?: number) {
   const config = await credentials();
-  const operationTimeout = Number(process.env.WAHA_HTTP_TIMEOUT_MS ?? 15_000);
+  const operationTimeout = timeoutOverrideMs ?? Number(process.env.WAHA_HTTP_TIMEOUT_MS ?? 15_000);
   const timeoutMs = Number.isFinite(operationTimeout) && operationTimeout > 0 ? operationTimeout : 15_000;
   const operation = `${init.method ?? "GET"} ${path}`;
   let timedOut = false;
@@ -158,6 +179,7 @@ async function request(path: string, init: RequestInit = {}) {
   } catch (error) {
     if (timedOut || (error instanceof Error && error.name === "TimeoutError")) {
       console.error(`[WAHA] timed out after ${timeoutMs}ms: ${operation}`);
+      throw new WahaApiError(504, `WAHA timed out while performing ${operation}. The session state will be checked automatically.`);
     } else {
       console.error(`[WAHA] request failed: ${operation}`, error instanceof Error ? error.message : error);
     }
@@ -201,11 +223,29 @@ export async function createWahaSession(sessionName: string, webhookSecret: stri
 }
 
 export async function startWahaSession(sessionName: string) {
-  return request(`/api/sessions/${encodeURIComponent(sessionName)}/start`, { method: "POST" });
+  return request(`/api/sessions/${encodeURIComponent(sessionName)}/start`, { method: "POST" }, wahaSessionControlTimeoutMs(process.env.WAHA_SESSION_CONTROL_TIMEOUT_MS));
 }
 
 export async function restartWahaSession(sessionName: string) {
-  return request(`/api/sessions/${encodeURIComponent(sessionName)}/restart`, { method: "POST" });
+  return request(`/api/sessions/${encodeURIComponent(sessionName)}/restart`, { method: "POST" }, wahaSessionControlTimeoutMs(process.env.WAHA_SESSION_CONTROL_TIMEOUT_MS));
+}
+
+export async function updateWahaSession(sessionName: string, webhookSecret: string) {
+  return request(`/api/sessions/${encodeURIComponent(sessionName)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name: sessionName,
+      config: {
+        metadata: { app: "social-media-automation" },
+        webhooks: [{
+          url: wahaWebhookUrl(),
+          events: ["session.status", "message", "message.ack"],
+          hmac: { key: webhookSecret },
+        }],
+      },
+    }),
+  });
 }
 
 export async function stopWahaSession(sessionName: string) {
@@ -234,32 +274,55 @@ export async function getWahaMe(sessionName: string) {
 
 export async function getWahaQr(sessionName: string): Promise<{ qr: string | null; format: "png" | "raw" }> {
   const config = await credentials();
-  const path = `/api/${encodeURIComponent(sessionName)}/auth/qr?format=image`;
   const timeoutMs = (() => {
     const value = Number(process.env.WAHA_HTTP_TIMEOUT_MS ?? 15_000);
     return Number.isFinite(value) && value > 0 ? value : 15_000;
   })();
-  const response = await fetch(`${config.baseUrl}${path}`, {
-    headers: { accept: "image/png, application/json", "x-api-key": config.apiKey },
-    cache: "no-store",
-    signal: AbortSignal.timeout(timeoutMs),
-  }).catch((error: unknown) => {
-    console.error(`[WAHA] timed out or failed: GET ${path}`, error instanceof Error ? error.message : error);
-    throw error;
-  });
-  if (response.status === 422) {
-    return { qr: null, format: "png" };
+  const paths = [
+    `/api/${encodeURIComponent(sessionName)}/auth/qr`,
+    `/api/${encodeURIComponent(sessionName)}/auth/qr?format=image`,
+  ];
+  let lastError: unknown;
+  for (const path of paths) {
+    try {
+      const response = await fetch(`${config.baseUrl}${path}`, {
+        headers: { accept: "image/png, application/json", "x-api-key": config.apiKey },
+        cache: "no-store",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (response.status === 422) continue;
+      if (!response.ok) {
+        lastError = new Error(`WAHA QR unavailable with status ${response.status}.`);
+        continue;
+      }
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        const payload = await response.json() as { value?: string; data?: string; base64?: string };
+        const value = payload.value ?? payload.data ?? payload.base64 ?? null;
+        if (value) return { qr: value.startsWith("data:image") ? value : `data:image/png;base64,${value}`, format: "raw" };
+        continue;
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > 0) return { qr: `data:image/png;base64,${bytes.toString("base64")}`, format: "png" };
+    } catch (error) {
+      lastError = error;
+      console.error(`[WAHA] QR attempt timed out or failed: POST ${path}`, error instanceof Error ? error.message : error);
+    }
   }
-  if (!response.ok) {
-    throw new Error(`WAHA QR unavailable with status ${response.status}.`);
-  }
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("application/json")) {
-    const payload = await response.json() as { value?: string; data?: string; base64?: string };
-    const value = payload.value ?? payload.data ?? payload.base64 ?? null;
-    return { qr: value ? (value.startsWith("data:image") ? value : `data:image/png;base64,${value}`) : null, format: "raw" };
-  }
-  return { qr: `data:image/png;base64,${Buffer.from(await response.arrayBuffer()).toString("base64")}`, format: "png" };
+  throw lastError instanceof Error ? lastError : new Error("WAHA QR unavailable.");
+}
+
+export async function requestWahaPairingCode(sessionName: string, phoneNumber: string): Promise<{ code: string }> {
+  const normalizedPhone = normalizeWahaPhoneNumber(phoneNumber);
+  const pairingTimeout = wahaPairingTimeoutMs(process.env.WAHA_PAIRING_TIMEOUT_MS);
+  const response = await request(`/api/${encodeURIComponent(sessionName)}/auth/request-code`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phoneNumber: normalizedPhone }),
+  }, pairingTimeout) as { code?: unknown };
+  const code = formatWahaPairingCode(response.code);
+  if (!code) throw new Error("WAHA did not return a valid pairing code.");
+  return { code };
 }
 
 export type WahaSendResult = { id?: string; message?: unknown; [key: string]: unknown };
