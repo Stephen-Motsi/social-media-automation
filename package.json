@@ -29,7 +29,7 @@
     "bcryptjs": "3.0.2",
     "bullmq": "5.58.5",
     "ioredis": "5.7.0",
-    "next": "15.5.4",
+    "next": "^15.5.29",
     "next-auth": "5.0.0-beta.29",
     "react": "19.1.1",
     "react-dom": "19.1.1",
