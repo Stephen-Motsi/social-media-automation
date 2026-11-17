@@ -22,7 +22,7 @@ const localNow = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60
 // Schedule a post or story on your own accounts, for your followers.
 export function PostComposer({ choices }: { choices: PlatformChoice[] }) {
   const router = useRouter();
-  const [format, setFormat] = useState<PostFormat>("POST");
+  const [format, setFormat] = useState<PostFormat | "BOTH">("POST");
   const [selected, setSelected] = useState<Platform[]>([]);
   const [caption, setCaption] = useState("");
   const [tab, setTab] = useState<"ai" | "upload">("ai");
@@ -37,7 +37,9 @@ export function PostComposer({ choices }: { choices: PlatformChoice[] }) {
   const fileRef = useRef<HTMLInputElement>(null);
 
   // A platform can be picked if it's connected and (for stories) supports them.
-  const unavailable = (c: PlatformChoice) => c.disabledReason ?? (format === "STORY" && !c.story.supported ? c.story.reason ?? "No stories" : null);
+  const unavailable = (c: PlatformChoice) => c.disabledReason ?? (format !== "POST" && !c.story.supported ? c.story.reason ?? "No stories" : null);
+  // Photos are shaped for the feed when posting both; stories accept them too.
+  const photoFormat: PostFormat = format === "STORY" ? "STORY" : "POST";
   const picked = selected.filter((p) => !unavailable(choices.find((c) => c.platform === p)!));
 
   const run = (kind: NonNullable<typeof busy>, task: () => Promise<void>) => {
@@ -56,7 +58,7 @@ export function PostComposer({ choices }: { choices: PlatformChoice[] }) {
   };
   const apply = (res: ImageResult) => (res.ok ? setMedia(res.media) : setError({ message: res.error, issues: res.issues }));
 
-  const createPhoto = () => run("photo", async () => apply(await generatePostImage(prompt, picked, format)));
+  const createPhoto = () => run("photo", async () => apply(await generatePostImage(prompt, picked, photoFormat)));
   const upload = () =>
     run("photo", async () => {
       const file = fileRef.current?.files?.[0];
@@ -64,7 +66,7 @@ export function PostComposer({ choices }: { choices: PlatformChoice[] }) {
       const body = new FormData();
       body.set("file", file);
       body.set("platform", picked.includes("INSTAGRAM") ? "INSTAGRAM" : picked[0] ?? "FACEBOOK");
-      body.set("format", format);
+      body.set("format", photoFormat);
       body.set("caption", caption);
       apply((await (await fetch("/api/uploads", { method: "POST", body })).json()) as ImageResult);
       if (fileRef.current) fileRef.current.value = "";
@@ -91,7 +93,7 @@ export function PostComposer({ choices }: { choices: PlatformChoice[] }) {
     });
 
   const problem =
-    picked.length === 0 ? "Choose at least one platform." : !caption.trim() && !media ? "Add a caption or a photo." : when === "later" && !sendAt ? "Pick a date and time." : null;
+    picked.length === 0 ? "Choose at least one platform." : !caption.trim() && !media ? "Add a caption or a photo." : format !== "POST" && !media ? "Stories need a photo." : when === "later" && !sendAt ? "Pick a date and time." : null;
 
   return (
     <section className="glass space-y-5 rounded-[28px] p-6" aria-labelledby="compose-h">
@@ -103,10 +105,10 @@ export function PostComposer({ choices }: { choices: PlatformChoice[] }) {
       <fieldset>
         <legend className="text-sm font-medium">Type</legend>
         <div className="mt-2 flex flex-wrap gap-2">
-          {(["POST", "STORY"] as const).map((f) => (
+          {(["POST", "STORY", "BOTH"] as const).map((f) => (
             <label key={f} className="cursor-pointer">
               <input type="radio" name="format" checked={format === f} onChange={() => setFormat(f)} className="peer sr-only" />
-              <span className={chip}>{f === "POST" ? "Post (feed)" : "Story / status (24 hours)"}</span>
+              <span className={chip}>{f === "POST" ? "Post (feed)" : f === "STORY" ? "Story / status (24 hours)" : "Post and story"}</span>
             </label>
           ))}
         </div>
@@ -176,7 +178,7 @@ export function PostComposer({ choices }: { choices: PlatformChoice[] }) {
             </button>
           </div>
         )}
-        {format === "STORY" && <p className="text-xs text-ink-soft">Stories need a photo; tall 9:16 photos work best.</p>}
+        {format !== "POST" && <p className="text-xs text-ink-soft">Stories need a photo; tall 9:16 photos work best.</p>}
         {media &&
           (media.blocked ? (
             <p className="text-sm text-danger">This photo breaks the content rules on every platform, so it can&rsquo;t be used. Try another.</p>

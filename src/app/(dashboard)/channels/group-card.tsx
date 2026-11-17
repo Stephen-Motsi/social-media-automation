@@ -108,16 +108,6 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
       void getWahaStatusAction().then((value) => {
         setState(value);
         if (value.authMethod) setAuthMethod(value.authMethod);
-        if (value.phone) {
-          const digits = value.phone.replace(/[^\d]/g, "");
-          const country = ["971", "966", "255", "256", "250", "260", "263", "234", "233", "254", "27", "44", "91", "1"].find((code) => digits.startsWith(code));
-          if (country) {
-            setCountryCode(country);
-            setPhoneNumber(digits.slice(country.length).replace(/^0/, ""));
-          } else {
-            setPhoneNumber(digits);
-          }
-        }
       }).catch(() => {
         setState((current) => ({ ...current, status: "CONNECTION_ERROR", error: "Could not refresh WAHA connection status." }));
       }).finally(() => {
@@ -132,11 +122,11 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
     if (state.status !== "SCAN_QR_CODE" || !state.qrExpiresAt) return;
     const remaining = new Date(state.qrExpiresAt).getTime() - Date.now();
     if (remaining <= 0) {
-      setState((current) => ({ ...current, qr: null, error: "The QR code expired. Waiting for the next QR code." }));
+      setState((current) => ({ ...current, qr: null, error: "The 5-minute scan window ended. Generate a new QR code to try again." }));
       return;
     }
     qrTimer.current = window.setTimeout(() => {
-      setState((current) => ({ ...current, qr: null, error: "The QR code expired. Waiting for the next QR code." }));
+      setState((current) => ({ ...current, qr: null, error: "The 5-minute scan window ended. Generate a new QR code to try again." }));
     }, remaining);
     return () => {
       if (qrTimer.current) window.clearTimeout(qrTimer.current);
@@ -357,7 +347,7 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
           <summary className="cursor-pointer text-xs font-medium">Having trouble connecting?</summary>
           <div className="mt-2 space-y-1 text-xs text-ink-soft">
             <p><span className="font-medium text-ink">The QR code is not appearing:</span> WAHA may still be starting. The page checks automatically.</p>
-            <p><span className="font-medium text-ink">The QR code expired:</span> a new code will be generated automatically.</p>
+            <p><span className="font-medium text-ink">The QR code window:</span> each QR stays on screen and updates itself for 5 minutes; after that, press Generate new QR code.</p>
             <p><span className="font-medium text-ink">Connection failed:</span> wait for recovery, then reconnect if asked.</p>
             <p><span className="font-medium text-ink">The server cannot be reached:</span> check that WAHA is running and verify the server address.</p>
             <p><span className="font-medium text-ink">Invalid API key:</span> paste the original secret that matches the WAHA server.</p>
@@ -426,7 +416,7 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
       {state.pairingMismatch && (
         <p role="alert" className="text-xs text-danger">The paired WhatsApp account does not match the entered phone number.</p>
       )}
-      {authMethod === "PHONE" && state.pairingCode && (
+      {authMethod === "PHONE" && state.pairingCode && state.phone === fullPhoneNumber && (
         <div className="space-y-3 rounded-xl border border-line bg-white/50 p-3 dark:bg-white/[0.04]">
           <div>
             <p className="text-xs font-medium">Your device-linking code</p>
@@ -456,7 +446,7 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
           </div>
         </div>
       )}
-      {authMethod === "PHONE" && !connected && !state.pairingCode && (
+      {authMethod === "PHONE" && !connected && (!state.pairingCode || state.phone !== fullPhoneNumber) && (
         <button
           type="button"
           disabled={pending || pairingPending.current || (!configuration.saved && !envReady) || !/^\d{8,15}$/.test(fullPhoneNumber)}
@@ -487,8 +477,14 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
             <p className="font-medium text-ink">Open WhatsApp on your phone:</p>
             <p>Android: tap the three dots, then Linked devices.</p>
             <p>iPhone: open Settings, then Linked Devices.</p>
-            <p>Tap Link a device, then scan this QR code.</p>
+            <p>Tap Link a device, then scan this QR code with the phone number you entered (+{fullPhoneNumber}). The code refreshes itself automatically for 5 minutes.</p>
           </div>
+        </div>
+      )}
+      {connected && !state.pairingMismatch && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-300">
+          <p className="font-semibold">Connection successful</p>
+          <p>WhatsApp {state.phone ? `+${state.phone}` : "account"}{state.account ? ` (${state.account})` : ""} is linked and ready.</p>
         </div>
       )}
       <div className="flex flex-wrap gap-2">
@@ -499,16 +495,17 @@ function WhatsAppConnection({ envReady, admin }: { envReady: boolean; admin: boo
             onClick={() => run(refreshWahaQrAction)}
             className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium disabled:opacity-60"
           >
-            Refresh QR code
+            {state.qr ? "Restart 5-minute window" : "Generate new QR code"}
           </button>
         )}
         {!connected && authMethod === "QR" && (
           <button
             type="button"
-            disabled={pending || (!configuration.saved && !envReady)}
+            disabled={pending || (!configuration.saved && !envReady) || !/^\d{8,15}$/.test(fullPhoneNumber)}
+            title={/^\d{8,15}$/.test(fullPhoneNumber) ? undefined : "Enter your WhatsApp phone number first"}
             onClick={() => run(state.status === "NOT_CREATED"
-              ? () => createWahaSessionAction()
-              : () => reconnectWahaSessionAction(), true)}
+              ? () => createWahaSessionAction(fullPhoneNumber)
+              : () => reconnectWahaSessionAction(fullPhoneNumber), true)}
             className="blend-whatsapp rounded-full px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
           >
             {pending ? "Connecting…" : state.status === "NOT_CREATED" ? "Connect WhatsApp" : "Reconnect"}

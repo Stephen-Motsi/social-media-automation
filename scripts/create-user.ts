@@ -1,7 +1,7 @@
 // Usage: npm run user:create -- <email> <password> [name] [--admin | --super]
 // Creates a password account. Staff have no public sign-up; users normally sign in with Google/Facebook.
 import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcryptjs";
+import { hashPassword } from "../src/lib/password";
 
 const prisma = new PrismaClient();
 
@@ -23,7 +23,7 @@ async function main() {
     data: {
       email: email.toLowerCase(),
       name,
-      passwordHash: await bcrypt.hash(password, 12),
+      passwordHash: await hashPassword(password),
       role,
     },
   });

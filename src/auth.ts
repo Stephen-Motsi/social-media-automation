@@ -8,6 +8,8 @@ import { z } from "zod";
 import { headers } from "next/headers";
 import { authConfig } from "./auth.config";
 import { prisma } from "@/lib/db";
+import { timed, traceLogin } from "@/lib/login-trace";
+import { hashPassword, needsRehash } from "@/lib/password";
 
 const credentialsSchema = z.object({
   email: z.email(),
@@ -38,9 +40,12 @@ const providers: Provider[] = [
     async authorize(raw) {
       const parsed = credentialsSchema.safeParse(raw);
       if (!parsed.success) return null;
-      const user = await prisma.user.findUnique({ where: { email: parsed.data.email.toLowerCase() } });
+      const user = await timed("auth.user-lookup", () => prisma.user.findUnique({ where: { email: parsed.data.email.toLowerCase() } }));
       if (!user?.passwordHash || user.disabledAt) return null;
-      const ok = await bcrypt.compare(parsed.data.password, user.passwordHash);
+      const ok = await timed("auth.bcrypt-compare", () => bcrypt.compare(parsed.data.password, user.passwordHash!));
+      if (ok && needsRehash(user.passwordHash)) {
+        await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(parsed.data.password) } });
+      }
       return ok ? { id: user.id, email: user.email, name: user.name } : null;
     },
   }),
@@ -122,7 +127,8 @@ const config: NextAuthConfig = {
     // On sign-in: open a session record and put its ID in the signed cookie.
     async jwt({ token, user, account }) {
       if (user && account) {
-        const dbUser =
+        return timed("auth.jwt-create-session", async () => {
+        const dbUser = await timed("auth.jwt.user-fetch", async () =>
           account.type === "credentials"
             ? await prisma.user.findUniqueOrThrow({ where: { id: user.id! } })
             : (
@@ -130,20 +136,21 @@ const config: NextAuthConfig = {
                   where: { provider_providerAccountId: { provider: account.provider, providerAccountId: account.providerAccountId } },
                   include: { user: true },
                 })
-              ).user;
-        const info = await requestInfo();
-        const session = await prisma.userSession.create({
+              ).user);
+        const info = await timed("auth.jwt.request-info", () => requestInfo());
+        const session = await timed("auth.jwt.session-insert", () => prisma.userSession.create({
           data: {
             userId: dbUser.id,
             provider: account.provider,
             ...info,
             expiresAt: new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000),
           },
-        });
-        await prisma.activityLog.create({
+        }));
+        await timed("auth.jwt.activity-insert", () => prisma.activityLog.create({
           data: { userId: dbUser.id, action: "SIGN_IN", detail: { provider: account.provider }, ip: info.ip },
-        });
+        }));
         return { ...token, id: dbUser.id, role: dbUser.role, sid: session.id, sub: dbUser.id, name: dbUser.name, email: dbUser.email };
+        });
       }
       return token;
     },
@@ -152,8 +159,10 @@ const config: NextAuthConfig = {
     // must exist, not be revoked or expired, and the user must not be disabled. The role is
     // always the current one, so promotions and demotions apply immediately.
     async session({ session, token }) {
+      const sessionStart = performance.now();
       const sid = token.sid as string | undefined;
       const record = sid ? await prisma.userSession.findUnique({ where: { id: sid }, include: { user: true } }) : null;
+      traceLogin("auth.session-callback", performance.now() - sessionStart);
       const valid = record && !record.revokedAt && record.expiresAt > new Date() && !record.user.disabledAt && record.userId === token.id;
       if (!valid) return { expires: new Date(0).toISOString() } as typeof session;
       if (Date.now() - record.lastSeenAt.getTime() > TOUCH_EVERY_MS) {

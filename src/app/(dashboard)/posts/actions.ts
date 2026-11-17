@@ -34,13 +34,14 @@ export async function generatePostImage(prompt: string, selected: Platform[], fo
 
 export async function schedulePostAction(input: {
   platforms: Platform[];
-  format: PostFormat;
+  format: PostFormat | "BOTH";
   caption: string;
   mediaId?: string | null;
   sendAt?: string | null;
 }): Promise<ScheduleState> {
   const viewer = await requireStaff();
   try {
+    const formatList: PostFormat[] = input.format === "BOTH" ? ["POST", "STORY"] : [input.format];
     const caption = input.caption.trim();
     const chosen = platformOrder.filter((p) => input.platforms.includes(p));
     if (chosen.length === 0) return { ok: false, error: "choose at least one platform." };
@@ -53,22 +54,31 @@ export async function schedulePostAction(input: {
     const asset = input.mediaId ? await prisma.mediaAsset.findUnique({ where: { id: input.mediaId } }) : null;
     if (input.mediaId && !asset) return { ok: false, error: "that photo no longer exists. Create or upload it again." };
     if (asset?.blocked) return { ok: false, error: "that photo breaks the content rules on every platform. Use another." };
+    if (formatList.includes("STORY") && !asset) return { ok: false, error: "stories need a photo." };
 
     const outcomes: PlatformOutcome[] = [];
     const ready: { platform: Platform; accountIds: string[] }[] = [];
     const supported = chosen.filter((p) => {
-      const support = formatSupport[p][input.format];
+      const unsupported = formatList.map((f) => formatSupport[p][f]).find((s) => !s.supported);
       if (p === "WHATSAPP") outcomes.push({ platform: p, ok: false, message: `Not posted on WhatsApp: ${WHATSAPP_REASON}` });
-      else if (!support.supported) outcomes.push({ platform: p, ok: false, message: `Not posted on ${platformRules[p].name}: ${support.reason}` });
+      else if (unsupported) outcomes.push({ platform: p, ok: false, message: `Not posted on ${platformRules[p].name}: ${unsupported.reason}` });
       else return true;
       return false;
     });
 
-    // Each platform's rules for this format, checked now and again by the worker before publishing.
-    const formats: Formats = Object.fromEntries(supported.map((p) => [p, input.format]));
-    const { verdicts } = supported.length
-      ? await reviewContent({ caption, image: asset, prompt: asset?.prompt ?? undefined }, supported, formats)
-      : { verdicts: [] };
+    // Each platform's rules for each format, checked now and again by the worker before publishing.
+    const verdicts: Awaited<ReturnType<typeof reviewContent>>["verdicts"] = [];
+    if (supported.length) {
+      for (const f of formatList) {
+        const formats: Formats = Object.fromEntries(supported.map((p) => [p, f]));
+        const res = await reviewContent({ caption, image: asset, prompt: asset?.prompt ?? undefined }, supported, formats);
+        for (const v of res.verdicts) {
+          const existing = verdicts.find((x) => x.platform === v.platform);
+          if (existing) existing.issues.push(...v.issues);
+          else verdicts.push(v);
+        }
+      }
+    }
     for (const platform of supported) {
       const name = platformRules[platform].name;
       const blockers = verdicts.find((v) => v.platform === platform)?.issues.filter((i) => i.severity === "block") ?? [];
@@ -95,10 +105,10 @@ export async function schedulePostAction(input: {
         scheduledAt: when ?? new Date(),
         checks: verdicts,
         authorId: viewer.id,
-        targets: { create: ready.flatMap((r) => r.accountIds.map((accountId) => ({ accountId, format: input.format }))) },
+        targets: { create: ready.flatMap((r) =>         r.accountIds.flatMap((accountId) => formatList.map((format) => ({ accountId, format })))) },
       },
     });
-    const kind = input.format === "STORY" ? "Story" : "Post";
+            const kind = input.format === "BOTH" ? "Post and story" : input.format === "STORY" ? "Story" : "Post";
     let queueProblem: string | null = null;
     try {
       await schedulePost(post.id, when);

@@ -6,6 +6,8 @@ import { prisma } from "@/lib/db";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { clientIp, isStaff, logActivity } from "@/lib/session";
+import { timed, traceLogin } from "@/lib/login-trace";
+import { hashPassword } from "@/lib/password";
 
 // Only same-site paths, so a crafted link can't send people elsewhere after signing in.
 function safePath(p: FormDataEntryValue | null | string) {
@@ -17,18 +19,23 @@ function safePath(p: FormDataEntryValue | null | string) {
 }
 
 export async function login(_prev: string | undefined, formData: FormData) {
+  const started = performance.now();
   // Where to land after signing in: the admin dashboard for staff, "My adverts" for users.
   const email = String(formData.get("email") ?? "").toLowerCase();
-  const role = (await prisma.user.findUnique({ where: { email }, select: { role: true } }))?.role;
+  const role = await timed("login.role-lookup", async () => (await prisma.user.findUnique({ where: { email }, select: { role: true } }))?.role);
   const home = isStaff(role) ? "/admin" : "/";
   try {
-    await signIn("credentials", {
+    await timed("login.signIn", () => signIn("credentials", {
       email: formData.get("email"),
       password: formData.get("password"),
       redirectTo: safePath(formData.get("callbackUrl")) ?? home,
-    });
+    }));
   } catch (err) {
-    if (err instanceof AuthError) return "Invalid email or password.";
+    if (err instanceof AuthError) {
+      traceLogin("login.total", performance.now() - started, { outcome: "invalid-credentials" });
+      return "Invalid email or password.";
+    }
+    traceLogin("login.total", performance.now() - started, { outcome: "success" });
     throw err; // re-throw the redirect thrown on success
   }
 }
@@ -62,7 +69,7 @@ export async function signup(_prev: string | undefined, formData: FormData) {
   if (existing) return `This email signs in with ${existing.accounts[0]?.provider === "facebook" ? "Facebook" : "Google"}. Use that button above.`;
 
   try {
-    const user = await prisma.user.create({ data: { name, email, passwordHash: await bcrypt.hash(password, 12), role: "USER" } });
+    const user = await prisma.user.create({ data: { name, email, passwordHash: await hashPassword(password), role: "USER" } });
     await logActivity(user.id, "SIGN_UP", { method: "email" });
   } catch {
     return "Couldn't create your account right now. Try again.";

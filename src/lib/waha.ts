@@ -29,8 +29,13 @@ export async function getWahaCredentials(): Promise<WahaCredentials | null> {
   return baseUrl && apiKey ? { baseUrl, apiKey } : null;
 }
 
-export function wahaQrExpiryMs(generation: number) {
-  return generation <= 1 ? 60_000 : 20_000;
+// WhatsApp rotates the live QR every ~20s, so the image is refreshed quietly in the background.
+// This is how long a scan attempt stays open before the user must generate a new QR.
+export const WAHA_QR_WINDOW_MS = 5 * 60_000;
+export const WAHA_QR_REFETCH_MS = 8_000;
+
+export function wahaQrExpiryMs(_generation = 1) {
+  return WAHA_QR_WINDOW_MS;
 }
 
 export function shouldFetchWahaQr(status: string, generationCount = 0) {
@@ -61,6 +66,11 @@ export function canStartReconnect(pending: boolean, status: string) {
 export function canRequestWahaPairingCode(status: string, pending = false, existingCodeExpiresAt?: Date | null) {
   if (pending || status !== "SCAN_QR_CODE") return false;
   return !existingCodeExpiresAt || existingCodeExpiresAt.getTime() <= Date.now();
+}
+
+export function wahaPairingCodeExpiry(requestedAt?: Date | null, expiresAt?: Date | null) {
+  if (!requestedAt || !expiresAt) return null;
+  return new Date(Math.min(requestedAt.getTime() + 60_000, expiresAt.getTime()));
 }
 
 export function formatWahaPairingCode(code: unknown) {

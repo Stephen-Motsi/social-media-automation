@@ -8,6 +8,7 @@ import {
   canRequestWahaPairingCode,
   formatWahaPairingCode,
   wahaPairingTimeoutMs,
+  wahaPairingCodeExpiry,
   WahaApiError,
 } from "./waha";
 
@@ -25,8 +26,8 @@ try {
 }
 expect(rejected, "Short phone numbers must be rejected");
 
-expect(wahaQrExpiryMs(1) === 60_000, "The first QR should expire after 60 seconds");
-expect(wahaQrExpiryMs(2) === 20_000, "Subsequent QRs should expire after 20 seconds");
+expect(wahaQrExpiryMs(1) === 300_000, "A QR scan window should last 5 minutes");
+expect(wahaQrExpiryMs(2) === 300_000, "Later QR codes keep the same 5-minute window");
 expect(!shouldFetchWahaQr("FAILED"), "QR must not be fetched from a failed session");
 expect(!shouldFetchWahaQr("STARTING"), "QR must not be fetched while starting");
 expect(!shouldFetchWahaQr("STOPPED"), "QR must not be fetched while stopped");
@@ -49,5 +50,11 @@ expect(canRequestWahaPairingCode("SCAN_QR_CODE"), "Pairing code can be requested
 expect(!canRequestWahaPairingCode("STARTING"), "Pairing code must wait until the session is ready");
 expect(!canRequestWahaPairingCode("FAILED"), "Pairing code must not be requested from failed sessions");
 expect(!canRequestWahaPairingCode("SCAN_QR_CODE", true), "Duplicate pairing requests should be blocked");
+expect(!canRequestWahaPairingCode("SCAN_QR_CODE", false, new Date(Date.now() + 60_000)), "An active pairing code should not be replaced");
+expect(canRequestWahaPairingCode("SCAN_QR_CODE", false, new Date(Date.now() - 1)), "An expired pairing code should be replaceable");
+expect(canRequestWahaPairingCode("SCAN_QR_CODE", false, null), "A pairing code without an expiry should be replaceable");
+const requestedAt = new Date(Date.now() - 61_000);
+expect(canRequestWahaPairingCode("SCAN_QR_CODE", false, wahaPairingCodeExpiry(requestedAt, new Date(Date.now() + 86_400_000))), "Legacy 24-hour pairing codes should expire after one minute");
+expect(wahaPairingCodeExpiry(null, new Date()) === null, "A pairing code without a request time should be replaceable");
 
 console.log("PASS waha phone validation");

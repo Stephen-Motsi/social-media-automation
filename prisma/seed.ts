@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcryptjs";
+import { hashPassword } from "../src/lib/password";
 
 const prisma = new PrismaClient();
 
@@ -10,7 +10,7 @@ async function main() {
     throw new Error("Set ADMIN_EMAIL and ADMIN_PASSWORD in .env before seeding.");
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const passwordHash = await hashPassword(password);
   const user = await prisma.user.upsert({
     where: { email: email.toLowerCase() },
     update: {},

@@ -17,6 +17,8 @@ import {
   updateWahaSession,
   wahaWebhookUrl,
   WahaApiError,
+  canRequestWahaPairingCode,
+  wahaPairingCodeExpiry,
   shouldFetchWahaQr,
   wahaQrExpiryMs,
 } from "@/lib/waha";
@@ -126,7 +128,7 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
   let qr: string | null = null;
   let qrError: string | undefined;
   const expired = existing.qrExpiresAt && existing.qrExpiresAt.getTime() <= Date.now();
-  if (synced.status === "SCAN_QR_CODE" && existing.qrGenerationCount >= 6) {
+  if (synced.status === "SCAN_QR_CODE" && existing.authMethod !== "PHONE" && existing.qrGenerationCount >= 6) {
     try {
       await withSessionLock(existing.sessionName, async () => {
         await restartWahaSession(existing.sessionName);
@@ -199,7 +201,7 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
     synced.status === "SCAN_QR_CODE"
     && existing.authMethod === "PHONE"
     && existing.phoneNumber
-    && !existing.pairingCode
+    && (!existing.pairingCode || canRequestWahaPairingCode(synced.status, false, wahaPairingCodeExpiry(existing.pairingCodeRequestedAt, existing.pairingCodeExpiresAt)))
   ) {
     const requestedRecently = existing.pairingCodeRequestedAt
       && existing.pairingCodeRequestedAt.getTime() > Date.now() - 3_000;
@@ -207,18 +209,18 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
       try {
         await withSessionLock(existing.sessionName, async () => {
           const latest = await prisma.whatsappSession.findUnique({ where: { userId } });
-          if (!latest?.pairingCode && latest?.authMethod === "PHONE" && latest.status !== "WORKING") {
+          if (latest?.authMethod === "PHONE" && latest.phoneNumber && canRequestWahaPairingCode(latest.status, false, latest.pairingCode ? wahaPairingCodeExpiry(latest.pairingCodeRequestedAt, latest.pairingCodeExpiresAt) : null)) {
             await prisma.whatsappSession.update({
               where: { userId },
               data: { pairingCodeRequestedAt: new Date(), lastError: null },
             });
-            const result = await requestWahaPairingCodeFromClient(existing.sessionName, latest.phoneNumber ?? existing.phoneNumber!);
+            const result = await requestWahaPairingCodeFromClient(existing.sessionName, latest.phoneNumber);
             await prisma.whatsappSession.update({
               where: { userId },
               data: {
                 pairingCode: result.code,
                 pairingCodeRequestedAt: new Date(),
-                pairingCodeExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+                pairingCodeExpiresAt: new Date(Date.now() + 60_000),
                 lastError: null,
               },
             });
@@ -232,6 +234,7 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
   }
 
   const refreshed = await prisma.whatsappSession.findUnique({ where: { userId } });
+  const pairingCodeExpiresAt = wahaPairingCodeExpiry(refreshed?.pairingCodeRequestedAt, refreshed?.pairingCodeExpiresAt);
   const actualPhone = typeof synced.account?.phone === "string"
     ? String(synced.account.phone)
     : typeof synced.account?.id === "string"
@@ -254,11 +257,11 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
     qrExpiresAt: qr && refreshed?.qrExpiresAt ? refreshed.qrExpiresAt.toISOString() : null,
     pairingMismatch: mismatch,
     authMethod: refreshed?.authMethod === "PHONE" ? "PHONE" : "QR",
-    pairingCode: refreshed?.pairingCode
+    pairingCode: refreshed?.pairingCode && !canRequestWahaPairingCode("SCAN_QR_CODE", false, pairingCodeExpiresAt)
       ? refreshed.pairingCode
       : null,
-    pairingCodeExpiresAt: refreshed?.pairingCode && refreshed.pairingCodeExpiresAt
-      ? refreshed.pairingCodeExpiresAt.toISOString()
+    pairingCodeExpiresAt: refreshed?.pairingCode && pairingCodeExpiresAt && pairingCodeExpiresAt.getTime() > Date.now()
+      ? pairingCodeExpiresAt.toISOString()
       : null,
     error: qrError ?? (mismatch ? "The paired WhatsApp account does not match the entered phone number. Disconnect and pair the correct account." : refreshed?.lastError ?? undefined),
   };
@@ -274,41 +277,23 @@ export async function requestWahaPairingCode(userId: string, phoneNumber: string
   if (!existing) {
     return { status: "CONNECTION_ERROR", sessionName: null, account: null, phone: normalizedPhone, qr: null, authMethod: "PHONE", error: "Could not create the WhatsApp session." };
   }
-  if (
-    existing.authMethod === "PHONE"
-    && existing.phoneNumber === normalizedPhone
-    && existing.pairingCode
-  ) {
-    const status = normalizeStatus(existing.status);
-    return {
-      status,
-      sessionName: existing.sessionName,
-      account: existing.accountName,
-      phone: normalizedPhone,
-      qr: null,
-      authMethod: "PHONE",
-      pairingCode: existing.pairingCode,
-      pairingCodeExpiresAt: existing.pairingCodeExpiresAt?.toISOString() ?? null,
-      error: "The current pairing code is still active.",
-    };
-  }
-
-  await prisma.whatsappSession.update({
-    where: { userId },
-    data: {
-      phoneNumber: normalizedPhone,
-      authMethod: "PHONE",
-      qrGeneratedAt: null,
-      qrExpiresAt: null,
-      ...(existing.phoneNumber !== normalizedPhone ? {
-        pairingCode: null,
-        pairingCodeRequestedAt: null,
-        pairingCodeExpiresAt: null,
-      } : {}),
-    },
-  });
-
   return withSessionLock(existing.sessionName, async () => {
+    existing = await prisma.whatsappSession.findUniqueOrThrow({ where: { userId } });
+    await prisma.whatsappSession.update({
+      where: { userId },
+      data: {
+        phoneNumber: normalizedPhone,
+        authMethod: "PHONE",
+        qrGeneratedAt: null,
+        qrExpiresAt: null,
+        qrData: null,
+        ...(existing.phoneNumber !== normalizedPhone ? {
+          pairingCode: null,
+          pairingCodeRequestedAt: null,
+          pairingCodeExpiresAt: null,
+        } : {}),
+      },
+    });
     const current = await getWahaSession(existing.sessionName).catch((error: unknown) => {
       if (error instanceof WahaApiError && error.status === 404) return null;
       throw error;
@@ -387,6 +372,7 @@ export async function requestWahaPairingCode(userId: string, phoneNumber: string
     if (
       existing.phoneNumber === normalizedPhone
       && existing.pairingCode
+      && !canRequestWahaPairingCode("SCAN_QR_CODE", false, wahaPairingCodeExpiry(existing.pairingCodeRequestedAt, existing.pairingCodeExpiresAt))
     ) {
       return {
         status,
@@ -396,7 +382,7 @@ export async function requestWahaPairingCode(userId: string, phoneNumber: string
         qr: null,
         authMethod: "PHONE",
         pairingCode: existing.pairingCode,
-        pairingCodeExpiresAt: existing.pairingCodeExpiresAt?.toISOString() ?? null,
+        pairingCodeExpiresAt: wahaPairingCodeExpiry(existing.pairingCodeRequestedAt, existing.pairingCodeExpiresAt)?.toISOString() ?? null,
         error: "The current pairing code is still active.",
       };
     }
@@ -443,9 +429,9 @@ export async function connectWahaSession(userId: string, phoneNumber?: string): 
   let existing = await prisma.whatsappSession.findUnique({ where: { userId } });
   if (!existing) {
     const sessionName = `whatsapp-user-${userId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-    return withSessionLock(sessionName, async () => {
+    const result = await withSessionLock(sessionName, async () => {
       let record = await prisma.whatsappSession.findUnique({ where: { userId } });
-      if (record) return connectWahaSession(userId, phoneNumber);
+      if (record) return { record, created: false };
       const webhookSecret = randomBytes(32).toString("hex");
       const created = await createWahaSession(sessionName, webhookSecret);
       record = await prisma.whatsappSession.create({
@@ -458,8 +444,10 @@ export async function connectWahaSession(userId: string, phoneNumber?: string): 
           recoveryEnabled: true,
         },
       });
-      return startWahaSessionRecord(userId, record.sessionName, true);
+      return { record, created: true };
     });
+    if (result.created) return startWahaSessionRecord(userId, result.record.sessionName, true);
+    existing = result.record;
   }
 
   if (normalizedPhone && existing.phoneNumber !== normalizedPhone) {
