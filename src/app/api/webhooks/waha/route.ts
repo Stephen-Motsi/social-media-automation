@@ -119,6 +119,12 @@ export async function POST(req: NextRequest) {
             qrExpiresAt: null,
           },
         });
+        if (id) {
+          await prisma.whatsappConnectionRequest.updateMany({
+            where: { userId: session.userId, status: "IN_PROGRESS", qrExpiresAt: { gt: new Date() } },
+            data: { status: "CONNECTED", qrExpiresAt: null, error: null },
+          });
+        }
       }
     }
   }

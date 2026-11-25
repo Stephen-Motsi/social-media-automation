@@ -65,7 +65,7 @@ export async function postAdvertToPlatforms(advertId: string, at?: Date | null):
     }
     const ownerId = isStaffRole(advert.author.role) ? null : advert.authorId;
     const channel = await prisma.channel.findFirst({ where: { platform, ownerId } });
-    const accounts = (await prisma.socialAccount.findMany({ where: { platform, ownerId } })).filter((a) => handleMatches(platform, channel?.handle, a));
+    const accounts = (await prisma.socialAccount.findMany({ where: { platform, ownerId, disconnectedAt: null } })).filter((a) => handleMatches(platform, channel?.handle, a));
     if (!channel || accounts.length === 0) {
       const handle = channel?.handle ? displayHandle(platform, channel.handle) : `your ${name} account`;
       outcomes.push({ platform, ok: false, message: `Not posted on ${name}: ${handle} isn't connected. Connect it in Settings on Channels.` });

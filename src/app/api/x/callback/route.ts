@@ -1,33 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/auth";
-import { isStaff } from "@/lib/session";
+import { getViewer, isStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { X_STATE_COOKIE, X_VERIFIER_COOKIE, xExchangeCode, xGetMe } from "@/lib/x";
 import { channelsUrl, clearOAuthCookies, stateMatches } from "@/lib/oauth-state";
 import { displayHandle, handleMatches, normalizeHandle, profileUrl } from "@/lib/handles";
+import { saveAuthorizedSocialAccount } from "@/lib/owned-social-accounts";
+import { Prisma } from "@prisma/client";
 
 export async function GET(req: NextRequest) {
+  const viewer = await getViewer();
   const done = (params: Record<string, string>) => {
-    const res = NextResponse.redirect(channelsUrl(req, params));
+    const res = NextResponse.redirect(channelsUrl(req, params, viewer));
     clearOAuthCookies(res, [X_STATE_COOKIE, X_VERIFIER_COOKIE], "/api/x");
     return res;
   };
 
-  const session = await auth();
-  if (!isStaff(session?.user?.role)) return done({ error: "admin_only" });
+  if (!viewer) return done({ error: "sign_in_required" });
   if (req.nextUrl.searchParams.get("error")) return done({ error: "cancelled" });
-  if (!stateMatches(req, X_STATE_COOKIE)) return done({ error: "state_mismatch" });
+  if (!stateMatches(req, X_STATE_COOKIE, viewer)) return done({ error: "state_mismatch" });
   const code = req.nextUrl.searchParams.get("code");
   const verifier = req.cookies.get(X_VERIFIER_COOKIE)?.value;
   if (!code || !verifier) return done({ error: "no_code" });
 
   try {
     const tokens = await xExchangeCode(code, verifier);
+    if (!isStaff(viewer.role) && tokens.scope && !["tweet.write", "users.read"].every((scope) => tokens.scope!.split(/\s+/).includes(scope))) {
+      return done({ error: "provider_permissions_missing" });
+    }
     const me = await xGetMe(tokens.access_token);
     const handle = normalizeHandle("X", me.username);
     // Only link the account the X container's handle names.
-    const channel = await prisma.channel.findFirst({ where: { platform: "X", ownerId: null } });
+    const ownerId = isStaff(viewer.role) ? null : viewer.id;
+    const channel = await prisma.channel.findFirst({ where: { platform: "X", ownerId } });
+    if (ownerId && !channel?.handle) return done({ error: "handle_required", platform: "X" });
     if (!handleMatches("X", channel?.handle, { handle, displayName: me.name, externalId: me.id })) {
       return done({ error: "handle_mismatch", expected: displayHandle("X", channel?.handle), got: `@${handle}`, platform: "X" });
     }
@@ -38,15 +44,13 @@ export async function GET(req: NextRequest) {
       accessTokenEncrypted: encrypt(tokens.access_token),
       refreshTokenEncrypted: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
       tokenExpiresAt: tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null,
+      disconnectedAt: null,
     };
-    await prisma.socialAccount.upsert({
-      where: { platform_externalId: { platform: "X", externalId: me.id }, ownerId: null },
-      update: data,
-      create: { platform: "X", externalId: me.id, ...data },
-    });
+    await saveAuthorizedSocialAccount("X", me.id, ownerId, data);
     return done({ connected: "1", platform: "X" });
   } catch (err) {
     console.error("X connect failed:", err);
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return done({ error: "account_already_connected" });
     return done({ error: "x_error" });
   }
 }

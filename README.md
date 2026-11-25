@@ -16,7 +16,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 | **Subscribers are the audience (user side)** | The public home page is `/subscribe` (signed-out visitors to `/` land there). People subscribe to adverts on WhatsApp about topics they choose, with no account or password, or an admin adds them. Adverts are matched to them automatically; **an admin approves every send**. WhatsApp is the only channel that can deliver to an individual; the other platforms only allow public posts (Channels). |
 | **Subscriptions are approved automatically** | Each subscription runs through checks based on WhatsApp's policies (`src/lib/policy/subscriptions.ts`). Passing ones are accepted with no admin action; only flagged ones wait on Approvals. |
 | **Five platforms** | Facebook, Instagram and WhatsApp go through the Meta Graph API (`src/lib/meta/`). X (`src/lib/x.ts`) and TikTok (`src/lib/tiktok.ts`) have their own OAuth and posting clients. Adding a platform means a new `Platform` enum value, a client, rules in `rules.ts`, and a connect route. |
-| **Meta, X and TikTok containers** | Channels and provider containers can be owned per user, with at most one container per provider and platform per owner. Existing unowned containers and accounts remain staff-only shared records. User account connection and publishing workflows are not yet enabled. |
+| **Meta, X and TikTok containers** | Channels and provider containers can be owned per user, with at most one container per provider and platform per owner. Existing unowned containers and accounts remain staff-only shared records. User account connection is available at `/me/accounts`; user advert publishing is not yet enabled. |
 | **Handles decide which real account is used** | Admins enter the handle for each platform (Page username, @handle, WhatsApp number). Connecting only links the account the platform reports for that handle, and posts only go to accounts matching it (`src/lib/handles.ts`). A handle alone can't grant posting rights: the account owner still signs in and approves. |
 | **Only what each API supports** | Stories exist only on Facebook and Instagram. WhatsApp's Business API can't post **Status**, and the X and TikTok APIs can't post stories, so those options are shown disabled with the reason (`formatSupport` in `rules.ts`). |
 | **WhatsApp is messaging, not a feed** | "Publishing" to WhatsApp means sending a message to recipients. WAHA sends approved text and supported media to configured recipients; comply with WhatsApp usage restrictions. |
@@ -98,6 +98,7 @@ src/
 ### Data model in short
 
 - **SocialAccount** is one connected Facebook Page, Instagram account, WhatsApp number, X account or TikTok account, with encrypted tokens and the real `handle`/`profileUrl` the platform reported.
+- **WhatsappConnectionRequest** tracks a user's administrator-assisted WAHA request and QR window. WAHA sessions remain owned by their requesting user.
 - **ChannelGroup** is a parent container (`META`, `X`, `TIKTOK`) holding its platforms' social containers.
 - **Channel** is one platform's social container: the expected `handle`, post format (`POST`/`STORY`), the advert (a draft `Post`), the schedule (`frequency`, `runAt`, `timeOfDay`, `weekdays`, `dayOfMonth`, `timezone`), `enabled`/`nextRunAt`, the last run's result, and WhatsApp recipients/template.
 - **Post** holds the content, media URLs, status and schedule time.
@@ -287,6 +288,14 @@ All pass → **accepted automatically** (`decidedBy: "auto"`), and they're immed
 4. Subscribe the Meta webhook to `whatsapp_business_account` → `messages` (callback `https://social.yet-kenya.com/api/webhooks/meta`), so STOP replies and receipts arrive.
 
 Meta limits how many marketing messages each person receives, and may hold some back. Those show as `failed` with Meta's reason.
+
+## User social account connections
+
+Ordinary users save an expected handle at `/me/accounts` and then authorize through the provider; a handle alone never grants access. Facebook requires a managed Page, and Instagram requires a linked professional account. X and TikTok require their OAuth applications and appropriate permissions. Connections are private to the owner; an account already attached to another owner cannot be claimed. Use **Check authorization** to check current access with the provider. Disconnecting removes stored tokens while retaining publishing history; revoke access at the provider separately if needed.
+
+For WhatsApp, a user submits a request and staff starts or refreshes it at `/admin/whatsapp-requests`. Only the requesting user can see the QR code. The five-minute window starts when staff starts the session; expired sessions are stopped by user polling or the running worker. Configure WAHA and Redis and keep the worker running for background expiry. A successful WAHA connection does not yet enable user advert publishing.
+
+Apply the ownership migration followed by the user social connections migration only after review and deployment approval. Never use `db push` or a database reset for this rollout. Existing staff connections remain shared; the migrations do not assign them to ordinary users.
 
 ## Channels and scheduling
 

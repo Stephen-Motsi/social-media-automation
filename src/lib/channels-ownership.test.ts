@@ -31,7 +31,7 @@ Object.defineProperty(prisma, "socialAccount", {
 
 async function main() {
   await assert.rejects(runChannel("channel"), /No connected account/);
-  assert.deepEqual(accountsWhere, { platform: "X", ownerId: "alice" });
+  assert.deepEqual(accountsWhere, { platform: "X", ownerId: "alice", disconnectedAt: null });
   accountsWhere = undefined;
   groupOwner = "bob";
   await assert.rejects(runChannel("channel"), /different owners/);

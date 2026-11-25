@@ -20,6 +20,7 @@ import { accessTokenFor } from "@/lib/tokens";
 import { runDueChannels } from "@/lib/channels";
 import { recoverWahaSessions } from "@/lib/waha-lifecycle";
 import { canPublishToAccount } from "@/lib/ownership";
+import { expireWhatsappRequests } from "@/lib/whatsapp-requests";
 
 type Job = {
   account: SocialAccount;
@@ -239,6 +240,7 @@ let ticks = 0;
 async function tick() {
   try {
     const ran = await runDueChannels();
+    await expireWhatsappRequests();
     await recoverWahaSessions().catch(() => null);
     if (ran) console.log(`Scheduler: ${ran} channel run(s) started`);
     const handles = await deliverToHandles();

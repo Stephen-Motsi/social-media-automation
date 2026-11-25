@@ -4,6 +4,7 @@ import { signOut } from "@/auth";
 const links = [
   { href: "/", label: "Home" },
   { href: "/me", label: "My adverts" },
+  { href: "/me/accounts", label: "Social accounts" },
   { href: "/me/profile", label: "Profile" },
 ];
 

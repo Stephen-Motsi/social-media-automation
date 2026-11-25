@@ -32,7 +32,7 @@ export async function runChannel(channelId: string): Promise<string> {
   }
 
   // Only post to accounts matching the handle set on this social container.
-  const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: channel.ownerId } })).filter((a) =>
+  const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: channel.ownerId, disconnectedAt: null } })).filter((a) =>
     handleMatches(channel.platform, channel.handle, a),
   );
   if (accounts.length === 0) {

@@ -9,6 +9,8 @@ const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 // Returns a usable access token, refreshing X/TikTok tokens that are about to expire.
 // Meta Page tokens and WhatsApp system-user tokens don't expire, so they're returned as-is.
 export async function accessTokenFor(account: SocialAccount): Promise<string> {
+  account = await prisma.socialAccount.findUniqueOrThrow({ where: { id: account.id } });
+  if (account.disconnectedAt) throw new Error("This social account is disconnected. Reconnect it before publishing.");
   const current = decrypt(account.accessTokenEncrypted);
   const expiresSoon = account.tokenExpiresAt && account.tokenExpiresAt.getTime() - Date.now() < REFRESH_MARGIN_MS;
   if (!expiresSoon || !account.refreshTokenEncrypted) return current;
@@ -23,7 +25,7 @@ export async function accessTokenFor(account: SocialAccount): Promise<string> {
   if (!fresh) return current;
 
   await prisma.socialAccount.update({
-    where: { id: account.id },
+    where: { id: account.id, disconnectedAt: null },
     data: {
       accessTokenEncrypted: encrypt(fresh.access_token),
       // X rotates refresh tokens on every use; TikTok may return the same one

@@ -5,7 +5,7 @@ import { reasonFor } from "@/lib/errors";
 import { connectByHandle, handleConnect } from "@/lib/connect-by-handle";
 import { z } from "zod";
 import type { Platform } from "@prisma/client";
-import { AccessError, logActivity, requireStaff, requireViewer } from "@/lib/session";
+import { AccessError, logActivity, requireStaff } from "@/lib/session";
 import { generateAdvertImage, refineAdvertImage, type ImageResult } from "@/lib/advert-images";
 import { publicMediaUrl } from "@/lib/media";
 import { proposeCampaign } from "@/lib/audience";
@@ -463,12 +463,12 @@ export type WahaViewState = {
 };
 
 export async function getWahaStatusAction(): Promise<WahaViewState> {
-  const viewer = await requireViewer();
+  const viewer = await requireStaff();
   return getWahaView(viewer.id);
 }
 
 export async function refreshWahaQrAction(): Promise<WahaViewState> {
-  const viewer = await requireViewer();
+  const viewer = await requireStaff();
   await prisma.whatsappSession.updateMany({
     where: { userId: viewer.id },
     data: { qrGeneratedAt: null, qrExpiresAt: null, qrData: null },
@@ -477,7 +477,7 @@ export async function refreshWahaQrAction(): Promise<WahaViewState> {
 }
 
 export async function setWahaAuthMethodAction(method: "QR" | "PHONE"): Promise<WahaViewState> {
-  const viewer = await requireViewer();
+  const viewer = await requireStaff();
   await prisma.whatsappSession.updateMany({
     where: { userId: viewer.id },
     data: method === "QR"
@@ -498,7 +498,7 @@ export async function setWahaAuthMethodAction(method: "QR" | "PHONE"): Promise<W
 }
 
 export async function createWahaSessionAction(phoneNumber?: string): Promise<WahaViewState> {
-  const viewer = await requireViewer();
+  const viewer = await requireStaff();
   if (!(await wahaConfigured())) return { status: "NOT_CONFIGURED", sessionName: null, account: null, phone: null, qr: null, error: "Save the WAHA Base URL and API Key in Channels before creating a session." };
   if (phoneNumber !== undefined) {
     try {
@@ -515,7 +515,7 @@ export async function createWahaSessionAction(phoneNumber?: string): Promise<Wah
 }
 
 export async function reconnectWahaSessionAction(phoneNumber?: string): Promise<WahaViewState> {
-  const viewer = await requireViewer();
+  const viewer = await requireStaff();
   if (phoneNumber !== undefined) {
     try {
       normalizeWahaPhoneNumber(phoneNumber);
@@ -531,7 +531,7 @@ export async function reconnectWahaSessionAction(phoneNumber?: string): Promise<
 }
 
 export async function requestWahaPairingCodeAction(phoneNumber: string): Promise<WahaViewState> {
-  const viewer = await requireViewer();
+  const viewer = await requireStaff();
   try {
     const normalizedPhone = normalizeWahaPhoneNumber(phoneNumber);
     return await requestWahaPairingCode(viewer.id, normalizedPhone);
@@ -549,7 +549,7 @@ export async function requestWahaPairingCodeAction(phoneNumber: string): Promise
 }
 
 export async function disconnectWahaSessionAction(): Promise<WahaViewState> {
-  const viewer = await requireViewer();
+  const viewer = await requireStaff();
   const result = await disconnectWahaSession(viewer.id);
   await logAdmin(viewer.id, "WHATSAPP_DISCONNECTED", { session: result.sessionName });
   refresh();
@@ -557,7 +557,7 @@ export async function disconnectWahaSessionAction(): Promise<WahaViewState> {
 }
 
 export async function deleteWahaSessionAction(): Promise<WahaViewState> {
-  const viewer = await requireViewer();
+  const viewer = await requireStaff();
   const existing = await prisma.whatsappSession.findUnique({ where: { userId: viewer.id } });
   if (existing) {
     await logAdmin(viewer.id, "WHATSAPP_SESSION_DELETED", { session: existing.sessionName });

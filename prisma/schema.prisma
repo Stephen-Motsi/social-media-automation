@@ -69,6 +69,17 @@ enum TargetStatus {
   FAILED
 }
 
+enum WhatsappRequestStatus {
+  PENDING
+  PREPARING
+  IN_PROGRESS
+  EXPIRING
+  CONNECTED
+  EXPIRED
+  FAILED
+  CANCELLED
+}
+
 // Users are created by an admin (seed script or `npm run user:create`). No self sign-up.
 model User {
   id           String    @id @default(cuid())
@@ -107,6 +118,20 @@ model User {
   advertReviews     Post[]           @relation("AdvertReviews")
   addedSubscribers  Subscriber[]     @relation("AddedSubscribers")
   whatsappSession   WhatsappSession?
+  whatsappRequest   WhatsappConnectionRequest?
+}
+
+model WhatsappConnectionRequest {
+  id          String                @id @default(cuid())
+  userId      String                @unique
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status      WhatsappRequestStatus @default(PENDING)
+  qrExpiresAt DateTime?
+  error       String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@index([status, updatedAt])
 }
 
 model WhatsappSession {
@@ -154,6 +179,7 @@ model SocialAccount {
   handle                String?
   profileUrl            String?
   tokenExpiresAt        DateTime?
+  disconnectedAt        DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/auth";
-import { isStaff } from "@/lib/session";
+import { getViewer, isStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import {
@@ -11,30 +10,44 @@ import {
 } from "@/lib/meta/oauth";
 import { channelsUrl, clearOAuthCookies, stateMatches } from "@/lib/oauth-state";
 import { displayHandle, handleMatches, normalizeHandle, profileUrl } from "@/lib/handles";
+import { graphRequest } from "@/lib/meta/graph";
+import { saveAuthorizedSocialAccount } from "@/lib/owned-social-accounts";
+import { Prisma } from "@prisma/client";
 
 // Facebook redirects here after the admin approves access. For the Meta container's Facebook and
 // Instagram social containers, it links only the Page / Instagram account matching each one's handle.
 export async function GET(req: NextRequest) {
+  const viewer = await getViewer();
   const done = (params: Record<string, string>) => {
-    const res = NextResponse.redirect(channelsUrl(req, params));
+    const res = NextResponse.redirect(channelsUrl(req, params, viewer));
     clearOAuthCookies(res, [STATE_COOKIE], "/api/meta");
     return res;
   };
 
-  const session = await auth();
-  if (!isStaff(session?.user?.role)) return done({ error: "admin_only" });
+  if (!viewer) return done({ error: "sign_in_required" });
   if (req.nextUrl.searchParams.get("error")) return done({ error: "cancelled" });
-  if (!stateMatches(req, STATE_COOKIE)) return done({ error: "state_mismatch" });
+  if (!stateMatches(req, STATE_COOKIE, viewer)) return done({ error: "state_mismatch" });
   const code = req.nextUrl.searchParams.get("code");
   if (!code) return done({ error: "no_code" });
 
-  const channels = await prisma.channel.findMany({ where: { ownerId: null, platform: { in: ["FACEBOOK", "INSTAGRAM"] } } });
-  const fb = channels.find((c) => c.platform === "FACEBOOK");
-  const ig = channels.find((c) => c.platform === "INSTAGRAM");
+  const ownerId = isStaff(viewer.role) ? null : viewer.id;
+  const channels = await prisma.channel.findMany({ where: { ownerId, platform: { in: ["FACEBOOK", "INSTAGRAM"] } } });
+  const fb = channels.find((c) => c.platform === "FACEBOOK" && (ownerId === null || c.handle));
+  const ig = channels.find((c) => c.platform === "INSTAGRAM" && (ownerId === null || c.handle));
   if (!fb && !ig) return done({ error: "no_meta_channels" });
 
   try {
     const { access_token: userToken } = await exchangeCodeForLongLivedToken(code);
+    if (ownerId) {
+      const permissions = await graphRequest<{ data: { permission: string; status: string }[] }>("me/permissions", userToken);
+      const granted = new Set(permissions.data.filter((p) => p.status === "granted").map((p) => p.permission));
+      const needed = [
+        "pages_show_list", "pages_read_engagement",
+        ...(fb ? ["pages_manage_posts"] : []),
+        ...(ig ? ["instagram_basic", "instagram_content_publish"] : []),
+      ];
+      if (needed.some((permission) => !granted.has(permission))) return done({ error: "provider_permissions_missing" });
+    }
     const pages = fb || ig ? await listManagedPages(userToken) : [];
     if (pages.length === 0) return done({ error: "no_pages" });
 
@@ -42,7 +55,8 @@ export async function GET(req: NextRequest) {
     const missing: string[] = [];
     if (fb) {
       const matches = pages.filter((p) =>
-        handleMatches("FACEBOOK", fb.handle, { handle: p.username ?? null, displayName: p.name, externalId: p.id }),
+        (!ownerId || p.tasks?.some((task) => task === "CREATE_CONTENT" || task === "MANAGE"))
+        && handleMatches("FACEBOOK", fb.handle, { handle: p.username ?? null, displayName: p.name, externalId: p.id }),
       );
       for (const page of matches) {
         const handle = page.username ? normalizeHandle("FACEBOOK", page.username) : null;
@@ -50,20 +64,17 @@ export async function GET(req: NextRequest) {
           displayName: page.name,
           accessTokenEncrypted: encrypt(page.access_token),
           tokenExpiresAt: null,
+          disconnectedAt: null,
           handle,
           profileUrl: profileUrl("FACEBOOK", handle, page.id),
         };
-        await prisma.socialAccount.upsert({
-          where: { platform_externalId: { platform: "FACEBOOK", externalId: page.id }, ownerId: null },
-          update: data,
-          create: { platform: "FACEBOOK", externalId: page.id, ...data },
-        });
+        await saveAuthorizedSocialAccount("FACEBOOK", page.id, ownerId, data);
         saved++;
       }
       if (matches.length === 0) missing.push(`Facebook Page "${displayHandle("FACEBOOK", fb.handle)}"`);
     }
     if (ig) {
-      const linked = pages.filter((p) => p.instagram_business_account);
+      const linked = pages.filter((p) => p.instagram_business_account && (!ownerId || p.tasks?.some((task) => task === "CREATE_CONTENT" || task === "MANAGE")));
       const matches = linked.filter((p) => {
         const a = p.instagram_business_account!;
         return handleMatches("INSTAGRAM", ig.handle, { handle: a.username ?? null, displayName: a.name ?? "", externalId: a.id });
@@ -76,14 +87,11 @@ export async function GET(req: NextRequest) {
           displayName: handle ? `@${handle}` : (a.name ?? `Instagram ${a.id}`),
           accessTokenEncrypted: encrypt(page.access_token),
           tokenExpiresAt: null,
+          disconnectedAt: null,
           handle,
           profileUrl: profileUrl("INSTAGRAM", handle),
         };
-        await prisma.socialAccount.upsert({
-          where: { platform_externalId: { platform: "INSTAGRAM", externalId: a.id }, ownerId: null },
-          update: data,
-          create: { platform: "INSTAGRAM", externalId: a.id, ...data },
-        });
+        await saveAuthorizedSocialAccount("INSTAGRAM", a.id, ownerId, data);
         saved++;
       }
       if (matches.length === 0) missing.push(`Instagram account "${displayHandle("INSTAGRAM", ig.handle)}"`);
@@ -100,6 +108,7 @@ export async function GET(req: NextRequest) {
     return done({ connected: String(saved), platform: "META" });
   } catch (err) {
     console.error("Meta connect failed:", err);
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return done({ error: "account_already_connected" });
     return done({ error: "meta_error" });
   }
 }

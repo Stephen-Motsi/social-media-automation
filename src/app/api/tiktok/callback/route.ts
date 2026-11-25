@@ -1,30 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/auth";
-import { isStaff } from "@/lib/session";
+import { getViewer, isStaff } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import { TIKTOK_STATE_COOKIE, tiktokExchangeCode, tiktokGetUser } from "@/lib/tiktok";
 import { channelsUrl, clearOAuthCookies, stateMatches } from "@/lib/oauth-state";
 import { displayHandle, handleMatches, normalizeHandle, profileUrl } from "@/lib/handles";
+import { saveAuthorizedSocialAccount } from "@/lib/owned-social-accounts";
+import { Prisma } from "@prisma/client";
 
 export async function GET(req: NextRequest) {
+  const viewer = await getViewer();
   const done = (params: Record<string, string>) => {
-    const res = NextResponse.redirect(channelsUrl(req, params));
+    const res = NextResponse.redirect(channelsUrl(req, params, viewer));
     clearOAuthCookies(res, [TIKTOK_STATE_COOKIE], "/api/tiktok");
     return res;
   };
 
-  const session = await auth();
-  if (!isStaff(session?.user?.role)) return done({ error: "admin_only" });
+  if (!viewer) return done({ error: "sign_in_required" });
   if (req.nextUrl.searchParams.get("error")) return done({ error: "cancelled" });
-  if (!stateMatches(req, TIKTOK_STATE_COOKIE)) return done({ error: "state_mismatch" });
+  if (!stateMatches(req, TIKTOK_STATE_COOKIE, viewer)) return done({ error: "state_mismatch" });
   const code = req.nextUrl.searchParams.get("code");
   if (!code) return done({ error: "no_code" });
 
   try {
     const tokens = await tiktokExchangeCode(code);
+    if (!isStaff(viewer.role) && !["user.info.basic", "user.info.profile", "video.publish"].every((scope) => tokens.scope?.split(/[,\s]+/).includes(scope))) {
+      return done({ error: "provider_permissions_missing" });
+    }
     const user = await tiktokGetUser(tokens.access_token);
-    const channel = await prisma.channel.findFirst({ where: { platform: "TIKTOK", ownerId: null } });
+    const ownerId = isStaff(viewer.role) ? null : viewer.id;
+    const channel = await prisma.channel.findFirst({ where: { platform: "TIKTOK", ownerId } });
+    if (ownerId && !channel?.handle) return done({ error: "handle_required", platform: "TIKTOK" });
     const handle = user.username ? normalizeHandle("TIKTOK", user.username) : null;
     // Without the username we can't confirm it's the right account, so don't link it.
     if (channel?.handle && !handle) return done({ error: "tiktok_no_username" });
@@ -38,15 +44,13 @@ export async function GET(req: NextRequest) {
       accessTokenEncrypted: encrypt(tokens.access_token),
       refreshTokenEncrypted: encrypt(tokens.refresh_token),
       tokenExpiresAt: new Date(Date.now() + tokens.expires_in * 1000),
+      disconnectedAt: null,
     };
-    await prisma.socialAccount.upsert({
-      where: { platform_externalId: { platform: "TIKTOK", externalId: tokens.open_id }, ownerId: null },
-      update: data,
-      create: { platform: "TIKTOK", externalId: tokens.open_id, ...data },
-    });
+    await saveAuthorizedSocialAccount("TIKTOK", tokens.open_id, ownerId, data);
     return done({ connected: "1", platform: "TIKTOK" });
   } catch (err) {
     console.error("TikTok connect failed:", err);
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return done({ error: "account_already_connected" });
     return done({ error: "tiktok_error" });
   }
 }

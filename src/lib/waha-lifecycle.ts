@@ -21,6 +21,7 @@ import {
   wahaPairingCodeExpiry,
   shouldFetchWahaQr,
   wahaQrExpiryMs,
+  WAHA_QR_REFETCH_MS,
 } from "@/lib/waha";
 
 export type WahaLifecycleView = {
@@ -157,7 +158,8 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
       return { status: "FAILED", sessionName: existing.sessionName, account: null, phone: existing.phoneNumber, qr: null, qrExpiresAt: null, error: qrError };
     }
   }
-  const qrNeedsRefresh = !expired && existing.qrExpiresAt && existing.qrExpiresAt.getTime() > Date.now();
+  const qrNeedsRefresh = !expired && existing.qrExpiresAt && existing.qrGeneratedAt
+    && existing.qrGeneratedAt.getTime() > Date.now() - WAHA_QR_REFETCH_MS;
   if (synced.status === "SCAN_QR_CODE" && existing.qrData && existing.qrExpiresAt && !expired && existing.authMethod !== "PHONE") {
     qr = existing.qrData;
   }
@@ -604,6 +606,13 @@ export async function recoverWahaSessions() {
       recoveryEnabled: true,
       status: { in: ["STARTING", "SCAN_QR_CODE", "FAILED", "DISCONNECTED", "CONNECTION_ERROR"] },
       OR: [{ lastRecoveryAt: null }, { lastRecoveryAt: { lt: cutoff } }, { recoveryAttemptCount: { lt: 5 } }],
+      user: {
+        OR: [
+          { whatsappRequest: { is: null } },
+          { whatsappRequest: { is: { status: "CONNECTED" } } },
+          { whatsappRequest: { is: { status: "IN_PROGRESS", qrExpiresAt: { gt: new Date() } } } },
+        ],
+      },
     },
     take: 20,
   });
@@ -615,6 +624,9 @@ export async function recoverWahaSessions() {
     });
     const current = await prisma.whatsappSession.findUnique({ where: { id: session.id } });
     if (!current || ["WORKING", "STOPPED", "LOGGED_OUT"].includes(current.status)) continue;
+    const request = await prisma.whatsappConnectionRequest.findUnique({ where: { userId: session.userId } });
+    if (request && request.status !== "CONNECTED"
+      && !(request.status === "IN_PROGRESS" && request.qrExpiresAt && request.qrExpiresAt.getTime() > Date.now())) continue;
     if (["STARTING", "SCAN_QR_CODE"].includes(current.status)) continue;
     const windowCount = session.lastRecoveryAt && session.lastRecoveryAt >= cutoff ? session.recoveryAttemptCount : 0;
     if (windowCount >= 5) continue;
