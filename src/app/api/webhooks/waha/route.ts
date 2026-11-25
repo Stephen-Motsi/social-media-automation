@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
 import { getWahaQr, wahaQrExpiryMs } from "@/lib/waha";
+import { syncWahaSession } from "@/lib/waha-lifecycle";
+import { WAHA_IDENTITY_CONFLICT, WAHA_IDENTITY_UNKNOWN } from "@/lib/waha-identity";
 
 function validHmac(raw: string, secret: string, supplied: string | null, algorithmHeader: string | null) {
   if (!supplied) return false;
@@ -67,62 +69,47 @@ export async function POST(req: NextRequest) {
         : null;
     if (status) {
       const normalized = status.trim().toUpperCase().replace(/[\s-]+/g, "_");
-      await prisma.whatsappSession.update({
-        where: { id: session.id },
-        data: {
-          status: normalized,
-          previousStatus: session.status === normalized ? session.previousStatus : session.status,
-          lastStatusAt: new Date(),
-          stateVersion: { increment: 1 },
-          ...(normalized !== "SCAN_QR_CODE" ? { qrGeneratedAt: null, qrExpiresAt: null } : {}),
-          ...(normalized !== "SCAN_QR_CODE" ? { qrData: null } : {}),
-          ...(normalized === "WORKING"
-            ? { recoveryAttemptCount: 0, lastRecoveryAt: null, lastError: null, pairingCode: null, pairingCodeRequestedAt: null, pairingCodeExpiresAt: null }
-            : {}),
-        },
-      });
-      if (normalized === "SCAN_QR_CODE" && session.authMethod !== "PHONE") {
-        const generation = session.qrGenerationCount + 1;
-        const freshQr = await getWahaQr(session.sessionName).catch((error: unknown) => {
-          console.error(`[WAHA] QR retrieval failed for ${session.sessionName}:`, error instanceof Error ? error.message : error);
-          return { qr: null };
-        });
-        await prisma.whatsappSession.update({
-          where: { id: session.id },
-          data: {
-            qrGeneratedAt: freshQr.qr ? new Date() : null,
-            qrExpiresAt: freshQr.qr ? new Date(Date.now() + wahaQrExpiryMs(generation)) : null,
-            qrGenerationCount: generation,
-            qrData: freshQr.qr,
-            lastError: freshQr.qr ? null : "WAHA has not produced a QR code yet.",
-          },
-        });
-      }
-      const nestedPayload = typeof payload.payload === "object" && payload.payload
-        ? payload.payload as Record<string, unknown>
-        : null;
-      if (normalized === "WORKING" && ((typeof payload.me === "object" && payload.me) || (nestedPayload && typeof nestedPayload.me === "object" && nestedPayload.me))) {
-        const me = (typeof payload.me === "object" && payload.me
-          ? payload.me
-          : nestedPayload?.me) as Record<string, unknown>;
-        const id = typeof me.id === "string" ? me.id : null;
-        const phone = id?.split("@")[0] ?? null;
-        await prisma.whatsappSession.update({
-          where: { id: session.id },
-          data: {
-            accountId: id,
-            accountPhone: phone?.replace(/\D/g, "") || null,
-            accountName: typeof me.pushName === "string" ? me.pushName : null,
-            accountPushName: typeof me.pushName === "string" ? me.pushName : null,
-            accountInfo: me as object,
-            qrGeneratedAt: null,
-            qrExpiresAt: null,
-          },
-        });
-        if (id) {
+      if (normalized === "WORKING") {
+        const view = await syncWahaSession(session.userId, session.sessionName);
+        if (view.status === "WORKING") {
           await prisma.whatsappConnectionRequest.updateMany({
             where: { userId: session.userId, status: "IN_PROGRESS", qrExpiresAt: { gt: new Date() } },
             data: { status: "CONNECTED", qrExpiresAt: null, error: null },
+          });
+        }
+      } else {
+        const updated = await prisma.whatsappSession.updateMany({
+          where: {
+            id: session.id, stateVersion: session.stateVersion, status: { not: "STOPPING" },
+            NOT: [
+              { status: "FAILED", recoveryEnabled: false, lastError: { startsWith: WAHA_IDENTITY_CONFLICT } },
+              { status: "FAILED", recoveryEnabled: false, lastError: { startsWith: WAHA_IDENTITY_UNKNOWN } },
+            ],
+          },
+          data: {
+            status: normalized,
+            previousStatus: session.status === normalized ? session.previousStatus : session.status,
+            lastStatusAt: new Date(),
+            stateVersion: { increment: 1 },
+            ...(normalized !== "SCAN_QR_CODE" ? { qrGeneratedAt: null, qrExpiresAt: null } : {}),
+            ...(normalized !== "SCAN_QR_CODE" ? { qrData: null } : {}),
+          },
+        });
+        if (updated.count && normalized === "SCAN_QR_CODE" && session.authMethod !== "PHONE") {
+          const generation = session.qrGenerationCount + 1;
+          const freshQr = await getWahaQr(session.sessionName).catch((error: unknown) => {
+            console.error(`[WAHA] QR retrieval failed for ${session.sessionName}:`, error instanceof Error ? error.message : error);
+            return { qr: null };
+          });
+          await prisma.whatsappSession.updateMany({
+            where: { id: session.id, stateVersion: session.stateVersion + 1, status: "SCAN_QR_CODE" },
+            data: {
+              qrGeneratedAt: freshQr.qr ? new Date() : null,
+              qrExpiresAt: freshQr.qr ? new Date(Date.now() + wahaQrExpiryMs(generation)) : null,
+              qrGenerationCount: generation,
+              qrData: freshQr.qr,
+              lastError: freshQr.qr ? null : "WAHA has not produced a QR code yet.",
+            },
           });
         }
       }

@@ -63,6 +63,13 @@ export const X_VERIFIER_COOKIE = "x_oauth_verifier";
 
 // dm.read + dm.write: send subscribed adverts to people as direct messages
 export const X_SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write", "dm.read", "dm.write", "offline.access"];
+const X_PUBLISH_SCOPES = ["tweet.read", "tweet.write", "users.read", "media.write"];
+
+export function hasXPublishingScopes(scope: unknown) {
+  if (typeof scope !== "string" || !scope.trim()) return false;
+  const granted = new Set(scope.trim().split(/\s+/));
+  return X_PUBLISH_SCOPES.every((required) => granted.has(required));
+}
 
 export const xConfigured = () => Boolean(process.env.X_CLIENT_ID && process.env.X_CLIENT_SECRET);
 

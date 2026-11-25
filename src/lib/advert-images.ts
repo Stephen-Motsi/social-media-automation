@@ -107,11 +107,12 @@ export async function refineAdvertImage(
   platform: Platform,
   format: PostFormat,
   caption = "",
+  options?: { ownerOnly?: boolean },
 ): Promise<ImageResult> {
   const text = instruction.trim();
   if (text.length < 3) return { ok: false, error: "Describe what to change, e.g. \"make the background brighter\"." };
   if (!process.env.OPENAI_API_KEY) return { ok: false, error: openAiError(new OpenAIError("", "not_configured")) };
-  const source = await prisma.mediaAsset.findUnique({ where: { id: mediaId } });
+  const source = await prisma.mediaAsset.findFirst({ where: { id: mediaId, ...(options?.ownerOnly ? { createdById: userId } : {}) } });
   if (!source || source.blocked) return { ok: false, error: "Create or upload a photo first." };
   if (!(await underDailyLimit(userId))) return { ok: false, error: `You've reached today's limit of ${dailyLimit()} images. Try again tomorrow.` };
   const blocked = await screen(text);

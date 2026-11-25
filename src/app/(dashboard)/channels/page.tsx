@@ -13,6 +13,7 @@ import { displayHandle, groupOrder, groupPlatforms, handleMatches, profileUrl } 
 import { GroupCard, type ConnectView } from "./group-card";
 import { uploadHint } from "@/lib/policy/rules";
 import { wahaConfigured } from "@/lib/waha";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +41,8 @@ function errorNotice(p: Params): string | null {
       return "TikTok connections aren't set up yet. Add TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET to .env.";
     case "cancelled":
       return "Connection was cancelled. Nothing was changed.";
+    case "provider_permissions_missing":
+      return "The provider did not confirm the permissions required for publishing. Reconnect and grant the required permissions.";
     case "state_mismatch":
       return "That connection attempt expired or didn't come from this site. Try again.";
     case "no_code":
@@ -103,7 +106,7 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
     searchParams,
     auth(),
     prisma.channelGroup.findMany({ where: { ownerId }, include: { channels: { where: { ownerId }, include: { advert: ownerId ? { where: { authorId: ownerId } } : true } } } }),
-    prisma.socialAccount.findMany({ where: { ownerId }, orderBy: { createdAt: "asc" } }),
+    prisma.socialAccount.findMany({ where: { ownerId, disconnectedAt: null }, orderBy: { createdAt: "asc" } }),
     wahaConfigured(),
   ]);
   // Each social container's advert photo (and the prompt it was made from)
@@ -139,6 +142,7 @@ export default async function ChannelsPage({ searchParams }: { searchParams: Pro
             account&rsquo;s handle in Settings to connect it, then choose what it posts, as a post or story, and when.
           </p>
         </div>
+        {admin && <Link href="/me/accounts" className="text-sm underline">Manage my personal social accounts</Link>}
       </div>
 
       {error && (

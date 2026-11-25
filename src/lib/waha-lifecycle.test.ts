@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import IORedis from "ioredis";
+import { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { getWahaView, requestWahaPairingCode } from "./waha-lifecycle";
 
@@ -8,12 +8,10 @@ process.env.WAHA_API_KEY = "test-key";
 process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString("base64");
 
 let locked = false;
-Object.defineProperties(IORedis.prototype, {
-  connect: { value: async () => undefined },
-  set: { value: async () => { if (locked) return null; locked = true; return "OK"; } },
-  eval: { value: async () => { locked = false; return 1; } },
-  quit: { value: async () => "OK" },
-});
+Object.defineProperty(prisma, "wahaOperationLock", { value: {
+  create: async () => { if (locked) throw new Prisma.PrismaClientKnownRequestError("busy", { code: "P2002", clientVersion: "test" }); locked = true; },
+  deleteMany: async () => { locked = false; return { count: 1 }; },
+} });
 
 let record: Record<string, unknown> | null = null;
 Object.defineProperty(prisma, "wahaConfiguration", { value: { findUnique: async () => null } });
@@ -38,6 +36,14 @@ Object.defineProperty(prisma, "whatsappSession", {
         }
       }
       return { ...record };
+    },
+    updateMany: async ({ where, data }: { where: { stateVersion?: number }; data: Record<string, unknown> }) => {
+      if (!record || (where.stateVersion !== undefined && record.stateVersion !== where.stateVersion)) return { count: 0 };
+      for (const [key, value] of Object.entries(data)) {
+        if (typeof value === "object" && value !== null && "increment" in value) record[key] = Number(record[key] ?? 0) + Number(value.increment);
+        else record[key] = value;
+      }
+      return { count: 1 };
     },
   },
 });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getViewer, isStaff } from "@/lib/session";
+import { getViewer } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { encrypt } from "@/lib/crypto";
 import {
@@ -8,7 +8,7 @@ import {
   listManagedPages,
   STATE_COOKIE,
 } from "@/lib/meta/oauth";
-import { channelsUrl, clearOAuthCookies, stateMatches } from "@/lib/oauth-state";
+import { channelsUrl, clearOAuthCookies, validatedOAuthScope } from "@/lib/oauth-state";
 import { displayHandle, handleMatches, normalizeHandle, profileUrl } from "@/lib/handles";
 import { graphRequest } from "@/lib/meta/graph";
 import { saveAuthorizedSocialAccount } from "@/lib/owned-social-accounts";
@@ -18,19 +18,20 @@ import { Prisma } from "@prisma/client";
 // Instagram social containers, it links only the Page / Instagram account matching each one's handle.
 export async function GET(req: NextRequest) {
   const viewer = await getViewer();
+  const scope = viewer ? validatedOAuthScope(req, STATE_COOKIE, viewer) : null;
   const done = (params: Record<string, string>) => {
-    const res = NextResponse.redirect(channelsUrl(req, params, viewer));
+    const res = NextResponse.redirect(channelsUrl(req, params, viewer, scope));
     clearOAuthCookies(res, [STATE_COOKIE], "/api/meta");
     return res;
   };
 
   if (!viewer) return done({ error: "sign_in_required" });
+  if (!scope) return done({ error: "state_mismatch" });
   if (req.nextUrl.searchParams.get("error")) return done({ error: "cancelled" });
-  if (!stateMatches(req, STATE_COOKIE, viewer)) return done({ error: "state_mismatch" });
   const code = req.nextUrl.searchParams.get("code");
   if (!code) return done({ error: "no_code" });
 
-  const ownerId = isStaff(viewer.role) ? null : viewer.id;
+  const ownerId = scope === "shared" ? null : viewer.id;
   const channels = await prisma.channel.findMany({ where: { ownerId, platform: { in: ["FACEBOOK", "INSTAGRAM"] } } });
   const fb = channels.find((c) => c.platform === "FACEBOOK" && (ownerId === null || c.handle));
   const ig = channels.find((c) => c.platform === "INSTAGRAM" && (ownerId === null || c.handle));

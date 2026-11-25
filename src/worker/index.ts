@@ -21,6 +21,8 @@ import { runDueChannels } from "@/lib/channels";
 import { recoverWahaSessions } from "@/lib/waha-lifecycle";
 import { canPublishToAccount } from "@/lib/ownership";
 import { expireWhatsappRequests } from "@/lib/whatsapp-requests";
+import { hasVerifiedWahaIdentity } from "@/lib/waha-identity";
+import { claimPostTarget, publishClaimedTarget } from "@/lib/publication-claims";
 
 type Job = {
   account: SocialAccount;
@@ -127,7 +129,7 @@ async function publish(postId: string) {
     : null;
   const wahaSession = await prisma.whatsappSession.findUnique({
     where: { userId: post.authorId },
-    select: { sessionName: true, status: true, phoneNumber: true, accountPhone: true },
+    select: { sessionName: true, status: true, phoneNumber: true, accountPhone: true, accountId: true, activeIdentity: true },
   });
   if (
     wahaSession?.status === "WORKING"
@@ -137,7 +139,8 @@ async function publish(postId: string) {
     throw new Error("Publishing blocked: the paired WhatsApp account does not match the entered phone number.");
   }
 
-  for (const target of post.targets.filter((t) => t.status !== "PUBLISHED")) {
+  for (const target of post.targets.filter((t) => t.status === "PENDING" || t.status === "FAILED")) {
+    if (!(await claimPostTarget(target.id, target.status))) continue;
     if (!canPublishToAccount(post.author, target.account.ownerId) || (post.channel && target.account.ownerId !== post.channel.ownerId)) {
       await prisma.postTarget.update({
         where: { id: target.id },
@@ -160,8 +163,7 @@ async function publish(postId: string) {
       continue;
     }
 
-    try {
-      const externalPostId = await send({
+    await publishClaimedTarget(target.id, () => send({
         account: target.account,
         format: target.format,
         recipient: target.recipient,
@@ -169,22 +171,15 @@ async function publish(postId: string) {
         imageUrl: post.mediaUrls[0],
         image,
         whatsappTemplate,
-        wahaSessionName: wahaSession?.status === "WORKING" ? wahaSession.sessionName : undefined,
-      });
-      await prisma.postTarget.update({
-        where: { id: target.id },
-        data: { status: "PUBLISHED", externalPostId, error: null },
-      });
-    } catch (err) {
-      await prisma.postTarget.update({
-        where: { id: target.id },
-        data: { status: "FAILED", error: err instanceof Error ? err.message : String(err) },
-      });
-    }
+        wahaSessionName: wahaSession && hasVerifiedWahaIdentity(wahaSession) ? wahaSession.sessionName : undefined,
+    }));
   }
 
   const targets = await prisma.postTarget.findMany({ where: { postId } });
   const allOk = targets.length > 0 && targets.every((t) => t.status === "PUBLISHED");
+  if (targets.some((t) => t.status === "IN_FLIGHT")) {
+    throw new Error("A publishing target is still in progress or requires reconciliation.");
+  }
   // Show the outcome of this run (scheduled or "Post now") on its channel
   if (post.channelId) {
     const errors = [...new Set(targets.filter((t) => t.status === "FAILED").map((t) => t.error))].filter(Boolean);
@@ -210,7 +205,7 @@ const worker = new Worker<PublishJob>(PUBLISH_QUEUE, async (job) => {
   } catch (err) {
     const attempts = job.opts.attempts ?? 1;
     if (job.attemptsMade + 1 >= attempts) {
-      await prisma.post.update({ where: { id: job.data.postId }, data: { status: "FAILED", publishedAt: null } });
+      await prisma.post.updateMany({ where: { id: job.data.postId, targets: { none: { status: "IN_FLIGHT" } } }, data: { status: "FAILED", publishedAt: null } });
     }
     throw err;
   }
@@ -241,7 +236,7 @@ async function tick() {
   try {
     const ran = await runDueChannels();
     await expireWhatsappRequests();
-    await recoverWahaSessions().catch(() => null);
+    await recoverWahaSessions().catch((error: unknown) => console.error("WhatsApp recovery failed:", error));
     if (ran) console.log(`Scheduler: ${ran} channel run(s) started`);
     const handles = await deliverToHandles();
     if (handles) console.log(`Subscribers: ${handles} advert(s) sent to their X / Instagram handles`);

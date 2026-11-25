@@ -196,9 +196,10 @@ export async function advertStatus(advertId: string): Promise<PlatformOutcome[]>
     const sent = ds.filter((d) => d.status === "SENT").length;
     const failed = ds.filter((d) => d.status === "FAILED").length;
     const waiting = ds.filter((d) => d.status === "PENDING").length;
+    const uncertain = ds.filter((d) => d.status === "IN_FLIGHT").length;
     if (!ds.length) return "";
     const how = platform === "X" ? "by direct message" : "by @mention";
-    return ` Sent to ${sent} ${sent === 1 ? "subscriber" : "subscribers"} ${how}${waiting ? `, ${waiting} waiting` : ""}${failed ? `, ${failed} couldn't be reached` : ""}.`;
+    return ` Sent to ${sent} ${sent === 1 ? "subscriber" : "subscribers"} ${how}${waiting ? `, ${waiting} waiting` : ""}${failed ? `, ${failed} couldn't be reached` : ""}${uncertain ? `, ${uncertain} require delivery reconciliation` : ""}.`;
   };
   for (const platform of advert.targetPlatforms) {
     const name = nameOf(platform);
@@ -210,7 +211,7 @@ export async function advertStatus(advertId: string): Promise<PlatformOutcome[]>
       else if (c.status === "APPROVED") {
         const later = c.sendAt && c.sendAt > new Date();
         out.push({ platform, ok: true, pending: !later, message: `WhatsApp: sending to ${c.deliveries.length} ${later ? `at ${formatWhen(c.sendAt!)}` : "now"}.` });
-      } else if (c.status === "SENDING") out.push({ platform, ok: true, pending: true, message: "WhatsApp: sending now." });
+      } else if (c.status === "SENDING") out.push({ platform, ok: true, pending: true, message: n(["IN_FLIGHT"]) ? "WhatsApp: delivery in progress; reconcile if interrupted." : "WhatsApp: sending now." });
       else if (c.status === "SENT") {
         const failed = n(["FAILED"]);
         out.push({ platform, ok: failed === 0, message: `WhatsApp: sent to ${n(["SENT", "DELIVERED", "READ"])}${failed ? `, ${failed} failed` : ""}${n(["SKIPPED"]) ? `, ${n(["SKIPPED"])} held back (already messaged in the last 24 hours; sent automatically after that)` : ""}.` });
@@ -221,6 +222,7 @@ export async function advertStatus(advertId: string): Promise<PlatformOutcome[]>
     const target = post?.targets.find((t) => t.account.platform === platform);
     if (!post || !target) out.push({ platform, ok: false, message: `${name}: not posted yet.` });
     else if (target.status === "PUBLISHED") out.push({ platform, ok: true, message: `Posted on ${name}${post.publishedAt ? ` ${formatWhen(post.publishedAt)}` : ""}.${toHandles(platform)}` });
+    else if (target.status === "IN_FLIGHT") out.push({ platform, ok: false, message: `${name}: ${target.error ?? "Publishing outcome requires reconciliation."}` });
     else if (target.status === "FAILED") out.push({ platform, ok: false, message: `${name} failed: ${target.error ?? "unknown error"}` });
     else if (post.scheduledAt && post.scheduledAt > new Date()) out.push({ platform, ok: true, message: `Goes out on ${name} at ${formatWhen(post.scheduledAt)}.` });
     else out.push({ platform, ok: true, pending: true, message: `Posting on ${name} now.` });

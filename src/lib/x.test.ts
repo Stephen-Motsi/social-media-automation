@@ -1,6 +1,6 @@
 // OAuth 1.0a signing for X, checked against X's published example. Run with `npm test`.
 // https://developer.x.com/en/docs/authentication/oauth-1-0a/creating-a-signature
-import { xAuthHeader, xOAuth1Token } from "@/lib/x";
+import { hasXPublishingScopes, xAuthHeader, xOAuth1Token } from "@/lib/x";
 
 let fails = 0;
 function expect(name: string, got: unknown, want: unknown) {
@@ -21,5 +21,9 @@ const sig = decodeURIComponent(/oauth_signature="([^"]+)"/.exec(header)?.[1] ?? 
 expect("signature matches X's example", sig, "hCtSmYh+iHYCEqBWrE7C7hYmtUk=");
 expect("OAuth header", header.startsWith("OAuth "), true);
 expect("bearer tokens pass through", xAuthHeader("GET", "https://api.x.com/2/users/me", "abc"), "Bearer abc");
+expect("missing OAuth scope rejected", hasXPublishingScopes(undefined), false);
+expect("invalid OAuth scope rejected", hasXPublishingScopes(null), false);
+expect("insufficient OAuth scope rejected", hasXPublishingScopes("tweet.read tweet.write users.read"), false);
+expect("publishing OAuth scopes accepted", hasXPublishingScopes("tweet.read tweet.write users.read media.write offline.access"), true);
 
 process.exit(fails ? 1 : 0);

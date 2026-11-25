@@ -20,6 +20,7 @@ import { formatSupport, type PlatformVerdict } from "@/lib/policy/rules";
 import { displayHandle, handleMatches, normalizeHandle, profileUrl, validateHandle } from "@/lib/handles";
 import { formatInZone, parseLocalDateTime, parseTime } from "@/lib/schedule";
 import { decrypt } from "@/lib/crypto";
+import { disconnectSocialAccounts } from "@/lib/owned-social-accounts";
 import {
   normalizeWahaPhoneNumber, wahaConfigured, testWahaConnection, type WahaConnectionTest,
 } from "@/lib/waha";
@@ -128,10 +129,9 @@ export async function saveWahaConfigurationAction(input: { baseUrl: string; apiK
 
 export async function disconnectAccount(id: string): Promise<ActionState> {
   const admin = await requireAdmin();
-  const account = await prisma.socialAccount.findFirst({ where: { id, ownerId: null } });
+  const account = await prisma.socialAccount.findFirst({ where: { id, ownerId: null, disconnectedAt: null } });
   if (!account) return { error: "Account not found." };
-  const removed = await prisma.socialAccount.deleteMany({ where: { id, ownerId: null } });
-  if (!removed.count) return { error: "Account not found." };
+  if (!(await disconnectSocialAccounts(null, [id]))) return { error: "Account not found." };
   await logAdmin(admin.id, "ACCOUNT_DISCONNECTED", { platform: account.platform, account: account.displayName });
   refresh();
   return { ok: true };
@@ -157,10 +157,10 @@ export async function setHandle(channelId: string, value: string): Promise<Actio
   }
   await prisma.channel.update({ where: { id: channel.id, ownerId: null }, data: { handle } });
   // Accounts that don't belong to the new handle are unlinked, so nothing posts to the wrong account.
-  const stale = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: null } }))
+  const stale = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: null, disconnectedAt: null } }))
     .filter((a) => !handleMatches(channel.platform, handle, a))
     .map((a) => a.id);
-  if (stale.length) await prisma.socialAccount.deleteMany({ where: { id: { in: stale }, ownerId: null } });
+  if (stale.length) await disconnectSocialAccounts(null, stale);
   // Connect straight from the handle when the business's credentials are set up.
   await logAdmin(admin.id, "HANDLE_SET", { platform: channel.platform, handle: displayHandle(channel.platform, handle) });
   const saved = `Saved ${displayHandle(channel.platform, handle)}.${stale.length ? " The previously connected account didn't match, so it was disconnected." : ""}`;
@@ -302,7 +302,7 @@ async function saveChannelInner(formData: FormData): Promise<ActionState> {
   let problem: string | undefined;
   if (v.advertId) verdict = (await checkAdvert(channel.platform, v.format, v.advertId)) ?? undefined;
   if (enabled) {
-    const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: null } })).filter((a) =>
+    const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: null, disconnectedAt: null } })).filter((a) =>
       handleMatches(channel.platform, channel.handle, a),
     ).length;
     const advert = v.advertId ? await prisma.post.findUnique({ where: { id: v.advertId } }) : null;
@@ -433,7 +433,7 @@ export async function refineForChannel(channelId: string, mediaId: string, instr
 }
 
 async function hasMatchingAccount(platform: Platform, handle: string | null) {
-  return (await prisma.socialAccount.findMany({ where: { platform, ownerId: null } })).some((a) => handleMatches(platform, handle, a));
+  return (await prisma.socialAccount.findMany({ where: { platform, ownerId: null, disconnectedAt: null } })).some((a) => handleMatches(platform, handle, a));
 }
 
 // What the admin needs to do to connect this container's account.

@@ -65,6 +65,7 @@ enum MediaSource {
 
 enum TargetStatus {
   PENDING
+  IN_FLIGHT
   PUBLISHED
   FAILED
 }
@@ -145,6 +146,7 @@ model WhatsappSession {
   accountName            String?
   accountId              String?
   accountPhone           String?
+  activeIdentity         String?   @unique
   accountPushName        String?
   accountInfo            Json?
   webhookSecretEncrypted String
@@ -263,7 +265,7 @@ model PostTarget {
   postId    String
   post      Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
   accountId String
-  account   SocialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account   SocialAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
 
   @@unique([postId, accountId, recipient])
 }
@@ -386,11 +388,32 @@ enum CampaignStatus {
 
 enum DeliveryStatus {
   PENDING
+  IN_FLIGHT
   SENT
   DELIVERED
   READ
   FAILED
   SKIPPED
+}
+
+// Durable exclusion for WAHA operations. Orphaned claims require reconciliation.
+model WahaOperationLock {
+  sessionName String   @id
+  token       String
+  createdAt   DateTime @default(now())
+}
+
+// Write-ahead record for provider token rotation.
+model TokenRefreshAttempt {
+  key                   String   @id
+  generation            String
+  previousAccessToken   String?
+  previousRefreshToken  String?
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  tokenExpiresAt        DateTime?
+  completed             Boolean  @default(false)
+  createdAt             DateTime @default(now())
 }
 
 // Topics subscribers choose and adverts are tagged with. Managed by admins.

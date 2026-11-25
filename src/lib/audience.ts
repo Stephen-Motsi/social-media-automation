@@ -111,7 +111,7 @@ export async function matchSubscribers(advertId: string) {
 export async function whatsappNotReady(): Promise<string | null> {
   if (!(await getAudienceTemplate())) return "no WhatsApp message template is set (Audience page).";
   const channel = await prisma.channel.findFirst({ where: { platform: "WHATSAPP", ownerId: null } });
-  const accounts = await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP", ownerId: null } });
+  const accounts = await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP", ownerId: null, disconnectedAt: null } });
   if (!accounts.some((a) => handleMatches("WHATSAPP", channel?.handle, a))) {
     return "your WhatsApp number isn't connected (Settings in the Meta container on Channels).";
   }

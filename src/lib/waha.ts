@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { markWahaOperationUncertain } from "@/lib/waha-session-lock";
 import { decrypt, encrypt } from "@/lib/crypto";
 
 export class WahaApiError extends Error {
@@ -172,6 +173,8 @@ async function request(path: string, init: RequestInit = {}, timeoutOverrideMs?:
   const operationTimeout = timeoutOverrideMs ?? Number(process.env.WAHA_HTTP_TIMEOUT_MS ?? 15_000);
   const timeoutMs = Number.isFinite(operationTimeout) && operationTimeout > 0 ? operationTimeout : 15_000;
   const operation = `${init.method ?? "GET"} ${path}`;
+  const mutating = Boolean(init.method && init.method !== "GET");
+  if (mutating && (path.endsWith("/stop") || path.endsWith("/logout"))) markWahaOperationUncertain();
   let timedOut = false;
   const timeout = setTimeout(() => { timedOut = true; }, timeoutMs);
   let response: Response;
@@ -187,6 +190,7 @@ async function request(path: string, init: RequestInit = {}, timeoutOverrideMs?:
       cache: "no-store",
     });
   } catch (error) {
+    if (mutating) markWahaOperationUncertain();
     if (timedOut || (error instanceof Error && error.name === "TimeoutError")) {
       console.error(`[WAHA] timed out after ${timeoutMs}ms: ${operation}`);
       throw new WahaApiError(504, `WAHA timed out while performing ${operation}. The session state will be checked automatically.`);
@@ -197,8 +201,15 @@ async function request(path: string, init: RequestInit = {}, timeoutOverrideMs?:
   } finally {
     clearTimeout(timeout);
   }
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    if (mutating) markWahaOperationUncertain();
+    throw error;
+  }
   if (!response.ok) {
+    if (mutating && response.status >= 500) markWahaOperationUncertain();
     const labels: Record<number, string> = {
       401: "WAHA authentication failed. Check the saved API key.",
       404: "WAHA session or endpoint was not found.",
@@ -208,7 +219,12 @@ async function request(path: string, init: RequestInit = {}, timeoutOverrideMs?:
     throw new WahaApiError(response.status, labels[response.status] ?? `WAHA request failed with status ${response.status}.`);
   }
   if (!text) return null;
-  return JSON.parse(text) as unknown;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    if (mutating) markWahaOperationUncertain();
+    throw error;
+  }
 }
 
 export async function createWahaSession(sessionName: string, webhookSecret: string) {

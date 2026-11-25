@@ -1,9 +1,9 @@
 # Social Media Automation
 
-A web app for scheduling and publishing content to **Meta platforms**: **Facebook Pages**, **Instagram** (Business/Creator accounts), and **WhatsApp** (Cloud API). It has one dashboard and a background worker that publishes at the scheduled time.
+A web app for preparing social media adverts, with staff publishing tools and a background worker that publishes at the scheduled time.
 
 > **Status:** working, tested against mock platform APIs; not yet run against live platform accounts.
-> In place: sign-in, AI image + caption creation with per-platform checks, a public **subscribe** page with an **Audience** of subscribers, automatic matching of adverts to subscribers with admin **Approvals** before WhatsApp delivery, **Channels** (one container per platform with account connection, post/story choice and recurring schedules), and a worker that publishes to Facebook, Instagram, WhatsApp, X and TikTok. See [Next steps](#next-steps).
+> In place: sign-in, an ordinary-user draft workspace with AI images and per-platform checks, personal social-account connections, staff advert and audience tools, **Channels**, and a publishing worker. The ordinary-user workspace is draft-only: it does not yet schedule or publish. See [Next steps](#next-steps).
 
 ---
 
@@ -11,8 +11,8 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 
 | Decision | Detail |
 | --- | --- |
-| **Three roles** | **Users** create an account on the sign-in page (**Create account**: email + password, or **Continue with Google**/Facebook), land on the home page and subscribe to adverts. **Admins** run adverts, channels, the audience and publishing. The **super admin** also manages accounts, roles and sessions, and can inspect audit logs and platform activity (`/admin/super-admin`, `/admin/users`, `/admin/roles`, `/admin/logs`). Role management promotes users to admins or demotes admins to users; it does not change super-admin accounts. Sign-up only ever creates users; staff come from promotion or the seed (the first super admin from `ADMIN_EMAIL` / `ADMIN_PASSWORD`). See [Accounts, roles and sessions](#accounts-roles-and-sessions). |
-| **Admins define adverts; users subscribe per platform** | An advert has a title, what it's about, topics, target platforms (the channels' real handles), an AI image and a caption. Listed adverts appear on the public home page and users' dashboards; users subscribe to an advert on specific platforms, and that decides what's sent to whom. |
+| **Three roles** | **Users** can manage personal accounts and prepare their own advert drafts in `/me`. **Admins** run adverts, channels, the audience and publishing. The **super admin** also manages accounts, roles and sessions, and can inspect audit logs and platform activity (`/admin/super-admin`, `/admin/users`, `/admin/roles`, `/admin/logs`). Sign-up only creates users; staff come from promotion or the seed. See [Accounts, roles and sessions](#accounts-roles-and-sessions). |
+| **Advert workflows** | Users prepare owned drafts with platform-specific images; publishing from this workspace is not available yet. Staff can create and publish listed adverts, which remain available for the existing subscription workflow on the public home page. |
 | **Subscribers are the audience (user side)** | The public home page is `/subscribe` (signed-out visitors to `/` land there). People subscribe to adverts on WhatsApp about topics they choose, with no account or password, or an admin adds them. Adverts are matched to them automatically; **an admin approves every send**. WhatsApp is the only channel that can deliver to an individual; the other platforms only allow public posts (Channels). |
 | **Subscriptions are approved automatically** | Each subscription runs through checks based on WhatsApp's policies (`src/lib/policy/subscriptions.ts`). Passing ones are accepted with no admin action; only flagged ones wait on Approvals. |
 | **Five platforms** | Facebook, Instagram and WhatsApp go through the Meta Graph API (`src/lib/meta/`). X (`src/lib/x.ts`) and TikTok (`src/lib/tiktok.ts`) have their own OAuth and posting clients. Adding a platform means a new `Platform` enum value, a client, rules in `rules.ts`, and a connect route. |
@@ -21,8 +21,8 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 | **Only what each API supports** | Stories exist only on Facebook and Instagram. WhatsApp's Business API can't post **Status**, and the X and TikTok APIs can't post stories, so those options are shown disabled with the reason (`formatSupport` in `rules.ts`). |
 | **WhatsApp is messaging, not a feed** | "Publishing" to WhatsApp means sending a message to recipients. WAHA sends approved text and supported media to configured recipients; comply with WhatsApp usage restrictions. |
 | **Instagram needs media** | The Instagram API cannot post text-only. Images must be at a **public URL** that Meta can fetch. |
-| **Tokens encrypted at rest** | All platform access and refresh tokens are stored with AES-256-GCM (`src/lib/crypto.ts`). X and TikTok tokens are refreshed automatically before they expire (`src/lib/tokens.ts`). |
-| **AI images go through platform checks** | Images are generated with OpenAI's GPT image API. Every prompt, image and caption is checked against each platform's rules before it can be saved or published (see [Image generation & platform checks](#image-generation--platform-checks)). |
+| **Tokens encrypted at rest** | All platform access and refresh tokens are stored with AES-256-GCM (`src/lib/crypto.ts`). X and TikTok refreshes are serialized across processes. A durable encrypted refresh journal permits recovery if the account update fails; an unknown rotation outcome requires reauthorization (`src/lib/tokens.ts`). |
+| **AI images go through platform checks** | Images use the existing OpenAI generation and moderation services and platform checks. Drafts may be saved with blocked checks, but this does not authorize publishing (see [Image generation & platform checks](#image-generation--platform-checks)). |
 
 ## Tech stack
 
@@ -53,7 +53,7 @@ src/
   app/
     page.tsx              PUBLIC home page: listed adverts and sign-in
     login/                Sign-in: Google/Facebook for users, email + password for staff
-    me/                   USER dashboard: subscribe per advert/platform, WhatsApp link, feed, sessions
+    me/                   User overview, owned drafts, image workspace, social accounts, profile and sessions
     (dashboard)/          Staff area: admin/ (overview, adverts, super-admin workspace, user and role management, audit logs), Create, Channels, Audience, Approvals, Posts
       create/             AI image + caption composer with per-platform checks (saves adverts as drafts)
       channels/           Meta / X / TikTok containers: settings (connect/disconnect) + social containers
@@ -112,6 +112,8 @@ src/
 
 The ownership migration leaves existing social accounts and channels unowned; it does not assign or delete records. Its partial unique indexes keep legacy shared containers unique, and a composite foreign key keeps owned channels in their owner's group. Preserve these custom constraints in future migrations. Apply it only after review as part of a coordinated deployment of the app and worker. `Post.authorId`, `MediaAsset.createdById`, and `WhatsappSession.userId` retain their existing ownership. Media used in public listings or publishing can be fetched publicly; other unblocked media is restricted to its owner and staff.
 
+The account-history migration changes the `PostTarget` account foreign key to restrict deletion. Disconnect accounts instead of deleting accounts referenced by publishing history. Staff can manage personal connections at `/me/accounts` and shared connections at `/channels`; OAuth binds the selected scope to the initiating session.
+
 ---
 
 ## Development environment (remote, recommended)
@@ -136,11 +138,11 @@ Other useful ports: `npm run db:studio` opens Prisma Studio (a database browser)
 
 ## Image generation & platform checks
 
-The **Create** page (`/create`) generates an image from a description with OpenAI, takes a caption, and shows for each platform whether the post can go out: **Ready to post**, **Check before posting** (warnings), or **Can't post** (blocked).
+The staff **Create** page (`/create`) and the ordinary-user draft workspace (`/me/create`) reuse image generation, refinement, upload and platform checks. The user workspace saves drafts only; story-shaped images do not enable story publishing, and saved draft checks use post format.
 
 ### Pipeline
 
-1. **Daily limit.** Each user can generate `IMAGE_DAILY_LIMIT` images per 24 hours (default 20) to control cost.
+1. **Daily limit.** The existing service checks `IMAGE_DAILY_LIMIT` generated images per user per 24 hours (default 20). This count-before-generation check is not atomic, so concurrent requests can exceed it.
 2. **Prompt screening.** The prompt goes through OpenAI moderation first. If any platform would block it, nothing is generated. This uses the strictest rule across platforms.
 3. **Generation.** Uses `OPENAI_IMAGE_MODEL` (default `gpt-image-2`; `gpt-image-1` was retired for generation) with `moderation: "auto"` (OpenAI's stricter filter; don't lower it) and JPEG output, because Instagram only accepts JPEG. Refusals from OpenAI are shown to the user.
 4. **Image + caption review**, per platform (`src/lib/policy/review.ts`):
@@ -178,7 +180,7 @@ For local testing without a key, point `OPENAI_BASE_URL` at a mock server that i
 
 | Role | Signs in with | Lands on | Can |
 | --- | --- | --- | --- |
-| User | Email + password (**Create account** on `/login?mode=signup`), Google or Facebook | `/` (home) | Subscribe per platform on the home page or `/me`, add their socials on **Profile** (`/me/profile`), link and confirm a WhatsApp number, see what was sent/posted, manage their sessions |
+| User | Email + password (**Create account** on `/login?mode=signup`), Google or Facebook | `/` (home) | Prepare owned drafts and images, manage personal social accounts and WhatsApp requests, view owned activity, and manage profile and sessions. Self-service publishing and scheduling are not yet available. |
 | Admin | Email + password, or a user promoted by the super admin (keeps their social sign-in) | `/admin` | Everything on the admin side, plus **Users** (`/admin/users`): each user's sign-in methods, sessions, subscriptions and activity, and "Sign out everywhere" |
 | Super admin | Email + password | `/admin` | Everything, plus **Roles** (`/admin/roles`): promote users to admin and demote admins. Can't change their own role |
 
@@ -206,10 +208,10 @@ The public home page (`/`) lists the adverts and links to sign-in; `/subscribe` 
    - **Caption.**
 2. **Save as draft** at any time. Drafts save even when a check fails, are **never sent to anyone**, and reopen from **Adverts → Edit draft** (`/create?id=…`) with everything restored.
 3. **Preview** shows exactly what users will see: the card on the website, and each target platform's post (Facebook Page post, Instagram post with the "… more" cut, the WhatsApp template message with a sample name, X with its 280 counter, TikTok, stories full-screen), each with its platform check.
-4. **Publish** from the preview, choosing **when it goes out**: **Now** or **At a set time**. It's listed on `/` and users' dashboards straight away (showing "Goes out …"), so users can subscribe before the send time. At that time it's posted on the social platforms and sent to WhatsApp subscribers. **Send to WhatsApp subscribers automatically** (on by default) makes publishing the approval; untick it to approve each send on Approvals.
+4. **Publish** from the staff preview, choosing **when it goes out**: **Now** or **At a set time**. It's listed on `/` straight away (showing "Goes out …"), so users can subscribe before the send time. At that time it's posted on the social platforms and sent to WhatsApp subscribers. **Send to WhatsApp subscribers automatically** (on by default) makes publishing the approval; untick it to approve each send on Approvals.
    - Every step says what happened: **Saved** / **Not saved: reason**, then **Not published: reason** (no title, no platform, time in the past, fails every platform's checks, database or job queue down) or a per-platform result. A platform that can't be posted says why (not connected, fails its checks, needs a photo, WhatsApp template missing) while the others still go out.
    - **Post now** shows **Posting…** until every platform has actually posted (the worker posts it; it gives up waiting after a minute and says to check the worker), then **Posted ✓**, then takes you to the advert's card on the **home page**, highlighted with how it went out on each platform. A scheduled advert shows **Scheduled ✓** and goes there too. If a platform didn't post, you stay where you are with the reason. **Adverts** shows the same per-platform status for every published advert (scheduled, posted, sent to N, failed with the reason). **Unlist** cancels anything that hasn't gone out yet. Adverts can also be published from **Adverts** (**Publish now** or **Schedule…**).
-5. **Users subscribe with one click:** **Subscribe** on the advert's card (home page or `/me`) subscribes them on every platform the advert is on and sends it straight away (or at the advert's send time) to what's on their profile (`subscribeUser` in `src/lib/user-subscriptions.ts`). The result lists each platform: "On its way as a direct message to @you", "On its way to your WhatsApp", "Posted on … ; it's in your feed", or what's missing ("Add your Instagram handle to your profile", with a link). WhatsApp needs a confirmed number first. The per-platform switches below fine-tune it. On **Profile**, "Subscribe me to every new advert" subscribes them automatically whenever an advert is published. Adding a handle later sends the adverts they already subscribed to there.
+5. **Users subscribe with one click:** **Subscribe** on a listed advert's home-page card subscribes them on every platform the advert is on using `subscribeUser` in `src/lib/user-subscriptions.ts`. WhatsApp needs a confirmed number first. On **Profile**, "Subscribe me to every new advert" retains the existing subscription behavior.
    - **Sent automatically:** a `deliver-subscription` job goes to the worker the moment they subscribe (a few seconds in testing); the scheduler's pass is the safety net if the queue is down.
    - **Admins are notified:** a bell in the admin header with the unread count, and **Notifications** (`/admin/notifications`): every subscription (who, which advert, which platforms, when it goes out), adverts auto-subscribed on publish (one per advert), and any send that fails (with the platform's reason). Nothing needs approving. (`Notification` table, `notifyAdmins` in `src/lib/notify.ts`.)
    - Signed-out visitors get **Sign in to subscribe**, which brings them back to the advert.
@@ -222,7 +224,7 @@ The public home page (`/`) lists the adverts and links to sign-in; `/subscribe` 
    - **Instagram:** an @mention of them in a comment on your Instagram post of the advert, so it's in their notifications (Instagram doesn't let businesses message people first). Needs `instagram_manage_comments`: **reconnect Meta** once after updating.
    - **Facebook, TikTok:** no way to send to a person through their APIs, so the handle is saved and they see it on your Page/profile and in their feed.
    - Each send is a `SocialDelivery` (sent, waiting with the reason, or failed with the platform's reason, retried up to 3 times). Users see it in their feed; Adverts shows "sent to N subscribers by direct message / @mention".
-8. Each user's **"What you've received"** feed shows their WhatsApp deliveries and the posts of the adverts they subscribed to on each platform.
+8. The staff `/me` view retains the **"What you've received"** feed. Ordinary users can view that earlier subscription history read-only at `/me/history`.
 
 ## Logs (sign-ins, sessions, activity)
 
@@ -295,7 +297,11 @@ Ordinary users save an expected handle at `/me/accounts` and then authorize thro
 
 For WhatsApp, a user submits a request and staff starts or refreshes it at `/admin/whatsapp-requests`. Only the requesting user can see the QR code. The five-minute window starts when staff starts the session; expired sessions are stopped by user polling or the running worker. Configure WAHA and Redis and keep the worker running for background expiry. A successful WAHA connection does not yet enable user advert publishing.
 
-Apply the ownership migration followed by the user social connections migration only after review and deployment approval. Never use `db push` or a database reset for this rollout. Existing staff connections remain shared; the migrations do not assign them to ordinary users.
+Each active or recoverable WAHA identity is reserved to one session, including staff sessions. Only numeric phone identities and their `@c.us` / `@s.whatsapp.net` forms are accepted; unverifiable identities are blocked. A claim is released only after WAHA reports STOPPED or LOGGED_OUT, or the session endpoint returns 404. An ambiguous response or failed stop retains the identity claim and leaves the session pending shutdown. The worker retries when no uncertain operation lock is held; otherwise an operator must reconcile it. WAHA can authenticate before the application receives its identity, so a duplicate remote session may remain active while WAHA is unavailable, though the application blocks its use.
+
+Disconnecting a social account clears its stored credentials and deactivates it without deleting past publishing targets. Reconnecting the same account restores its existing record.
+
+Apply the ownership, user social connections and unique WAHA identity migrations in order only after review and deployment approval. Stop old web and worker processes during the migration and deploy the identity-aware code before resuming them. The identity migration refuses to proceed if an active or recoverable legacy session has a missing/unsupported identity or if multiple sessions share one identity. Inventory and reconcile such sessions through an approved operational procedure first; the migration does not delete or reassign records. Never use `db push` or a database reset for this rollout. Existing staff connections remain shared; the migrations do not assign them to ordinary users.
 
 ## Channels and scheduling
 
@@ -331,6 +337,13 @@ The **Channels** page (`/channels`) is where adverts get posted automatically.
 - **Turning a schedule on requires** an advert with a title, a connected account matching the handle, WhatsApp recipients where relevant, and a passing check for that platform **and format**. Otherwise it's saved switched off, with the reason.
 - **Each run** copies the advert into a new post targeting the connected accounts that match the handle, and the worker publishes it after re-running the checks. The result (or the platform's error) shows on the social container and under Posts.
 - **The scheduler** is in the worker (`runDueChannels`, every `SCHEDULER_TICK_MS`, default 30s). Each run is claimed atomically, so multiple workers don't double-post. If the worker was down, a missed run posts once, then continues from the next future time. **Nothing posts unless `npm run worker` is running.**
+
+### External-operation recovery
+
+- Stop all old web and worker processes before applying the reviewed `20261129000000_external_operation_safety` migration and deploying the matching code. Old and new processes do not share the same WAHA lock or delivery claim protocol and must not run together. The refresh journal uses a second database connection while the advisory-lock transaction is held; configure the Prisma connection pool with at least two available connections.
+- WAHA operations use durable per-session database claims, not expiring Redis leases. A crash, failed lock release, or uncertain remote mutation can leave a claim in `WahaOperationLock`; it is never automatically expired. Confirmed shutdown clears uncertainty. An operator must first establish that the original process and remote WAHA operation have stopped and reconcile the session before removing that specific orphaned claim. Do not remove active claims.
+- Refresh responses are encrypted in `TokenRefreshAttempt` before updating an account. A completed journal is applied on the next refresh attempt if the account has not changed. If the provider call's outcome or journal write is unknown, the system refuses to reuse the old refresh token; reauthorize the account. A crash or outage between provider rotation and saving the journal can still lose the rotated token. For the TikTok configured seed, an incomplete journal requires provider reauthorization; do not retry that seed blindly.
+- Post targets, WhatsApp campaign deliveries, and legacy handle deliveries are claimed as `IN_FLIGHT` before sending. If the process crashes, the provider times out, or the result cannot be recorded, they are not retried automatically: check the provider and reconcile that specific record before any retry. The claim alone does not establish whether the provider accepted the send. Old campaign deliveries with a stored external ID are not resent.
 
 Platform behaviour to know:
 - **X rejects a post identical to a recent one.** A repeating schedule with the same advert will fail from the second run with X's "duplicate content" error.

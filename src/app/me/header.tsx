@@ -1,9 +1,17 @@
 import Link from "next/link";
 import { signOut } from "@/auth";
 
-const links = [
+const staffLinks = [
   { href: "/", label: "Home" },
   { href: "/me", label: "My adverts" },
+  { href: "/me/accounts", label: "Social accounts" },
+  { href: "/me/profile", label: "Profile" },
+];
+
+const userLinks = [
+  { href: "/me", label: "Overview" },
+  { href: "/me/create", label: "Create advert" },
+  { href: "/me/adverts", label: "Drafts" },
   { href: "/me/accounts", label: "Social accounts" },
   { href: "/me/profile", label: "Profile" },
 ];
@@ -17,7 +25,7 @@ export function UserHeader({ email, current, staff }: { email: string; current: 
           {process.env.BRAND_NAME ?? "Social Automation"}
         </Link>
         <nav className="flex min-w-0 gap-1 overflow-x-auto text-sm">
-          {[...links, ...(staff ? [{ href: "/admin", label: "Admin" }] : [])].map((l) => (
+          {[...(staff ? staffLinks : userLinks), ...(staff ? [{ href: "/admin", label: "Admin" }] : [])].map((l) => (
             <Link
               key={l.href}
               href={l.href}

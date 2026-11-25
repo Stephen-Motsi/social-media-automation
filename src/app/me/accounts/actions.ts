@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { ensureAllContainers } from "@/lib/channels";
 import { normalizeHandle, validateHandle } from "@/lib/handles";
-import { requireViewer, isStaff } from "@/lib/session";
+import { isStaff, requireViewer } from "@/lib/session";
 import { disconnectWahaSession } from "@/lib/waha-lifecycle";
 import { assistedWhatsappStatus, type AssistedWhatsappView } from "@/lib/whatsapp-requests";
 import { disconnectOwnedSocialAccount, verifyOwnedSocialAccount } from "@/lib/owned-social-accounts";
@@ -15,9 +15,7 @@ const platforms = ["FACEBOOK", "INSTAGRAM", "X", "TIKTOK"] as const;
 type SocialPlatform = (typeof platforms)[number];
 
 async function user() {
-  const viewer = await requireViewer();
-  if (isStaff(viewer.role)) throw new Error("Use the staff Channels page to manage shared accounts.");
-  return viewer;
+  return requireViewer();
 }
 
 export async function saveAccountHandle(platform: Platform, value: string): Promise<Result> {
@@ -55,6 +53,7 @@ export async function checkOwnedAccount(id: string): Promise<Result> {
 export async function requestWhatsapp(): Promise<Result> {
   const viewer = await user();
   const existing = await prisma.whatsappConnectionRequest.findUnique({ where: { userId: viewer.id } });
+  if (isStaff(viewer.role) && !existing) return { ok: false, message: "Manage your WhatsApp session on Channels." };
   if (existing && ["PENDING", "PREPARING", "IN_PROGRESS", "EXPIRING", "CONNECTED"].includes(existing.status)) {
     return { ok: false, message: "You already have an active WhatsApp request or connection." };
   }

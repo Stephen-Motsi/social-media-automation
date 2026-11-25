@@ -1,4 +1,4 @@
-import type { Platform, SocialAccount } from "@prisma/client";
+import type { Platform, Role, SocialAccount } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { displayHandle, handleMatches } from "@/lib/handles";
 import { accessTokenFor } from "@/lib/tokens";
@@ -6,6 +6,7 @@ import { xSendDm, xUserByUsername } from "@/lib/x";
 import { commentOnMedia } from "@/lib/meta/instagram";
 import { postUrl } from "@/lib/adverts";
 import { notifyAdmins } from "@/lib/notify";
+import { canPublishToAccount, isStaffRole } from "@/lib/ownership";
 
 // Sends adverts to the handles subscribers put on their profile, once the advert's send time comes
 // (straight away for people who subscribe later). Run by the worker on every scheduler tick.
@@ -20,15 +21,18 @@ const BRAND = process.env.BRAND_NAME ?? "Social Automation";
 const siteUrl = () => (process.env.AUTH_URL ?? "http://localhost:3000").replace(/\/$/, "");
 
 // Our connected account on a platform (the one matching the container's handle).
-async function ourAccount(platform: Platform): Promise<SocialAccount | null> {
-  const channel = await prisma.channel.findFirst({ where: { platform, ownerId: null } });
-  return (await prisma.socialAccount.findMany({ where: { platform, ownerId: null } })).find((a) => handleMatches(platform, channel?.handle, a)) ?? null;
+async function ourAccount(platform: Platform, author: { id: string; role: Role }): Promise<SocialAccount | null> {
+  const ownerId = isStaffRole(author.role) ? null : author.id;
+  const channel = await prisma.channel.findFirst({ where: { platform, ownerId } });
+  if (!channel) return null;
+  return (await prisma.socialAccount.findMany({ where: { platform, ownerId, disconnectedAt: null } }))
+    .find((a) => !a.disconnectedAt && canPublishToAccount(author, a.ownerId) && handleMatches(platform, channel.handle, a)) ?? null;
 }
 
 // The advert's published post on a platform, if it has one.
-const publishedTarget = (advertId: string, platform: Platform) =>
+const publishedTarget = (advertId: string, authorId: string, accountId: string) =>
   prisma.postTarget.findFirst({
-    where: { status: "PUBLISHED", account: { platform }, post: { sourceAdvertId: advertId } },
+    where: { status: "PUBLISHED", accountId, account: { disconnectedAt: null }, post: { sourceAdvertId: advertId, authorId } },
     include: { account: true },
     orderBy: { post: { createdAt: "desc" } },
   });
@@ -65,15 +69,21 @@ export async function deliverToHandles(now = new Date(), only?: { advertId: stri
   const due = await prisma.socialDelivery.findMany({
     where: {
       ...(only ?? {}),
+      platform: { in: HANDLE_PLATFORMS },
       OR: [{ status: "PENDING" }, { status: "FAILED", attempts: { lt: MAX_ATTEMPTS }, updatedAt: { lte: new Date(now.getTime() - RETRY_AFTER_MS) } }],
     },
-    include: { advert: true, user: { select: { socials: true, subscriptions: true, disabledAt: true } } },
+    include: { advert: { include: { author: { select: { id: true, role: true } } } }, user: { select: { socials: true, subscriptions: true, disabledAt: true } } },
     take: 50,
     orderBy: { createdAt: "asc" },
   });
-  const accounts = new Map<Platform, SocialAccount | null>();
+  const accounts = new Map<string, SocialAccount | null>();
   let sent = 0;
   for (const d of due) {
+    const claimed = await prisma.socialDelivery.updateMany({
+      where: { id: d.id, status: d.status, attempts: d.attempts, updatedAt: d.updatedAt },
+      data: { status: "IN_FLIGHT", error: "Delivery in progress; reconcile before retrying if interrupted." },
+    });
+    if (!claimed.count) continue;
     if (d.advert.reviewStatus !== "APPROVED") {
       await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: "SKIPPED", error: "Blocked: the advert has not been approved." } });
       continue;
@@ -85,13 +95,16 @@ export async function deliverToHandles(now = new Date(), only?: { advertId: stri
       await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: "SKIPPED", error: "Unsubscribed or the handle changed." } });
       continue;
     }
-    if (!accounts.has(d.platform)) accounts.set(d.platform, await ourAccount(d.platform));
-    const account = accounts.get(d.platform);
+    const author = d.advert.author;
+    const accountKey = `${author.id}:${author.role}:${d.platform}`;
+    if (!accounts.has(accountKey)) accounts.set(accountKey, await ourAccount(d.platform, author));
+    const account = accounts.get(accountKey);
     if (!account) {
       // Not a failure of this delivery: it goes once the account is connected.
-      await prisma.socialDelivery.update({ where: { id: d.id }, data: { error: `Waiting: our ${d.platform === "X" ? "X" : "Instagram"} account isn't connected.` } });
+      await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: d.status, error: `Waiting: our ${d.platform === "X" ? "X" : "Instagram"} account isn't connected.` } });
       continue;
     }
+    let sending = false;
     try {
       const token = await accessTokenFor(account);
       let externalId: string;
@@ -101,24 +114,30 @@ export async function deliverToHandles(now = new Date(), only?: { advertId: stri
           await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: "FAILED", attempts: MAX_ATTEMPTS, error: `There's no X account ${displayHandle("X", d.handle)}.` } });
           continue;
         }
-        const ours = await publishedTarget(d.advertId, "X");
+        const ours = await publishedTarget(d.advertId, author.id, account.id);
         const link = ours ? postUrl("X", ours.externalPostId, ours.account.handle) : `${siteUrl()}/#${d.advertId}`;
         const text = [d.advert.title, d.advert.content, link, `You subscribed to this on ${BRAND}. Unsubscribe any time at ${siteUrl()}/me`].filter(Boolean).join("\n\n");
+        sending = true;
         externalId = (await xSendDm(token, person.id, text.slice(0, 9000))).dm_event_id;
       } else {
-        const post = await publishedTarget(d.advertId, "INSTAGRAM");
+        const post = await publishedTarget(d.advertId, author.id, account.id);
         if (!post?.externalPostId) {
-          await prisma.socialDelivery.update({ where: { id: d.id }, data: { error: "Waiting for the advert to be posted on Instagram." } });
+          await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: d.status, error: "Waiting for the advert to be posted on Instagram." } });
           continue;
         }
         const message = `@${d.handle} ${d.advert.title ?? "Here's the advert"} 👆 You subscribed to this on ${BRAND}.`;
+        sending = true;
         externalId = (await commentOnMedia({ mediaId: post.externalPostId, accessToken: token, message })).id;
       }
       await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: "SENT", externalId, sentAt: new Date(), error: null, attempts: { increment: 1 } } });
       sent++;
     } catch (err) {
       const error = explain(d.platform, d.handle, err).slice(0, 500);
-      await prisma.socialDelivery.update({ where: { id: d.id }, data: { status: "FAILED", attempts: { increment: 1 }, error } });
+      await prisma.socialDelivery.update({ where: { id: d.id }, data: {
+        status: sending ? "IN_FLIGHT" : "FAILED",
+        attempts: { increment: 1 },
+        error: sending ? `Delivery outcome unknown; reconcile before retrying. ${error}`.slice(0, 500) : error,
+      } });
       // Tell the admins once, on the first failure
       if (d.attempts === 0) {
         await notifyAdmins({

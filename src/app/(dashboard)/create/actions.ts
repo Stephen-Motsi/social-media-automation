@@ -85,7 +85,7 @@ export async function generatePlatformImageAction(input: {
   if (!platformOrder.includes(input.platform)) return { ok: false, error: "Unknown platform." };
   let handle = input.handle?.trim();
   if (input.accountId) {
-    const account = await prisma.socialAccount.findFirst({ where: { id: input.accountId, ownerId: null }, select: { platform: true, handle: true, displayName: true } });
+    const account = await prisma.socialAccount.findFirst({ where: { id: input.accountId, ownerId: null, disconnectedAt: null }, select: { platform: true, handle: true, displayName: true } });
     if (!account || account.platform !== input.platform) return { ok: false, error: "The selected social account does not belong to this platform." };
     handle = account.handle?.trim() || undefined;
     if (!handle) return { ok: false, error: `${account.displayName} has no verified platform handle or identity. Add one on Channels first.` };

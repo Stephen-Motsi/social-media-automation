@@ -87,7 +87,7 @@ export async function schedulePostAction(input: {
         continue;
       }
       const channel = await prisma.channel.findFirst({ where: { platform, ownerId: null } });
-      const accounts = (await prisma.socialAccount.findMany({ where: { platform, ownerId: null } })).filter((a) => handleMatches(platform, channel?.handle, a));
+      const accounts = (await prisma.socialAccount.findMany({ where: { platform, ownerId: null, disconnectedAt: null } })).filter((a) => handleMatches(platform, channel?.handle, a));
       if (accounts.length === 0) {
         const who = channel?.handle ? displayHandle(platform, channel.handle) : `your ${name} account`;
         outcomes.push({ platform, ok: false, message: `Not posted on ${name}: ${who} isn't connected. Connect it in Settings on Channels.` });

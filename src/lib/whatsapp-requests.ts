@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { disconnectWahaSession, getWahaView } from "@/lib/waha-lifecycle";
+import { hasVerifiedWahaIdentity } from "@/lib/waha-identity";
 
 export type AssistedWhatsappView = {
   status: string;
@@ -33,8 +34,8 @@ export async function assistedWhatsappStatus(userId: string): Promise<AssistedWh
     return { status: latest.status, ...empty, message: latest.error };
   }
   if (view.status === "WORKING" && !view.pairingMismatch) {
-    const session = await prisma.whatsappSession.findUnique({ where: { userId }, select: { accountId: true } });
-    if (!session?.accountId) return { status: "CONNECTION_ERROR", ...empty, message: "WhatsApp is responding but its account identity could not be verified. Try again." };
+    const session = await prisma.whatsappSession.findUnique({ where: { userId }, select: { accountId: true, activeIdentity: true, status: true } });
+    if (!session || !hasVerifiedWahaIdentity(session)) return { status: "CONNECTION_ERROR", ...empty, message: "WhatsApp is responding but its account identity could not be verified. Try again." };
     const updated = await prisma.whatsappConnectionRequest.updateMany({
       where: {
         id: request.id,
@@ -51,9 +52,9 @@ export async function assistedWhatsappStatus(userId: string): Promise<AssistedWh
     || (request.status === "CONNECTED" && (view.status === "STOPPED" || view.status === "NOT_CREATED"))) {
     await prisma.whatsappConnectionRequest.updateMany({
       where: { id: request.id, status: request.status, qrExpiresAt: request.qrExpiresAt },
-      data: { status: "FAILED", error: "WhatsApp connection failed or was logged out. Request assistance to reconnect." },
+      data: { status: "FAILED", error: view.error ?? "WhatsApp connection failed or was logged out. Request assistance to reconnect." },
     });
-    return { status: "FAILED", ...empty, message: "WhatsApp connection failed or was logged out. Request assistance to reconnect." };
+    return { status: "FAILED", ...empty, message: view.error ?? "WhatsApp connection failed or was logged out. Request assistance to reconnect." };
   }
   if (request.status === "CONNECTED") {
     return { status: "CONNECTION_ERROR", ...empty, message: "WhatsApp is not currently connected. Check again or request assistance." };

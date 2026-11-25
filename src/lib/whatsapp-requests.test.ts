@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import IORedis from "ioredis";
 import { prisma } from "./db";
 import { encrypt } from "./crypto";
 import { assistedWhatsappStatus } from "./whatsapp-requests";
@@ -7,12 +6,10 @@ import { assistedWhatsappStatus } from "./whatsapp-requests";
 process.env.WAHA_BASE_URL = "http://waha.test";
 process.env.WAHA_API_KEY = "test-key";
 process.env.TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString("base64");
-Object.defineProperties(IORedis.prototype, {
-  connect: { value: async () => undefined },
-  set: { value: async () => "OK" },
-  eval: { value: async () => 1 },
-  quit: { value: async () => "OK" },
-});
+Object.defineProperty(prisma, "wahaOperationLock", { value: {
+  create: async () => ({}),
+  deleteMany: async () => ({ count: 1 }),
+} });
 
 type RequestRecord = { id: string; userId: string; status: string; qrExpiresAt: Date | null; error: string | null };
 const requests: RequestRecord[] = [
@@ -24,6 +21,7 @@ const session: Record<string, unknown> = {
   webhookSecretEncrypted: encrypt("secret"), qrData: "data:image/png;base64,Ym9i",
   qrGeneratedAt: new Date(), qrExpiresAt: new Date(Date.now() + 60_000), qrGenerationCount: 1,
   authMethod: "QR", phoneNumber: null, recoveryEnabled: true,
+  stateVersion: 0,
 };
 Object.defineProperty(prisma, "wahaConfiguration", { value: { findUnique: async () => null } });
 Object.defineProperty(prisma, "whatsappConnectionRequest", {
@@ -53,6 +51,14 @@ Object.defineProperty(prisma, "whatsappSession", {
       }
       return { ...session };
     },
+    updateMany: async ({ where, data }: { where: { stateVersion?: number }; data: Record<string, unknown> }) => {
+      if (where.stateVersion !== undefined && session.stateVersion !== where.stateVersion) return { count: 0 };
+      for (const [key, value] of Object.entries(data)) {
+        if (typeof value === "object" && value !== null && "increment" in value) session[key] = Number(session[key] ?? 0) + Number(value.increment);
+        else session[key] = value;
+      }
+      return { count: 1 };
+    },
   },
 });
 let remoteStatus = "SCAN_QR_CODE";
@@ -76,6 +82,8 @@ async function main() {
   assert.equal(bob.qr, "data:image/png;base64,Ym9i");
   assert.equal(alice.account, null);
   remoteStatus = "WORKING";
+  session.activeIdentity = "123456789";
+  session.accountId = "123456789@c.us";
   assert.equal((await assistedWhatsappStatus("bob")).status, "CONNECTION_ERROR");
   assert.equal(requests[1].status, "IN_PROGRESS");
   identityAvailable = true;
@@ -90,6 +98,7 @@ async function main() {
   assert.equal(requests[1].status, "EXPIRED");
   assert.equal(logoutCalls, 1);
   assert.equal(session.recoveryEnabled, false);
+  assert.equal(session.activeIdentity, null);
   requests[1].status = "PREPARING";
   assert.equal((await assistedWhatsappStatus("bob")).qr, null);
   console.log("PASS WhatsApp request isolation, QR expiry, session stop and regeneration gate");

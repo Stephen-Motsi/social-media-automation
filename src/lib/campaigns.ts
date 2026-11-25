@@ -14,6 +14,8 @@ import { loadImage } from "@/lib/media";
 import { normalizeWahaChatId, sendWahaImage, sendWahaText, sendWahaVideo, wahaPhonePairMatches } from "@/lib/waha";
 import { reviewContent } from "@/lib/policy/review";
 import { mediaFor } from "@/lib/advert-media";
+import { hasVerifiedWahaIdentity } from "@/lib/waha-identity";
+import { claimCampaignDelivery } from "@/lib/publication-claims";
 
 // Sends an approved campaign to its subscribers over WhatsApp (run by the worker).
 // Template expected: optional IMAGE header, body with {{1}} = subscriber's first name and {{2}} = advert text.
@@ -32,7 +34,7 @@ export async function sendCampaign(campaignId: string) {
   const fail = (error: string) => prisma.campaign.update({ where: { id: campaignId }, data: { status: "FAILED", error } });
 
   const session = await prisma.whatsappSession.findUnique({ where: { userId: campaign.advert.authorId } });
-  if (!session || session.status !== "WORKING") {
+  if (!session || !hasVerifiedWahaIdentity(session)) {
     await fail("No connected WAHA WhatsApp session. Connect WhatsApp from the Channels dashboard.");
     return { sent: 0, failed: 0, skipped: 0, error: "No WhatsApp number connected." };
   }
@@ -60,6 +62,7 @@ export async function sendCampaign(campaignId: string) {
   let failed = 0;
   let skipped = 0;
   for (const d of campaign.deliveries) {
+    if (!(await claimCampaignDelivery(d.id))) continue;
     const sub = d.subscriber;
     if (sub.status !== "ACTIVE") {
       await prisma.delivery.update({ where: { id: d.id }, data: { status: "SKIPPED", error: "Unsubscribed" } });
@@ -92,7 +95,7 @@ export async function sendCampaign(campaignId: string) {
       await prisma.$transaction([
         prisma.delivery.update({
           where: { id: d.id },
-          data: { status: "PENDING", externalId, sentAt: new Date(), error: null },
+          data: { status: "SENT", externalId, sentAt: new Date(), error: null },
         }),
         prisma.subscriber.update({ where: { id: sub.id }, data: { lastSentAt: new Date() } }),
       ]);
@@ -100,13 +103,16 @@ export async function sendCampaign(campaignId: string) {
     } catch (err) {
       await prisma.delivery.update({
         where: { id: d.id },
-        data: { status: "FAILED", error: err instanceof Error ? err.message : String(err) },
+        data: { status: "IN_FLIGHT", error: `Delivery outcome unknown; reconcile before retrying. ${err instanceof Error ? err.message : String(err)}` },
       });
       failed++;
     }
   }
-  await prisma.campaign.update({ where: { id: campaignId }, data: { status: "SENT" } });
-  return { sent, failed, skipped };
+  const completed = await prisma.campaign.updateMany({
+    where: { id: campaignId, deliveries: { none: { OR: [{ status: "IN_FLIGHT" }, { status: "PENDING", externalId: null }] } } },
+    data: { status: "SENT" },
+  });
+  return { sent, failed, skipped, ...(!completed.count ? { pending: true } : {}) };
 }
 
 // WhatsApp webhooks from subscribers:
@@ -127,8 +133,11 @@ const MANAGE = /^\s*(manage|menu|settings|my subscription)\s*$/i;
 async function replier(sessionName?: string) {
   const session = sessionName
     ? await prisma.whatsappSession.findUnique({ where: { sessionName } })
-    : await prisma.whatsappSession.findFirst({ where: { status: "WORKING" } });
-  if (!session || session.status !== "WORKING") return async () => {};
+    : await prisma.whatsappSession.findFirst({ where: { status: "WORKING", activeIdentity: { not: null } } });
+  if (!session || !hasVerifiedWahaIdentity(session)) {
+    console.error("WhatsApp reply blocked: no verified session is connected.");
+    return async () => {};
+  }
   return async (to: string, body: string) => {
     await sendWahaText(session.sessionName, normalizeWahaChatId(to), body).catch((err) =>
       console.error("WhatsApp reply failed:", err instanceof Error ? err.message : err),

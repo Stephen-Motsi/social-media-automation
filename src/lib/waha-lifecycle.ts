@@ -1,7 +1,8 @@
-import { randomUUID, randomBytes } from "node:crypto";
-import IORedis from "ioredis";
+import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
+import { confirmWahaOperationStopped, withWahaSessionLock as withSessionLock } from "@/lib/waha-session-lock";
+import { claimWahaIdentity, WAHA_IDENTITY_CONFLICT, WAHA_IDENTITY_UNKNOWN, WAHA_SESSION_CHANGED } from "@/lib/waha-identity";
 import {
   createWahaSession,
   deleteWahaSession as deleteRemoteWahaSession,
@@ -39,33 +40,40 @@ export type WahaLifecycleView = {
 };
 
 function normalizeStatus(value: unknown) {
-  if (typeof value !== "string") return "STOPPED";
+  if (typeof value !== "string") return "CONNECTION_ERROR";
   const status = value.trim().toUpperCase().replace(/[\s-]+/g, "_");
   return ["STOPPED", "STARTING", "SCAN_QR_CODE", "WORKING", "FAILED", "DISCONNECTED", "LOGGED_OUT"].includes(status)
     ? status
     : "CONNECTION_ERROR";
 }
 
-async function withSessionLock<T>(sessionName: string, operation: () => Promise<T>): Promise<T> {
-  const redis = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379", { maxRetriesPerRequest: 1 });
-  const token = randomUUID();
-  const key = `waha:session:${sessionName}:lock`;
+async function confirmWahaStopped(sessionName: string) {
+  let session: unknown;
   try {
-    const acquired = await redis.set(key, token, "PX", 30_000, "NX");
-    if (acquired !== "OK") throw new Error("Another WhatsApp connection operation is already in progress. Please try again.");
-    return await operation();
-  } finally {
-    await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, key, token).catch(() => 0);
-    await redis.quit().catch(() => redis.disconnect());
+    session = await getWahaSession(sessionName);
+  } catch (error) {
+    if (error instanceof WahaApiError && error.status === 404) { confirmWahaOperationStopped(); return; }
+    throw error;
   }
+  if (!session || typeof session !== "object" || !("status" in session)
+    || !["STOPPED", "LOGGED_OUT"].includes(normalizeStatus(session.status))) {
+    throw new Error("WAHA has not confirmed that the WhatsApp session stopped.");
+  }
+  confirmWahaOperationStopped();
 }
 
 async function updateLifecycleStatus(userId: string, status: string, error?: string) {
   const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
   if (!existing) return;
   const changed = existing.status !== status;
-  await prisma.whatsappSession.update({
-    where: { userId },
+  await prisma.whatsappSession.updateMany({
+    where: {
+      userId, stateVersion: existing.stateVersion, status: { not: "STOPPING" },
+      NOT: [
+        { status: "FAILED", recoveryEnabled: false, lastError: { startsWith: WAHA_IDENTITY_CONFLICT } },
+        { status: "FAILED", recoveryEnabled: false, lastError: { startsWith: WAHA_IDENTITY_UNKNOWN } },
+      ],
+    },
     data: {
       previousStatus: changed ? existing.status : existing.previousStatus,
       status,
@@ -79,7 +87,73 @@ async function updateLifecycleStatus(userId: string, status: string, error?: str
   });
 }
 
-export async function syncWahaSession(userId: string, sessionName: string): Promise<{ status: string; account: Record<string, unknown> | null }> {
+async function finishPendingStop(userId: string, sessionName: string) {
+  return withSessionLock(sessionName, async () => {
+    const session = await prisma.whatsappSession.findUnique({ where: { userId } });
+    if (!session || session.sessionName !== sessionName || session.status !== "STOPPING") return;
+    const blocked = session.lastError?.startsWith(WAHA_IDENTITY_CONFLICT) || session.lastError?.startsWith(WAHA_IDENTITY_UNKNOWN);
+    try {
+      let stopError: unknown;
+      try {
+        if (blocked) {
+          await stopWahaSession(sessionName);
+        } else {
+          await logoutWahaSession(sessionName).catch(async (error: unknown) => {
+            if (error instanceof WahaApiError && error.status === 404) return;
+            await stopWahaSession(sessionName);
+          });
+        }
+      } catch (error) {
+        stopError = error;
+      }
+      try {
+        await confirmWahaStopped(sessionName);
+      } catch (error) {
+        if (stopError) console.error("[WAHA] Shutdown request failed:", stopError);
+        throw error;
+      }
+      const completed = await prisma.whatsappSession.updateMany({
+        where: { userId, sessionName, status: "STOPPING", stateVersion: session.stateVersion },
+        data: {
+          status: blocked ? "FAILED" : "STOPPED",
+          accountId: null,
+          accountPhone: null,
+          activeIdentity: null,
+          accountName: null,
+          accountPushName: null,
+          accountInfo: {},
+          qrGeneratedAt: null,
+          qrExpiresAt: null,
+          qrData: null,
+          recoveryEnabled: false,
+          recoveryAttemptCount: 0,
+          lastRecoveryAt: null,
+          lastError: blocked ? session.lastError : null,
+          lastStatusAt: new Date(),
+          stateVersion: { increment: 1 },
+        },
+      });
+      if (!completed.count) throw new Error("WhatsApp session changed while confirming shutdown. Check its status again.");
+    } catch (error) {
+      console.error("[WAHA] Could not confirm session shutdown:", error);
+      throw error;
+    }
+  });
+}
+
+export async function syncWahaSession(userId: string, sessionName: string, retry = 0): Promise<{ status: string; account: Record<string, unknown> | null }> {
+  return withSessionLock(sessionName, () => syncWahaSessionLocked(userId, sessionName, retry));
+}
+
+async function syncWahaSessionLocked(userId: string, sessionName: string, retry: number): Promise<{ status: string; account: Record<string, unknown> | null }> {
+  const initial = await prisma.whatsappSession.findUnique({ where: { userId } });
+  if (!initial) return { status: "NOT_CREATED", account: null };
+  if (initial.sessionName !== sessionName) throw new Error("WhatsApp session changed. Check its status again.");
+  if (initial.status === "STOPPING") return { status: "CONNECTION_ERROR", account: null };
+  if (initial.status === "FAILED" && !initial.recoveryEnabled
+    && (initial.lastError?.startsWith(WAHA_IDENTITY_CONFLICT) || initial.lastError?.startsWith(WAHA_IDENTITY_UNKNOWN))) {
+    return { status: "FAILED", account: null };
+  }
   let status = "CONNECTION_ERROR";
   let account: Record<string, unknown> | null = null;
   try {
@@ -102,22 +176,42 @@ export async function syncWahaSession(userId: string, sessionName: string): Prom
     return { status: "CONNECTION_ERROR", account: null };
   }
 
-  if (status !== "CONNECTION_ERROR") await updateLifecycleStatus(userId, status);
-  if (account) {
-    const id = account.id ?? account.jid ?? account.phone;
-    const accountPhoneCandidate = account.phone
-      ?? (typeof account.id === "string" ? account.id.split("@")[0] : null)
-      ?? (typeof account.jid === "string" ? account.jid.split("@")[0] : null);
-    await prisma.whatsappSession.update({
-      where: { userId },
-      data: {
-        accountInfo: account as object,
-        accountId: typeof id === "string" ? id : null,
-        accountPhone: typeof accountPhoneCandidate === "string" ? String(accountPhoneCandidate).replace(/\D/g, "") || null : null,
-        accountPushName: typeof account.pushName === "string" ? account.pushName : (typeof account.pushname === "string" ? String(account.pushname) : null),
-        accountName: typeof account.pushName === "string" ? account.pushName : (typeof account.pushname === "string" ? String(account.pushname) : null),
-      },
-    });
+  if (status === "WORKING") {
+    const result = account ? await claimWahaIdentity(userId, initial.stateVersion, account) : { ok: false as const, error: WAHA_IDENTITY_UNKNOWN };
+    if (!result.ok) {
+      if (result.error === WAHA_SESSION_CHANGED && retry < 2) return syncWahaSession(userId, sessionName, retry + 1);
+      const error = result.error === WAHA_SESSION_CHANGED ? WAHA_IDENTITY_UNKNOWN : result.error;
+      if (error === WAHA_IDENTITY_CONFLICT || (error === WAHA_IDENTITY_UNKNOWN && (account || !initial.activeIdentity))) {
+        const blocked = await prisma.whatsappSession.updateMany({
+          where: {
+            userId, sessionName,
+            status: { not: "STOPPING" },
+          },
+          data: { status: "STOPPING", recoveryEnabled: false, lastError: error, stateVersion: { increment: 1 } },
+        });
+        if (blocked.count) {
+          try {
+            await finishPendingStop(userId, sessionName);
+          } catch (error) {
+            console.error("[WAHA] Unverified session shutdown requires recovery or reconciliation:", error);
+          }
+        }
+        return { status: blocked.count ? "FAILED" : "CONNECTION_ERROR", account: null };
+      }
+      if (error === WAHA_IDENTITY_UNKNOWN) {
+        await prisma.whatsappSession.updateMany({
+          where: { userId, stateVersion: initial.stateVersion },
+          data: { status: "CONNECTION_ERROR", lastError: error, stateVersion: { increment: 1 } },
+        });
+      }
+      return { status: "CONNECTION_ERROR", account: null };
+    }
+    return { status, account };
+  }
+  if (status === "CONNECTION_ERROR") {
+    await updateLifecycleStatus(userId, status, "WAHA did not report a valid session status.");
+  } else {
+    await updateLifecycleStatus(userId, status);
   }
   return { status, account };
 }
@@ -125,6 +219,13 @@ export async function syncWahaSession(userId: string, sessionName: string): Prom
 export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
   const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
   if (!existing) return { status: "NOT_CREATED", sessionName: null, account: null, phone: null, qr: null };
+  return withSessionLock(existing.sessionName, () => getWahaViewLocked(userId, existing.sessionName));
+}
+
+async function getWahaViewLocked(userId: string, sessionName: string): Promise<WahaLifecycleView> {
+  const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
+  if (!existing) return { status: "NOT_CREATED", sessionName: null, account: null, phone: null, qr: null };
+  if (existing.sessionName !== sessionName) throw new Error("WhatsApp session changed. Check its status again.");
   const synced = await syncWahaSession(userId, existing.sessionName);
   let qr: string | null = null;
   let qrError: string | undefined;
@@ -132,9 +233,11 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
   if (synced.status === "SCAN_QR_CODE" && existing.authMethod !== "PHONE" && existing.qrGenerationCount >= 6) {
     try {
       await withSessionLock(existing.sessionName, async () => {
+        const latest = await prisma.whatsappSession.findUnique({ where: { userId } });
+        if (!latest || latest.status === "STOPPING") throw new Error("WhatsApp shutdown is pending confirmation.");
         await restartWahaSession(existing.sessionName);
-        await prisma.whatsappSession.update({
-          where: { userId },
+        const restarted = await prisma.whatsappSession.updateMany({
+          where: { userId, status: { not: "STOPPING" } },
           data: {
             status: "STARTING",
             qrGeneratedAt: null,
@@ -148,8 +251,10 @@ export async function getWahaView(userId: string): Promise<WahaLifecycleView> {
             recoveryAttemptCount: { increment: 1 },
             lastStatusAt: new Date(),
             lastError: null,
+            stateVersion: { increment: 1 },
           },
         });
+        if (!restarted.count) throw new Error("WhatsApp shutdown is pending confirmation.");
       });
       return { status: "STARTING", sessionName: existing.sessionName, account: null, phone: existing.phoneNumber, qr: null, qrExpiresAt: null };
     } catch (error) {
@@ -281,6 +386,7 @@ export async function requestWahaPairingCode(userId: string, phoneNumber: string
   }
   return withSessionLock(existing.sessionName, async () => {
     existing = await prisma.whatsappSession.findUniqueOrThrow({ where: { userId } });
+    if (existing.status === "STOPPING") throw new Error("WhatsApp shutdown is pending confirmation. Try again after it completes.");
     await prisma.whatsappSession.update({
       where: { userId },
       data: {
@@ -296,14 +402,14 @@ export async function requestWahaPairingCode(userId: string, phoneNumber: string
         } : {}),
       },
     });
+    let absent = false;
     const current = await getWahaSession(existing.sessionName).catch((error: unknown) => {
-      if (error instanceof WahaApiError && error.status === 404) return null;
+      if (error instanceof WahaApiError && error.status === 404) { absent = true; return null; }
       throw error;
     }) as { status?: string } | null;
-    const status = normalizeStatus(current?.status);
+    const status = absent ? "STOPPED" : normalizeStatus(current?.status);
 
     if (status === "WORKING") {
-      await updateLifecycleStatus(userId, "WORKING");
       return getWahaView(userId);
     }
     if (status === "STARTING" || status === "STOPPED") {
@@ -424,6 +530,16 @@ export async function requestWahaPairingCode(userId: string, phoneNumber: string
 }
 
 export async function connectWahaSession(userId: string, phoneNumber?: string): Promise<WahaLifecycleView> {
+  const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
+  const sessionName = existing?.sessionName ?? `whatsapp-user-${userId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  return withSessionLock(sessionName, async () => {
+    const current = await prisma.whatsappSession.findUnique({ where: { userId } });
+    if (current && current.sessionName !== sessionName) throw new Error("WhatsApp session changed. Try again.");
+    return connectWahaSessionLocked(userId, phoneNumber);
+  });
+}
+
+async function connectWahaSessionLocked(userId: string, phoneNumber?: string): Promise<WahaLifecycleView> {
   let normalizedPhone = "";
   if (phoneNumber !== undefined) {
     normalizedPhone = normalizeWahaPhoneNumber(phoneNumber);
@@ -476,6 +592,7 @@ export async function connectWahaSession(userId: string, phoneNumber?: string): 
 async function startWahaSessionRecord(userId: string, sessionName: string, newSession: boolean): Promise<WahaLifecycleView> {
   return withSessionLock(sessionName, async () => {
     const lifecycleRecord = await prisma.whatsappSession.findUnique({ where: { userId } });
+    if (lifecycleRecord?.status === "STOPPING") throw new Error("WhatsApp shutdown is pending confirmation. Try again after it completes.");
     if (lifecycleRecord?.webhookSecretEncrypted) {
       try {
         await updateWahaSession(sessionName, decrypt(lifecycleRecord.webhookSecretEncrypted));
@@ -483,14 +600,16 @@ async function startWahaSessionRecord(userId: string, sessionName: string, newSe
         console.error("[WAHA] Could not update session webhook configuration:", error instanceof Error ? error.message : error);
       }
     }
+    let absent = false;
     const current = await getWahaSession(sessionName).catch((error: unknown) => {
-      if (error instanceof WahaApiError && error.status === 404) return null;
+      if (error instanceof WahaApiError && error.status === 404) { absent = true; return null; }
       throw error;
     }) as { status?: string } | null;
-    const status = normalizeStatus(current?.status);
+    const status = absent ? "STOPPED" : normalizeStatus(current?.status);
+    if (status === "CONNECTION_ERROR") throw new Error("WAHA did not report a valid session status.");
 
     if (status === "WORKING") return getWahaView(userId);
-    if (!current && !newSession) {
+    if (absent && !newSession) {
       const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
       if (!existing) return getWahaView(userId);
       const secret = decrypt(existing.webhookSecretEncrypted);
@@ -519,16 +638,17 @@ async function startWahaSessionRecord(userId: string, sessionName: string, newSe
         await updateLifecycleStatus(userId, "FAILED", existing.lastError ?? "WAHA session restart has already been attempted.");
         return { status: "FAILED", sessionName, account: existing.accountName, phone: existing.phoneNumber, qr: null, error: existing.lastError ?? "WAHA session restart has already been attempted." };
       }
-      await prisma.whatsappSession.update({
-        where: { userId },
+      const starting = await prisma.whatsappSession.updateMany({
+        where: { userId, status: { not: "STOPPING" } },
         data: { status: "STARTING", recoveryAttemptCount: 1, lastRecoveryAt: new Date(), lastStatusAt: new Date(), stateVersion: { increment: 1 }, lastError: null },
       });
+      if (!starting.count) throw new Error("WhatsApp shutdown is pending confirmation.");
       try {
         await restartWahaSession(sessionName);
       } catch (error) {
         const message = error instanceof Error ? error.message : "WAHA restart failed.";
-        await prisma.whatsappSession.update({
-          where: { userId },
+        await prisma.whatsappSession.updateMany({
+          where: { userId, status: { not: "STOPPING" } },
           data: { status: "STARTING", lastError: `Restart request pending verification: ${message}`, stateVersion: { increment: 1 } },
         });
         return { status: "STARTING", sessionName, account: existing?.accountName ?? null, phone: existing?.phoneNumber ?? null, qr: null, qrExpiresAt: null, error: `Restart request did not confirm immediately: ${message}` };
@@ -536,18 +656,19 @@ async function startWahaSessionRecord(userId: string, sessionName: string, newSe
       return { status: "STARTING", sessionName, account: null, phone: existing?.phoneNumber ?? null, qr: null, qrExpiresAt: null };
     }
 
-    await prisma.whatsappSession.update({
-      where: { userId },
+    const starting = await prisma.whatsappSession.updateMany({
+      where: { userId, status: { not: "STOPPING" } },
       data: { status: "STARTING", previousStatus: current ? status : "STOPPED", recoveryEnabled: true, lastStatusAt: new Date(), stateVersion: { increment: 1 }, lastError: null },
     });
+    if (!starting.count) throw new Error("WhatsApp shutdown is pending confirmation.");
     const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
     try {
       await startWahaSession(sessionName);
       return { status: "STARTING", sessionName, account: existing?.accountName ?? null, phone: existing?.phoneNumber ?? null, qr: null, qrExpiresAt: null };
     } catch (error) {
       const message = error instanceof Error ? error.message : "WAHA start request failed.";
-      await prisma.whatsappSession.update({
-        where: { userId },
+      await prisma.whatsappSession.updateMany({
+        where: { userId, status: { not: "STOPPING" } },
         data: { lastError: `Start request pending verification: ${message}`, stateVersion: { increment: 1 } },
       });
       return { status: "STARTING", sessionName, account: existing?.accountName ?? null, phone: existing?.phoneNumber ?? null, qr: null, qrExpiresAt: null, error: `Start request did not confirm immediately: ${message}` };
@@ -563,28 +684,12 @@ export async function disconnectWahaSession(userId: string) {
   const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
   if (!existing) return { status: "NOT_CREATED", sessionName: null, account: null, phone: null, qr: null } satisfies WahaLifecycleView;
   await withSessionLock(existing.sessionName, async () => {
-    await logoutWahaSession(existing.sessionName).catch(async () => stopWahaSession(existing.sessionName));
     await prisma.whatsappSession.update({
       where: { userId },
-      data: {
-        status: "STOPPED",
-        previousStatus: existing.status,
-        accountId: null,
-        accountPhone: null,
-        accountName: null,
-        accountPushName: null,
-        accountInfo: {},
-        qrGeneratedAt: null,
-        qrExpiresAt: null,
-        recoveryEnabled: false,
-        recoveryAttemptCount: 0,
-        lastRecoveryAt: null,
-        lastError: null,
-        lastStatusAt: new Date(),
-        stateVersion: { increment: 1 },
-      },
+      data: { status: "STOPPING", previousStatus: existing.status, recoveryEnabled: false, lastError: null, stateVersion: { increment: 1 } },
     });
   });
+  await finishPendingStop(userId, existing.sessionName);
   return getWahaView(userId);
 }
 
@@ -592,14 +697,41 @@ export async function deleteWahaSession(userId: string) {
   const existing = await prisma.whatsappSession.findUnique({ where: { userId } });
   if (!existing) return { status: "NOT_CREATED", sessionName: null, account: null, phone: null, qr: null } satisfies WahaLifecycleView;
   await withSessionLock(existing.sessionName, async () => {
-    await logoutWahaSession(existing.sessionName).catch(async () => stopWahaSession(existing.sessionName)).catch(() => null);
-    await deleteRemoteWahaSession(existing.sessionName).catch(() => null);
+    await prisma.whatsappSession.update({
+      where: { userId },
+      data: { status: "STOPPING", recoveryEnabled: false, stateVersion: { increment: 1 } },
+    });
+    await logoutWahaSession(existing.sessionName).catch(async (error: unknown) => {
+      if (error instanceof WahaApiError && error.status === 404) return;
+      await stopWahaSession(existing.sessionName);
+    });
+    await confirmWahaStopped(existing.sessionName);
+    await deleteRemoteWahaSession(existing.sessionName).catch((error: unknown) => {
+      if (!(error instanceof WahaApiError) || error.status !== 404) throw error;
+    });
     await prisma.whatsappSession.delete({ where: { userId } });
   });
   return { status: "NOT_CREATED", sessionName: null, account: null, phone: null, qr: null } satisfies WahaLifecycleView;
 }
 
 export async function recoverWahaSessions() {
+  const pendingStops = await prisma.whatsappSession.findMany({
+    where: { status: "STOPPING" },
+    select: { userId: true, sessionName: true },
+    orderBy: { lastRecoveryAt: { sort: "asc", nulls: "first" } },
+    take: 20,
+  });
+  for (const session of pendingStops) {
+    try {
+      await prisma.whatsappSession.updateMany({
+        where: { userId: session.userId, status: "STOPPING" },
+        data: { lastRecoveryAt: new Date() },
+      });
+      await finishPendingStop(session.userId, session.sessionName);
+    } catch (error) {
+      console.error("[WAHA] Pending shutdown retry failed:", error);
+    }
+  }
   const cutoff = new Date(Date.now() - 10 * 60_000);
   const sessions = await prisma.whatsappSession.findMany({
     where: {
@@ -640,8 +772,8 @@ export async function recoverWahaSessions() {
       await startWahaSessionRecord(session.userId, session.sessionName, false);
       recovered++;
     } catch (error) {
-      await prisma.whatsappSession.update({
-        where: { id: session.id },
+      await prisma.whatsappSession.updateMany({
+        where: { id: session.id, status: { not: "STOPPING" } },
         data: { lastError: error instanceof Error ? error.message : "WAHA recovery failed." },
       });
     }

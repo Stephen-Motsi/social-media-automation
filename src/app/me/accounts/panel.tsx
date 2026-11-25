@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import type { Platform } from "@prisma/client";
 import { checkOwnedAccount, disconnectOwnedAccount, disconnectOwnedWhatsapp, getOwnedWhatsappStatus, requestWhatsapp, saveAccountHandle } from "./actions";
 import type { AssistedWhatsappView } from "@/lib/whatsapp-requests";
@@ -9,13 +10,13 @@ import type { AssistedWhatsappView } from "@/lib/whatsapp-requests";
 type Account = { id: string; platform: Platform; displayName: string; handle: string | null; tokenExpiresAt: string | null; disconnectedAt: string | null };
 type Channel = { platform: Platform; handle: string | null };
 const platforms = [
-  { id: "FACEBOOK", label: "Facebook Page", href: "/api/meta/connect" },
-  { id: "INSTAGRAM", label: "Instagram professional account", href: "/api/meta/connect" },
-  { id: "X", label: "X", href: "/api/x/connect" },
-  { id: "TIKTOK", label: "TikTok", href: "/api/tiktok/connect" },
+  { id: "FACEBOOK", label: "Facebook Page", href: "/api/meta/connect?scope=personal" },
+  { id: "INSTAGRAM", label: "Instagram professional account", href: "/api/meta/connect?scope=personal" },
+  { id: "X", label: "X", href: "/api/x/connect?scope=personal" },
+  { id: "TIKTOK", label: "TikTok", href: "/api/tiktok/connect?scope=personal" },
 ] as const;
 
-export function AccountsPanel({ accounts, channels }: { accounts: Account[]; channels: Channel[] }) {
+export function AccountsPanel({ accounts, channels, staffDirectWhatsapp }: { accounts: Account[]; channels: Channel[]; staffDirectWhatsapp: boolean }) {
   const router = useRouter();
   const [message, setMessage] = useState("");
   const [pending, startTransition] = useTransition();
@@ -27,10 +28,11 @@ export function AccountsPanel({ accounts, channels }: { accounts: Account[]; cha
     setNow(Date.now());
   }, []);
   useEffect(() => {
+    if (staffDirectWhatsapp) return;
     void poll();
     const timer = window.setInterval(() => { void poll(); }, 8000);
     return () => window.clearInterval(timer);
-  }, [poll]);
+  }, [poll, staffDirectWhatsapp]);
   useEffect(() => {
     if (!whatsapp?.qrExpiresAt) return;
     const timer = window.setTimeout(() => setNow(Date.now()), Math.max(0, new Date(whatsapp.qrExpiresAt).getTime() - Date.now()));
@@ -43,7 +45,7 @@ export function AccountsPanel({ accounts, channels }: { accounts: Account[]; cha
         const result = await action();
         setMessage(result.message);
         router.refresh();
-        await poll();
+        if (!staffDirectWhatsapp) await poll();
       } catch {
         setMessage("The operation failed. Please try again.");
       }
@@ -79,6 +81,7 @@ export function AccountsPanel({ accounts, channels }: { accounts: Account[]; cha
       })}
       <section className="glass space-y-3 rounded-3xl p-6">
         <h2 className="text-lg font-semibold">WhatsApp</h2>
+        {staffDirectWhatsapp ? <p className="text-sm text-ink-soft">Manage your own WhatsApp session on <Link href="/channels" className="underline">Channels</Link>.</p> : <>
         <p className="text-sm text-ink-soft">An administrator starts your private QR session. Only you can see your QR code.</p>
         <p>Status: {whatsapp?.status.replaceAll("_", " ") ?? "Checking..."}</p>
         {whatsapp?.message && <p role="status">{whatsapp.message}</p>}
@@ -94,6 +97,7 @@ export function AccountsPanel({ accounts, channels }: { accounts: Account[]; cha
         {whatsapp && ["NOT_REQUESTED", "FAILED", "CANCELLED"].includes(whatsapp.status) && <button disabled={pending} onClick={() => run(requestWhatsapp)} className="rounded-lg border border-line px-3 py-2">Request connection</button>}
         {whatsapp && ["CONNECTED", "CONNECTION_ERROR"].includes(whatsapp.status) && <button disabled={pending} onClick={() => run(disconnectOwnedWhatsapp)} className="rounded-lg border border-line px-3 py-2">Disconnect WhatsApp</button>}
         {whatsapp?.status === "EXPIRED" && <p>Ask an administrator to refresh your request.</p>}
+        </>}
       </section>
     </div>
   );

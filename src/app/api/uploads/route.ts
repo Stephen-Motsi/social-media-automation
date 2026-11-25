@@ -5,11 +5,10 @@ import type { Platform, PostFormat } from "@prisma/client";
 import { MAX_UPLOAD_BYTES, uploadAdvertImage } from "@/lib/advert-images";
 import { platformOrder } from "@/lib/policy/rules";
 
-// Staff upload a photo for a social container's advert. It's checked against that
-// platform's rules (format, size, shape) and the content rules before it can be used.
+// Photos are checked against the selected platform and content rules before use.
 export async function POST(req: Request) {
   const viewer = await getViewer();
-  if (!viewer || !isStaff(viewer.role)) return NextResponse.json({ ok: false, error: "Only admins can upload." }, { status: 403 });
+  if (!viewer) return NextResponse.json({ ok: false, error: "Please sign in to upload." }, { status: 403 });
 
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
@@ -19,7 +18,7 @@ export async function POST(req: Request) {
   // A social container's photo, or (from Posts) a photo for a platform and format
   let target: { platform: Platform; format: PostFormat };
   if (channelId) {
-    const channel = await prisma.channel.findFirst({ where: { id: channelId, ownerId: null } });
+    const channel = await prisma.channel.findFirst({ where: { id: channelId, ownerId: isStaff(viewer.role) ? null : viewer.id } });
     if (!channel) return NextResponse.json({ ok: false, error: "This container no longer exists." }, { status: 404 });
     target = channel;
   } else {

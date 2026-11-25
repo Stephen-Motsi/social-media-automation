@@ -26,7 +26,7 @@ export default async function PostsPage() {
       take: 50,
     }),
     prisma.channel.findMany({ where: { ownerId: null } }),
-    prisma.socialAccount.findMany({ where: { ownerId: null } }),
+    prisma.socialAccount.findMany({ where: { ownerId: null, disconnectedAt: null } }),
   ]);
 
   const choices: PlatformChoice[] = platformOrder.map((platform) => {
@@ -93,7 +93,7 @@ export default async function PostsPage() {
                         return (
                           <li key={t.id} className="flex items-start gap-1.5">
                             <PlatformBadge platform={t.account.platform} />
-                            <span className={t.status === "FAILED" ? "text-danger" : "text-ink-soft"}>
+                            <span className={t.status === "FAILED" || t.status === "IN_FLIGHT" ? "text-danger" : "text-ink-soft"}>
                               {t.recipient ? `to +${t.recipient}` : t.account.displayName}:{" "}
                               {t.status === "PUBLISHED" ? (
                                 url ? (
@@ -103,7 +103,7 @@ export default async function PostsPage() {
                                 ) : (
                                   "posted"
                                 )
-                              ) : t.status === "FAILED" ? (
+                              ) : t.status === "FAILED" || t.status === "IN_FLIGHT" ? (
                                 t.error ?? "failed"
                               ) : (
                                 "waiting"
