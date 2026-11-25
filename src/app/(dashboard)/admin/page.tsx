@@ -35,7 +35,7 @@ export default async function OverviewPage() {
         prisma.postTarget.count({ where: { status: "PUBLISHED", account: { platform } } }),
       ),
     ),
-    prisma.channel.findMany({ include: { advert: true } }),
+    prisma.channel.findMany({ where: { ownerId: null }, include: { advert: true } }),
     prisma.postTarget.findMany({
       where: { status: { not: "PENDING" } },
       orderBy: { post: { updatedAt: "desc" } },

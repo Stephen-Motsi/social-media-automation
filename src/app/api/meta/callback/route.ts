@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
   if (!code) return done({ error: "no_code" });
 
-  const channels = await prisma.channel.findMany({ where: { platform: { in: ["FACEBOOK", "INSTAGRAM"] } } });
+  const channels = await prisma.channel.findMany({ where: { ownerId: null, platform: { in: ["FACEBOOK", "INSTAGRAM"] } } });
   const fb = channels.find((c) => c.platform === "FACEBOOK");
   const ig = channels.find((c) => c.platform === "INSTAGRAM");
   if (!fb && !ig) return done({ error: "no_meta_channels" });
@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
           profileUrl: profileUrl("FACEBOOK", handle, page.id),
         };
         await prisma.socialAccount.upsert({
-          where: { platform_externalId: { platform: "FACEBOOK", externalId: page.id } },
+          where: { platform_externalId: { platform: "FACEBOOK", externalId: page.id }, ownerId: null },
           update: data,
           create: { platform: "FACEBOOK", externalId: page.id, ...data },
         });
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
           profileUrl: profileUrl("INSTAGRAM", handle),
         };
         await prisma.socialAccount.upsert({
-          where: { platform_externalId: { platform: "INSTAGRAM", externalId: a.id } },
+          where: { platform_externalId: { platform: "INSTAGRAM", externalId: a.id }, ownerId: null },
           update: data,
           create: { platform: "INSTAGRAM", externalId: a.id, ...data },
         });

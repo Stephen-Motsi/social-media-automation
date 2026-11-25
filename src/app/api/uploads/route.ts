@@ -19,7 +19,7 @@ export async function POST(req: Request) {
   // A social container's photo, or (from Posts) a photo for a platform and format
   let target: { platform: Platform; format: PostFormat };
   if (channelId) {
-    const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+    const channel = await prisma.channel.findFirst({ where: { id: channelId, ownerId: null } });
     if (!channel) return NextResponse.json({ ok: false, error: "This container no longer exists." }, { status: 404 });
     target = channel;
   } else {

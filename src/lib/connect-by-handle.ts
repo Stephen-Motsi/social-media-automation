@@ -57,14 +57,14 @@ async function save(platform: Platform, externalId: string, data: { displayName:
     profileUrl: profileUrl(platform, data.handle, externalId),
   };
   await prisma.socialAccount.upsert({
-    where: { platform_externalId: { platform, externalId } },
+    where: { platform_externalId: { platform, externalId }, ownerId: null },
     update: fields,
     create: { platform, externalId, ...fields },
   });
 }
 
 export async function connectByHandle(platform: Platform): Promise<ConnectResult> {
-  const channel = await prisma.channel.findUnique({ where: { platform } });
+  const channel = await prisma.channel.findFirst({ where: { platform, ownerId: null } });
   if (!channel?.handle) return { ok: false, error: "Enter the handle first." };
   const want = channel.handle;
   const who = displayHandle(platform, want);

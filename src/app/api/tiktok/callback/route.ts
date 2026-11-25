@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
   try {
     const tokens = await tiktokExchangeCode(code);
     const user = await tiktokGetUser(tokens.access_token);
-    const channel = await prisma.channel.findUnique({ where: { platform: "TIKTOK" } });
+    const channel = await prisma.channel.findFirst({ where: { platform: "TIKTOK", ownerId: null } });
     const handle = user.username ? normalizeHandle("TIKTOK", user.username) : null;
     // Without the username we can't confirm it's the right account, so don't link it.
     if (channel?.handle && !handle) return done({ error: "tiktok_no_username" });
@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
       tokenExpiresAt: new Date(Date.now() + tokens.expires_in * 1000),
     };
     await prisma.socialAccount.upsert({
-      where: { platform_externalId: { platform: "TIKTOK", externalId: tokens.open_id } },
+      where: { platform_externalId: { platform: "TIKTOK", externalId: tokens.open_id }, ownerId: null },
       update: data,
       create: { platform: "TIKTOK", externalId: tokens.open_id, ...data },
     });

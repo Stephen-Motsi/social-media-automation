@@ -40,7 +40,7 @@ const { publishPagePost } = await import("@/lib/meta/facebook");
 const { accessTokenFor } = await import("@/lib/tokens");
 
 await ensureAllContainers();
-const channel = await prisma.channel.findUniqueOrThrow({ where: { platform: "FACEBOOK" } });
+const channel = await prisma.channel.findFirstOrThrow({ where: { platform: "FACEBOOK", ownerId: null } });
 const hadAccount = await prisma.socialAccount.findUnique({ where: { platform_externalId: { platform: "FACEBOOK", externalId: PAGE_ID } } });
 
 try {

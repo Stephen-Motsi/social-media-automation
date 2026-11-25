@@ -21,8 +21,8 @@ const siteUrl = () => (process.env.AUTH_URL ?? "http://localhost:3000").replace(
 
 // Our connected account on a platform (the one matching the container's handle).
 async function ourAccount(platform: Platform): Promise<SocialAccount | null> {
-  const channel = await prisma.channel.findUnique({ where: { platform } });
-  return (await prisma.socialAccount.findMany({ where: { platform } })).find((a) => handleMatches(platform, channel?.handle, a)) ?? null;
+  const channel = await prisma.channel.findFirst({ where: { platform, ownerId: null } });
+  return (await prisma.socialAccount.findMany({ where: { platform, ownerId: null } })).find((a) => handleMatches(platform, channel?.handle, a)) ?? null;
 }
 
 // The advert's published post on a platform, if it has one.

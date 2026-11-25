@@ -5,6 +5,7 @@ import { proposeCampaign, whatsappNotReady } from "@/lib/audience";
 import { formatWhen, QueueUnavailable, reasonFor } from "@/lib/errors";
 import { platformRules, type PlatformVerdict } from "@/lib/policy/rules";
 import { mediaFor } from "@/lib/advert-media";
+import { isStaffRole } from "@/lib/ownership";
 
 // Adverts the admin defines (title, about, topics, target platforms, image, caption) and lists
 // for users, who subscribe to an advert per platform handle.
@@ -14,7 +15,7 @@ export type AdvertPlatform = { platform: Platform; handle: string; url: string |
 // The platforms an advert targets that have a social container with a handle (what users can pick).
 export async function advertPlatforms(targetPlatforms: Platform[]): Promise<AdvertPlatform[]> {
   if (targetPlatforms.length === 0) return [];
-  const channels = await prisma.channel.findMany({ where: { platform: { in: targetPlatforms } } });
+  const channels = await prisma.channel.findMany({ where: { ownerId: null, platform: { in: targetPlatforms } } });
   return targetPlatforms.flatMap((platform) => {
     const c = channels.find((ch) => ch.platform === platform);
     return c?.handle ? [{ platform, handle: displayHandle(platform, c.handle), url: profileUrl(platform, c.handle) }] : [];
@@ -49,7 +50,7 @@ const checksOf = (advert: { checks: unknown }) => (advert.checks as PlatformVerd
 // Posts the advert on its targeted social platforms at `at` (now if omitted). WhatsApp isn't posted:
 // it goes to subscribers' own numbers. Every post still goes through the platform checks in the worker.
 export async function postAdvertToPlatforms(advertId: string, at?: Date | null): Promise<PlatformOutcome[]> {
-  const advert = await prisma.post.findUniqueOrThrow({ where: { id: advertId } });
+  const advert = await prisma.post.findUniqueOrThrow({ where: { id: advertId }, include: { author: true } });
   if (advert.reviewStatus !== "APPROVED") {
     throw new Error("This advert must be approved before it can be published or scheduled.");
   }
@@ -62,8 +63,9 @@ export async function postAdvertToPlatforms(advertId: string, at?: Date | null):
       outcomes.push({ platform, ok: false, message: `Not posted on ${name}: ${blockers.map((b) => b.message).join(" ")}` });
       continue;
     }
-    const channel = await prisma.channel.findUnique({ where: { platform } });
-    const accounts = (await prisma.socialAccount.findMany({ where: { platform } })).filter((a) => handleMatches(platform, channel?.handle, a));
+    const ownerId = isStaffRole(advert.author.role) ? null : advert.authorId;
+    const channel = await prisma.channel.findFirst({ where: { platform, ownerId } });
+    const accounts = (await prisma.socialAccount.findMany({ where: { platform, ownerId } })).filter((a) => handleMatches(platform, channel?.handle, a));
     if (!channel || accounts.length === 0) {
       const handle = channel?.handle ? displayHandle(platform, channel.handle) : `your ${name} account`;
       outcomes.push({ platform, ok: false, message: `Not posted on ${name}: ${handle} isn't connected. Connect it in Settings on Channels.` });

@@ -18,7 +18,7 @@ export type ActionResult<T> = ({ ok: true } & T) | { ok: false; error: string; i
 
 // Check against the platforms (and post/story formats) of existing channels; all platforms if none yet.
 async function reviewTargets(): Promise<{ platforms: Platform[]; formats: Formats }> {
-  const channels = await prisma.channel.findMany({ select: { platform: true, format: true } });
+  const channels = await prisma.channel.findMany({ where: { ownerId: null }, select: { platform: true, format: true } });
   if (channels.length === 0) return { platforms: platformOrder, formats: {} };
   return {
     platforms: platformOrder.filter((p) => channels.some((c) => c.platform === p)),
@@ -85,7 +85,7 @@ export async function generatePlatformImageAction(input: {
   if (!platformOrder.includes(input.platform)) return { ok: false, error: "Unknown platform." };
   let handle = input.handle?.trim();
   if (input.accountId) {
-    const account = await prisma.socialAccount.findUnique({ where: { id: input.accountId }, select: { platform: true, handle: true, displayName: true } });
+    const account = await prisma.socialAccount.findFirst({ where: { id: input.accountId, ownerId: null }, select: { platform: true, handle: true, displayName: true } });
     if (!account || account.platform !== input.platform) return { ok: false, error: "The selected social account does not belong to this platform." };
     handle = account.handle?.trim() || undefined;
     if (!handle) return { ok: false, error: `${account.displayName} has no verified platform handle or identity. Add one on Channels first.` };

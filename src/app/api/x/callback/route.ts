@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
     const me = await xGetMe(tokens.access_token);
     const handle = normalizeHandle("X", me.username);
     // Only link the account the X container's handle names.
-    const channel = await prisma.channel.findUnique({ where: { platform: "X" } });
+    const channel = await prisma.channel.findFirst({ where: { platform: "X", ownerId: null } });
     if (!handleMatches("X", channel?.handle, { handle, displayName: me.name, externalId: me.id })) {
       return done({ error: "handle_mismatch", expected: displayHandle("X", channel?.handle), got: `@${handle}`, platform: "X" });
     }
@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
       tokenExpiresAt: tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null,
     };
     await prisma.socialAccount.upsert({
-      where: { platform_externalId: { platform: "X", externalId: me.id } },
+      where: { platform_externalId: { platform: "X", externalId: me.id }, ownerId: null },
       update: data,
       create: { platform: "X", externalId: me.id, ...data },
     });

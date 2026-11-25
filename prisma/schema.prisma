@@ -99,6 +99,9 @@ model User {
 
   posts Post[]
   media MediaAsset[]
+  socialAccounts SocialAccount[]
+  channelGroups  ChannelGroup[]
+  channels       Channel[]
 
   approvedCampaigns Campaign[]
   advertReviews     Post[]           @relation("AdvertReviews")
@@ -154,9 +157,13 @@ model SocialAccount {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
+  ownerId String?
+  owner   User?   @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+
   targets PostTarget[]
 
   @@unique([platform, externalId])
+  @@index([ownerId, platform])
 }
 
 model Post {
@@ -245,7 +252,7 @@ model WebhookEvent {
   receivedAt  DateTime  @default(now())
 }
 
-// Images used in posts. Served publicly at /api/media/<id> so Meta can fetch them.
+// Images used in posts. Public when listed or being published so platforms can fetch them.
 // Stored in Postgres for simplicity; move to object storage (S3/R2) before scaling.
 model MediaAsset {
   id         String      @id @default(cuid())
@@ -271,16 +278,24 @@ model MediaAsset {
 // A parent container (Meta, X or TikTok) holding one social container per platform.
 model ChannelGroup {
   id        String    @id @default(cuid())
-  kind      GroupKind @unique
+  kind      GroupKind
   createdAt DateTime  @default(now())
+  ownerId   String?
+  owner     User?     @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   channels  Channel[]
+
+  @@unique([ownerId, kind])
+  @@unique([id, ownerId])
 }
 
 // One social container per platform: which handle, which advert, as a post or story, and when.
 model Channel {
   id       String     @id @default(cuid())
-  platform Platform   @unique
+  platform Platform
   format   PostFormat @default(POST)
+
+  ownerId String?
+  owner   User?   @relation(fields: [ownerId], references: [id], onDelete: Restrict)
 
   groupId String
   group   ChannelGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
@@ -318,6 +333,7 @@ model Channel {
   runs Post[] @relation("ChannelRuns")
 
   @@index([enabled, nextRunAt])
+  @@unique([ownerId, platform])
 }
 
 // ---- Audience: people who subscribed to receive adverts ----------------------------

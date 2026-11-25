@@ -1,8 +1,9 @@
-import type { Channel } from "@prisma/client";
+import { Prisma, type Channel } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { schedulePost } from "@/lib/queue";
 import { DEFAULT_TIMEZONE, nextRun, type ScheduleSpec } from "@/lib/schedule";
 import { displayHandle, groupOrder, groupPlatforms, handleMatches } from "@/lib/handles";
+import { canPublishToAccount } from "@/lib/ownership";
 
 export const scheduleSpec = (c: Channel): ScheduleSpec => ({
   frequency: c.frequency,
@@ -18,14 +19,20 @@ export const computeNextRun = (c: Channel, after = new Date()) => nextRun(schedu
 // Creates one post from the channel's advert, targeting every connected account on that platform,
 // and queues it for immediate publishing. Used by the scheduler and by "Post now".
 export async function runChannel(channelId: string): Promise<string> {
-  const channel = await prisma.channel.findUniqueOrThrow({ where: { id: channelId }, include: { advert: true } });
+  const channel = await prisma.channel.findUniqueOrThrow({ where: { id: channelId }, include: { advert: { include: { author: true } }, group: true } });
   if (!channel.advert) throw new Error("No advert chosen for this channel.");
+  if (channel.group.ownerId !== channel.ownerId || (channel.ownerId !== null && channel.advert.authorId !== channel.ownerId)) {
+    throw new Error("The channel and advert have different owners.");
+  }
+  if (channel.ownerId === null && !canPublishToAccount(channel.advert.author, null)) {
+    throw new Error("The advert cannot use a shared channel.");
+  }
   if (channel.advert.reviewStatus !== "APPROVED") {
     throw new Error("This advert must be approved before the channel can publish or schedule it.");
   }
 
   // Only post to accounts matching the handle set on this social container.
-  const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } })).filter((a) =>
+  const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: channel.ownerId } })).filter((a) =>
     handleMatches(channel.platform, channel.handle, a),
   );
   if (accounts.length === 0) {
@@ -83,16 +90,25 @@ export async function runDueChannels(now = new Date()) {
 
 // Every platform always has its container: Meta (Facebook, Instagram, WhatsApp), X and TikTok.
 // Missing ones are created without a handle; the admin types the handle to connect it.
-export async function ensureAllContainers() {
-  const groups = await prisma.channelGroup.findMany({ include: { channels: { select: { platform: true } } } });
+export async function ensureAllContainers(ownerId: string | null = null) {
+  const groups = await prisma.channelGroup.findMany({ where: { ownerId }, include: { channels: { where: { ownerId }, select: { platform: true } } } });
   for (const kind of groupOrder) {
     let group = groups.find((g) => g.kind === kind);
-    if (!group) group = { ...(await prisma.channelGroup.upsert({ where: { kind }, update: {}, create: { kind } })), channels: [] };
+    if (!group) {
+      try {
+        group = { ...(await prisma.channelGroup.create({ data: { kind, ownerId } })), channels: [] };
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+        group = await prisma.channelGroup.findFirstOrThrow({ where: { kind, ownerId }, include: { channels: { where: { ownerId }, select: { platform: true } } } });
+      }
+    }
     for (const platform of groupPlatforms[kind]) {
       if (group.channels.some((c) => c.platform === platform)) continue;
       await prisma.channel
-        .create({ data: { platform, groupId: group.id, timezone: DEFAULT_TIMEZONE } })
-        .catch(() => null); // created at the same moment by another request
+        .create({ data: { platform, groupId: group.id, ownerId, timezone: DEFAULT_TIMEZONE } })
+        .catch((error: unknown) => {
+          if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+        });
     }
   }
 }

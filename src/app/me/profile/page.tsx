@@ -15,7 +15,7 @@ export default async function ProfilePage() {
   const viewer = await pageViewer("user");
   const [user, channels, business] = await Promise.all([
     prisma.user.findUniqueOrThrow({ where: { id: viewer.id }, include: { socials: true, subscriber: true } }),
-    prisma.channel.findMany({ where: { platform: { in: [...PROFILE_PLATFORMS] } } }),
+    prisma.channel.findMany({ where: { ownerId: null, platform: { in: [...PROFILE_PLATFORMS] } } }),
     businessWhatsAppNumber(),
   ]);
   // The business's own account on each platform (where adverts come from / are posted)

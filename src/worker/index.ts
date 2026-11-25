@@ -19,6 +19,7 @@ import { reviewContent, type Formats } from "@/lib/policy/review";
 import { accessTokenFor } from "@/lib/tokens";
 import { runDueChannels } from "@/lib/channels";
 import { recoverWahaSessions } from "@/lib/waha-lifecycle";
+import { canPublishToAccount } from "@/lib/ownership";
 
 type Job = {
   account: SocialAccount;
@@ -78,12 +79,22 @@ async function send({ account, format, recipient, content, imageUrl, image, waha
 async function publish(postId: string) {
   const post = await prisma.post.findUniqueOrThrow({
     where: { id: postId },
-    include: { targets: { include: { account: true } }, channel: true, sourceAdvert: { select: { reviewStatus: true } } },
+    include: { targets: { include: { account: true } }, channel: { include: { group: true } }, author: true, sourceAdvert: { select: { reviewStatus: true, authorId: true } } },
   });
 
   if (post.sourceAdvertId && post.sourceAdvert?.reviewStatus !== "APPROVED") {
     await prisma.post.update({ where: { id: postId }, data: { status: "FAILED", publishedAt: null } });
     throw new Error("Publishing blocked: the source advert has not been approved.");
+  }
+  if (
+    (post.sourceAdvert && post.sourceAdvert.authorId !== post.authorId)
+    || (post.channel && (
+      post.channel.ownerId !== post.channel.group.ownerId
+      || (post.channel.ownerId !== null && post.channel.ownerId !== post.authorId)
+      || (post.channel.ownerId === null && !canPublishToAccount(post.author, null))
+    ))
+  ) {
+    throw new Error("Publishing blocked: post, advert, and channel ownership do not match.");
   }
 
   // Cancelled (advert unlisted) or already done: nothing to send.
@@ -126,6 +137,13 @@ async function publish(postId: string) {
   }
 
   for (const target of post.targets.filter((t) => t.status !== "PUBLISHED")) {
+    if (!canPublishToAccount(post.author, target.account.ownerId) || (post.channel && target.account.ownerId !== post.channel.ownerId)) {
+      await prisma.postTarget.update({
+        where: { id: target.id },
+        data: { status: "FAILED", error: "Publishing blocked: account ownership does not match the post." },
+      });
+      continue;
+    }
     const verdict = verdicts.find((v) => v.platform === target.account.platform);
     const blockers = verdict?.issues.filter((i) => i.severity === "block") ?? [];
     if (imageError || blockers.length > 0) {

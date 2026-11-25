@@ -128,8 +128,11 @@ export async function saveWahaConfigurationAction(input: { baseUrl: string; apiK
 
 export async function disconnectAccount(id: string): Promise<ActionState> {
   const admin = await requireAdmin();
-  const removed = await prisma.socialAccount.delete({ where: { id } }).catch(() => null);
-  if (removed) await logAdmin(admin.id, "ACCOUNT_DISCONNECTED", { platform: removed.platform, account: removed.displayName });
+  const account = await prisma.socialAccount.findFirst({ where: { id, ownerId: null } });
+  if (!account) return { error: "Account not found." };
+  const removed = await prisma.socialAccount.deleteMany({ where: { id, ownerId: null } });
+  if (!removed.count) return { error: "Account not found." };
+  await logAdmin(admin.id, "ACCOUNT_DISCONNECTED", { platform: account.platform, account: account.displayName });
   refresh();
   return { ok: true };
 }
@@ -137,7 +140,7 @@ export async function disconnectAccount(id: string): Promise<ActionState> {
 // Change one platform's handle from Settings: a phone number, @handle or profile link.
 export async function setHandle(channelId: string, value: string): Promise<ActionState> {
   const admin = await requireAdmin();
-  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+  const channel = await prisma.channel.findFirst({ where: { id: channelId, ownerId: null } });
   if (!channel) return { error: "This container no longer exists." };
   const problem = validateHandle(channel.platform, value);
   if (problem) return { error: problem };
@@ -152,12 +155,12 @@ export async function setHandle(channelId: string, value: string): Promise<Actio
     }
     return { ok: true, message: "No change." };
   }
-  await prisma.channel.update({ where: { id: channel.id }, data: { handle } });
+  await prisma.channel.update({ where: { id: channel.id, ownerId: null }, data: { handle } });
   // Accounts that don't belong to the new handle are unlinked, so nothing posts to the wrong account.
-  const stale = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } }))
+  const stale = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: null } }))
     .filter((a) => !handleMatches(channel.platform, handle, a))
     .map((a) => a.id);
-  if (stale.length) await prisma.socialAccount.deleteMany({ where: { id: { in: stale } } });
+  if (stale.length) await prisma.socialAccount.deleteMany({ where: { id: { in: stale }, ownerId: null } });
   // Connect straight from the handle when the business's credentials are set up.
   await logAdmin(admin.id, "HANDLE_SET", { platform: channel.platform, handle: displayHandle(channel.platform, handle) });
   const saved = `Saved ${displayHandle(channel.platform, handle)}.${stale.length ? " The previously connected account didn't match, so it was disconnected." : ""}`;
@@ -174,7 +177,7 @@ export async function setHandle(channelId: string, value: string): Promise<Actio
 // "Connect" next to a handle: links the account using the business's credentials in .env.
 export async function connectHandle(channelId: string): Promise<ActionState> {
   const admin = await requireAdmin();
-  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+  const channel = await prisma.channel.findFirst({ where: { id: channelId, ownerId: null } });
   if (!channel) return { error: "This container no longer exists." };
   const res = await connectByHandle(channel.platform);
   await logAdmin(admin.id, res.ok ? "ACCOUNT_CONNECTED" : "CONNECT_FAILED", { platform: channel.platform, handle: displayHandle(channel.platform, channel.handle), result: res.ok ? res.message : res.error });
@@ -260,7 +263,7 @@ async function saveChannelInner(formData: FormData): Promise<ActionState> {
   if (!parsed.success) return { error: parsed.error.issues[0].message };
   const v = parsed.data;
 
-  const channel = await prisma.channel.findUnique({ where: { id: v.id } });
+  const channel = await prisma.channel.findFirst({ where: { id: v.id, ownerId: null } });
   if (!channel) return { error: "This container no longer exists." };
   if (!formatSupport[channel.platform][v.format].supported) {
     return { error: formatSupport[channel.platform][v.format].reason };
@@ -299,7 +302,7 @@ async function saveChannelInner(formData: FormData): Promise<ActionState> {
   let problem: string | undefined;
   if (v.advertId) verdict = (await checkAdvert(channel.platform, v.format, v.advertId)) ?? undefined;
   if (enabled) {
-    const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform } })).filter((a) =>
+    const accounts = (await prisma.socialAccount.findMany({ where: { platform: channel.platform, ownerId: null } })).filter((a) =>
       handleMatches(channel.platform, channel.handle, a),
     ).length;
     const advert = v.advertId ? await prisma.post.findUnique({ where: { id: v.advertId } }) : null;
@@ -317,7 +320,7 @@ async function saveChannelInner(formData: FormData): Promise<ActionState> {
     enabled = false;
   }
 
-  await prisma.channel.update({ where: { id: channel.id }, data: { ...updated, enabled, nextRunAt } });
+  await prisma.channel.update({ where: { id: channel.id, ownerId: null }, data: { ...updated, enabled, nextRunAt } });
   // Scheduling it (or posting it) is what makes the advert appear for users to subscribe to.
   if (enabled && v.advertId) await listForUsers(v.advertId);
   refresh();
@@ -412,7 +415,7 @@ async function listForUsers(advertId: string) {
 }
 
 async function channelFor(channelId: string) {
-  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+  const channel = await prisma.channel.findFirst({ where: { id: channelId, ownerId: null } });
   if (!channel) throw new AccessError("This container no longer exists.");
   return channel;
 }
@@ -430,7 +433,7 @@ export async function refineForChannel(channelId: string, mediaId: string, instr
 }
 
 async function hasMatchingAccount(platform: Platform, handle: string | null) {
-  return (await prisma.socialAccount.findMany({ where: { platform } })).some((a) => handleMatches(platform, handle, a));
+  return (await prisma.socialAccount.findMany({ where: { platform, ownerId: null } })).some((a) => handleMatches(platform, handle, a));
 }
 
 // What the admin needs to do to connect this container's account.

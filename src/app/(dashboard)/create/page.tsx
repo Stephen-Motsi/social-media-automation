@@ -17,8 +17,8 @@ export default async function CreatePage({ searchParams }: { searchParams: Promi
   await ensureAllContainers();
   const [interests, channelRows, accounts, advert] = await Promise.all([
     prisma.interest.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
-    prisma.channel.findMany(),
-    prisma.socialAccount.findMany(),
+    prisma.channel.findMany({ where: { ownerId: null } }),
+    prisma.socialAccount.findMany({ where: { ownerId: null } }),
     id ? prisma.post.findFirst({ where: { id, status: "DRAFT", channelId: null, authorId: viewer.id }, include: { interests: true } }) : null,
   ]);
   // Every platform is offered; each says whether its account is connected yet.

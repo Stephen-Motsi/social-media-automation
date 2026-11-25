@@ -38,7 +38,7 @@ export function newConfirmCode() {
 
 // The business's WhatsApp number people confirm with: the Meta container's WhatsApp handle.
 export async function businessWhatsAppNumber(): Promise<string | null> {
-  const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
+  const channel = await prisma.channel.findFirst({ where: { platform: "WHATSAPP", ownerId: null } });
   return channel?.handle || process.env.WHATSAPP_BUSINESS_NUMBER?.replace(/\D/g, "") || null;
 }
 
@@ -110,8 +110,8 @@ export async function matchSubscribers(advertId: string) {
 // Why WhatsApp sends can't go out right now (null = ready): what an admin has to fix.
 export async function whatsappNotReady(): Promise<string | null> {
   if (!(await getAudienceTemplate())) return "no WhatsApp message template is set (Audience page).";
-  const channel = await prisma.channel.findUnique({ where: { platform: "WHATSAPP" } });
-  const accounts = await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP" } });
+  const channel = await prisma.channel.findFirst({ where: { platform: "WHATSAPP", ownerId: null } });
+  const accounts = await prisma.socialAccount.findMany({ where: { platform: "WHATSAPP", ownerId: null } });
   if (!accounts.some((a) => handleMatches("WHATSAPP", channel?.handle, a))) {
     return "your WhatsApp number isn't connected (Settings in the Meta container on Channels).";
   }

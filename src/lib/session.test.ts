@@ -1,10 +1,12 @@
 import {
   AccessError,
   requireAuthenticatedViewer,
+  requireOwnedRecord,
   requireStaffViewer,
   requireSuperAdminViewer,
   type Viewer,
 } from "@/lib/session";
+import { canPublishToAccount } from "@/lib/ownership";
 
 let fails = 0;
 function expect(name: string, callback: () => unknown, want: unknown) {
@@ -42,6 +44,16 @@ expect("super admin is accepted", () => requireSuperAdminViewer(viewer("SUPER_AD
 expect("admin is accepted for staff operations", () => requireStaffViewer(viewer("ADMIN")), viewer("ADMIN"));
 expect("super admin is accepted for staff operations", () => requireStaffViewer(viewer("SUPER_ADMIN")), viewer("SUPER_ADMIN"));
 expect("ordinary user is rejected from staff operations", () => requireStaffViewer(viewer("USER")), accessError("Only admins can do this."));
+expect("ordinary user can access their own record", () => requireOwnedRecord(viewer("USER"), "database-user-id"), undefined);
+expect("ordinary user cannot access another user's record", () => requireOwnedRecord(viewer("USER"), "another-user"), accessError("Record not found."));
+expect("ordinary user cannot access a legacy shared record", () => requireOwnedRecord(viewer("USER"), null), accessError("Record not found."));
+expect("admin can access legacy records", () => requireOwnedRecord(viewer("ADMIN"), null), undefined);
+expect("super admin can access another user's record", () => requireOwnedRecord(viewer("SUPER_ADMIN"), "another-user"), undefined);
+expect("user can publish to their own account", () => canPublishToAccount(viewer("USER"), "database-user-id"), true);
+expect("user cannot publish to another user's account", () => canPublishToAccount(viewer("USER"), "another-user"), false);
+expect("user cannot publish to a legacy account", () => canPublishToAccount(viewer("USER"), null), false);
+expect("staff can publish to a legacy account", () => canPublishToAccount(viewer("ADMIN"), null), true);
+expect("staff-authored jobs cannot use another user's account", () => canPublishToAccount(viewer("SUPER_ADMIN"), "another-user"), false);
 expect(
   "missing identity is rejected even when a super-admin role is supplied",
   () => requireSuperAdminViewer({ role: "SUPER_ADMIN" }),

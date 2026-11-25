@@ -16,7 +16,7 @@ A web app for scheduling and publishing content to **Meta platforms**: **Faceboo
 | **Subscribers are the audience (user side)** | The public home page is `/subscribe` (signed-out visitors to `/` land there). People subscribe to adverts on WhatsApp about topics they choose, with no account or password, or an admin adds them. Adverts are matched to them automatically; **an admin approves every send**. WhatsApp is the only channel that can deliver to an individual; the other platforms only allow public posts (Channels). |
 | **Subscriptions are approved automatically** | Each subscription runs through checks based on WhatsApp's policies (`src/lib/policy/subscriptions.ts`). Passing ones are accepted with no admin action; only flagged ones wait on Approvals. |
 | **Five platforms** | Facebook, Instagram and WhatsApp go through the Meta Graph API (`src/lib/meta/`). X (`src/lib/x.ts`) and TikTok (`src/lib/tiktok.ts`) have their own OAuth and posting clients. Adding a platform means a new `Platform` enum value, a client, rules in `rules.ts`, and a connect route. |
-| **Meta, X and TikTok containers** | The Channels page has one parent container per provider (`ChannelGroup.kind` is unique): **Meta** (holding any of Facebook, Instagram, WhatsApp), **X** and **TikTok**. Each has Settings (connect/disconnect only) and one social container per platform (`Channel`, unique per platform) with format, advert and schedule. |
+| **Meta, X and TikTok containers** | Channels and provider containers can be owned per user, with at most one container per provider and platform per owner. Existing unowned containers and accounts remain staff-only shared records. User account connection and publishing workflows are not yet enabled. |
 | **Handles decide which real account is used** | Admins enter the handle for each platform (Page username, @handle, WhatsApp number). Connecting only links the account the platform reports for that handle, and posts only go to accounts matching it (`src/lib/handles.ts`). A handle alone can't grant posting rights: the account owner still signs in and approves. |
 | **Only what each API supports** | Stories exist only on Facebook and Instagram. WhatsApp's Business API can't post **Status**, and the X and TikTok APIs can't post stories, so those options are shown disabled with the reason (`formatSupport` in `rules.ts`). |
 | **WhatsApp is messaging, not a feed** | "Publishing" to WhatsApp means sending a message to recipients. WAHA sends approved text and supported media to configured recipients; comply with WhatsApp usage restrictions. |
@@ -62,7 +62,7 @@ src/
     subscribe/            PUBLIC: subscribe form and /subscribe/manage/<token> (change topics, unsubscribe)
     api/auth/             Auth.js route handlers
     api/webhooks/meta/    Meta webhook (verification + signed event intake)
-    api/media/[id]/       Public image URLs platforms download from (blocked images return 404)
+    api/media/[id]/       Owner/staff previews; publicly listed or published images are available to platforms
     api/meta|x|tiktok/    OAuth "connect" + "callback" routes per platform
   lib/
     db.ts                 Prisma client
@@ -108,6 +108,8 @@ src/
 - **Campaign** is one proposed send of an advert to its matched subscribers (`PENDING_APPROVAL` → `APPROVED` → `SENDING` → `SENT`, or `REJECTED`/`FAILED`). **Delivery** is one message to one subscriber, with its WhatsApp message ID and status (`SENT`, `DELIVERED`, `READ`, `FAILED`, `SKIPPED`).
 - **Setting** holds small admin settings, e.g. the WhatsApp template for audience adverts.
 - **MediaAsset** stores an image (generated or uploaded), its moderation result, and a `blocked` flag.
+
+The ownership migration leaves existing social accounts and channels unowned; it does not assign or delete records. Its partial unique indexes keep legacy shared containers unique, and a composite foreign key keeps owned channels in their owner's group. Preserve these custom constraints in future migrations. Apply it only after review as part of a coordinated deployment of the app and worker. `Post.authorId`, `MediaAsset.createdById`, and `WhatsappSession.userId` retain their existing ownership. Media used in public listings or publishing can be fetched publicly; other unblocked media is restricted to its owner and staff.
 
 ---
 

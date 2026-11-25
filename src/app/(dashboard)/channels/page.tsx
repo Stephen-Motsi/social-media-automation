@@ -95,20 +95,21 @@ function connectFor(kind: GroupKind): ConnectView {
 }
 
 export default async function ChannelsPage({ searchParams }: { searchParams: Promise<Params> }) {
-  await pageViewer("user");
+  const viewer = await pageViewer("user");
+  const ownerId = isStaff(viewer.role) ? null : viewer.id;
   // Meta (Facebook, Instagram, WhatsApp), X and TikTok are always here
-  await ensureAllContainers();
+  await ensureAllContainers(ownerId);
   const [params, session, groups, accounts, whatsappConfigured] = await Promise.all([
     searchParams,
     auth(),
-    prisma.channelGroup.findMany({ include: { channels: { include: { advert: true } } } }),
-    prisma.socialAccount.findMany({ orderBy: { createdAt: "asc" } }),
+    prisma.channelGroup.findMany({ where: { ownerId }, include: { channels: { where: { ownerId }, include: { advert: ownerId ? { where: { authorId: ownerId } } : true } } } }),
+    prisma.socialAccount.findMany({ where: { ownerId }, orderBy: { createdAt: "asc" } }),
     wahaConfigured(),
   ]);
   // Each social container's advert photo (and the prompt it was made from)
   const mediaIds = groups.flatMap((g) => g.channels.map((c) => c.advert?.mediaUrls[0]?.match(/\/api\/media\/([a-z0-9]+)$/i)?.[1])).filter((x): x is string => !!x);
   const assets = await prisma.mediaAsset.findMany({
-    where: { id: { in: mediaIds } },
+    where: { id: { in: mediaIds }, ...(ownerId ? { createdById: ownerId } : {}) },
     select: { id: true, width: true, height: true, blocked: true, prompt: true },
   });
   const composerAdvert = (a: (typeof groups)[number]["channels"][number]["advert"]) => {

@@ -25,8 +25,8 @@ export default async function PostsPage() {
       include: { targets: { include: { account: true } }, sourceAdvert: { select: { title: true } }, channel: { select: { platform: true } } },
       take: 50,
     }),
-    prisma.channel.findMany(),
-    prisma.socialAccount.findMany(),
+    prisma.channel.findMany({ where: { ownerId: null } }),
+    prisma.socialAccount.findMany({ where: { ownerId: null } }),
   ]);
 
   const choices: PlatformChoice[] = platformOrder.map((platform) => {

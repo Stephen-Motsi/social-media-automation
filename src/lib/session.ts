@@ -4,6 +4,7 @@ import { Prisma as PrismaRuntime, type Prisma, type Role } from "@prisma/client"
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
 import { createAdminAuditRunner } from "@/lib/audit-core";
+import { canAccessOwnedRecord, isStaffRole } from "@/lib/ownership";
 export { createAdminAuditRunner } from "@/lib/audit-core";
 export type { AdminAuditAction, AdminAuditOutcome, AdminAuditRecord } from "@/lib/audit-core";
 
@@ -12,7 +13,7 @@ export type { AdminAuditAction, AdminAuditOutcome, AdminAuditRecord } from "@/li
 
 export type Viewer = { id: string; email: string; name: string | null; image: string | null; role: Role; sessionId: string };
 
-export const isStaff = (role?: string | null) => role === "ADMIN" || role === "SUPER_ADMIN";
+export const isStaff = isStaffRole;
 
 const roles = new Set<string>(["USER", "ADMIN", "SUPER_ADMIN"]);
 
@@ -57,6 +58,10 @@ export async function pageViewer(need: "user" | "staff" | "super" = "user") {
 
 // For server actions and API routes: refuse.
 export class AccessError extends Error {}
+
+export function requireOwnedRecord(viewer: Viewer, ownerId: string | null) {
+  if (!canAccessOwnedRecord(viewer, ownerId)) throw new AccessError("Record not found.");
+}
 
 // These policy assertions consume only the viewer produced by the trusted auth() context.
 export function requireAuthenticatedViewer(viewer: unknown): Viewer {
